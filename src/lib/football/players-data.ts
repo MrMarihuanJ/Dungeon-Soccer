@@ -1,17 +1,7 @@
 // =====================================================================
-// Base de dados de jogadores - Cartoleiro FC
+// Base de dados de jogadores - Dungeon and Soccer
 // ---------------------------------------------------------------------
-// Lista curada de jogadores do Brasileirão e ídolos brasileiros.
-// Cada registro contém: nome curto, nome completo, posição, time,
-// foto (URL real) e nacionalidade.
-//
-// As fotos são servidas por:
-//   - Wikipedia Commons (Special:FilePath) para craques consagrados
-//   - API-Football CDN (media.api-sports.io) quando disponível
-//   - Fallback: UI Avatars (gera avatar com as iniciais do jogador)
-//
-// Você pode adicionar mais jogadores ou trocar as URLs de foto
-// diretamente no banco via Prisma Studio (`bun run db:studio`).
+// Lista curada com overall (estilo FIFA), idade, leagueTier e flags.
 // =====================================================================
 
 export interface PlayerSeed {
@@ -22,153 +12,178 @@ export interface PlayerSeed {
   photoUrl: string
   nationality: string
   shirtNumber?: number
+  // Sistema de rating (estilo FIFA)
+  overall: number
+  age: number
+  pace?: number
+  shooting?: number
+  passing?: number
+  dribbling?: number
+  defending?: number
+  physical?: number
+  leagueTier?: 'TOP5' | 'TOP10' | 'BR1' | 'TOP20' | 'OTHER'
+  isRetired?: boolean
+  isInactive?: boolean
 }
 
-// Helper para URL do Wikipedia Commons (funciona para pessoas famosas)
 const wiki = (file: string) =>
   `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=200`
 
-// Helper para UI Avatars (fallback - gera avatar com iniciais)
 const avatar = (name: string, teamColor = '0d8a3f') =>
   `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=${teamColor}&color=fff&size=200&bold=true`
 
-// Cores primárias dos clubes (para fallback de avatar)
 const TEAM_COLORS: Record<string, string> = {
-  'Flamengo': 'c42026',
-  'Palmeiras': '006437',
-  'Corinthians': '000000',
-  'São Paulo': 'fe0000',
-  'Atlético-MG': '000000',
-  'Cruzeiro': '003da5',
-  'Grêmio': '0d71bb',
-  'Internacional': 'c42026',
-  'Fluminense': '7a1f3d',
-  'Botafogo': '000000',
-  'Santos': 'f5f5f5',
-  'Vasco': '000000',
-  'Athletico-PR': 'c42026',
-  'Bahia': '0066b3',
-  'Fortaleza': '003da5',
-  'Ceará': '000000',
-  'Juventude': '006437',
-  'Bragantino': 'f5f5f5',
-  'Cuiabá': '006437',
-  'Atlético-GO': 'c42026',
+  'Flamengo': 'c42026', 'Palmeiras': '006437', 'Corinthians': '000000',
+  'São Paulo': 'fe0000', 'Atlético-MG': '000000', 'Cruzeiro': '003da5',
+  'Grêmio': '0d71bb', 'Internacional': 'c42026', 'Fluminense': '7a1f3d',
+  'Botafogo': '000000', 'Santos': 'f5f5f5', 'Vasco': '000000',
+  'Athletico-PR': 'c42026', 'Bahia': '0066b3', 'Fortaleza': '003da5',
 }
 
 const colorFor = (team: string) => TEAM_COLORS[team] ?? '0d8a3f'
 
+// Helper para criar jogador com defaults
+const mk = (
+  name: string, fullName: string, position: PlayerSeed['position'], team: string,
+  photoUrl: string, nationality: string, shirtNumber: number | undefined,
+  overall: number, age: number, leagueTier: PlayerSeed['leagueTier'] = 'OTHER',
+  attrs?: Partial<Pick<PlayerSeed, 'pace' | 'shooting' | 'passing' | 'dribbling' | 'defending' | 'physical'>>,
+  isRetired = false,
+): PlayerSeed => ({
+  name, fullName, position, team, photoUrl, nationality, shirtNumber,
+  overall, age, leagueTier,
+  pace: attrs?.pace ?? (position === 'GK' ? 50 : position === 'DF' ? 65 : position === 'MF' ? 70 : 80),
+  shooting: attrs?.shooting ?? (position === 'GK' ? 30 : position === 'DF' ? 45 : position === 'MF' ? 70 : 85),
+  passing: attrs?.passing ?? (position === 'GK' ? 50 : position === 'DF' ? 65 : position === 'MF' ? 80 : 75),
+  dribbling: attrs?.dribbling ?? (position === 'GK' ? 40 : position === 'DF' ? 60 : position === 'MF' ? 80 : 85),
+  defending: attrs?.defending ?? (position === 'GK' ? 30 : position === 'DF' ? 85 : position === 'MF' ? 65 : 40),
+  physical: attrs?.physical ?? (position === 'GK' ? 70 : position === 'DF' ? 80 : position === 'MF' ? 70 : 75),
+  isRetired,
+  isInactive: false,
+})
+
 export const PLAYERS_SEED: PlayerSeed[] = [
-  // ===== GOLEIROS (GK) =====
-  { name: 'Alisson', fullName: 'Alisson Ramses Becker', position: 'GK', team: 'Liverpool', photoUrl: wiki('Alisson_Becker_2018.jpg'), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'Ederson', fullName: 'Ederson Santana de Moraes', position: 'GK', team: 'Manchester City', photoUrl: wiki('Ederson_Moraes_2018.jpg'), nationality: 'Brasil', shirtNumber: 31 },
-  { name: 'Bento', fullName: 'Bento Rafael Kremer Weigert', position: 'GK', team: 'Athletico-PR', photoUrl: avatar('Bento', colorFor('Athletico-PR')), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'Rafael Cabral', fullName: 'Rafael Cabral Barbosa', position: 'GK', team: 'Cruzeiro', photoUrl: avatar('Rafael Cabral', colorFor('Cruzeiro')), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'Sergio Rochet', fullName: 'Sergio Germán Rochet Álvarez', position: 'GK', team: 'Internacional', photoUrl: avatar('Rochet', colorFor('Internacional')), nationality: 'Uruguai', shirtNumber: 1 },
-  { name: 'Marcos Felipe', fullName: 'Marcos Felipe de Souza Rocha', position: 'GK', team: 'Fluminense', photoUrl: avatar('Marcos Felipe', colorFor('Fluminense')), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'John', fullName: 'John Vitor Rochedo de Souza', position: 'GK', team: 'Botafogo', photoUrl: avatar('John', colorFor('Botafogo')), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'Matheus Cunha', fullName: 'Matheus Cunha de Oliveira', position: 'GK', team: 'Corinthians', photoUrl: avatar('Matheus Cunha', colorFor('Corinthians')), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'Weverton', fullName: 'Weverton Pereira da Silva', position: 'GK', team: 'Palmeiras', photoUrl: wiki('Weverton_2021.jpg'), nationality: 'Brasil', shirtNumber: 21 },
-  { name: 'Jandrei', fullName: 'Jandrei Scheunemann', position: 'GK', team: 'São Paulo', photoUrl: avatar('Jandrei', colorFor('São Paulo')), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'Léo Jardim', fullName: 'Leonardo Christian Klein Jardim', position: 'GK', team: 'Vasco', photoUrl: avatar('Léo Jardim', colorFor('Vasco')), nationality: 'Brasil', shirtNumber: 1 },
-  { name: 'Marcos Leonardo', fullName: 'Marcos Leonardo Santos Almeida', position: 'GK', team: 'Santos', photoUrl: avatar('Marcos Leonardo', colorFor('Santos')), nationality: 'Brasil', shirtNumber: 1 },
+  // ===== GOLEIROS =====
+  mk('Alisson', 'Alisson Ramses Becker', 'GK', 'Liverpool', wiki('Alisson_Becker_2018.jpg'), 'Brasil', 1, 89, 32, 'TOP5', { pace: 58, shooting: 25, passing: 60, dribbling: 30, defending: 88, physical: 85 }),
+  mk('Ederson', 'Ederson Santana de Moraes', 'GK', 'Manchester City', wiki('Ederson_Moraes_2018.jpg'), 'Brasil', 31, 88, 31, 'TOP5', { pace: 56, shooting: 25, passing: 75, dribbling: 40, defending: 87, physical: 83 }),
+  mk('Bento', 'Bento Rafael Kremer Weigert', 'GK', 'Athletico-PR', avatar('Bento', colorFor('Athletico-PR')), 'Brasil', 1, 79, 26, 'BR1'),
+  mk('Rafael Cabral', 'Rafael Cabral Barbosa', 'GK', 'Cruzeiro', avatar('Rafael Cabral', colorFor('Cruzeiro')), 'Brasil', 1, 78, 35, 'BR1'),
+  mk('Sergio Rochet', 'Sergio Germán Rochet Álvarez', 'GK', 'Internacional', avatar('Rochet', colorFor('Internacional')), 'Uruguai', 1, 79, 32, 'BR1'),
+  mk('Marcos Felipe', 'Marcos Felipe de Souza Rocha', 'GK', 'Fluminense', avatar('Marcos Felipe', colorFor('Fluminense')), 'Brasil', 1, 76, 29, 'BR1'),
+  mk('John', 'John Vitor Rochedo de Souza', 'GK', 'Botafogo', avatar('John', colorFor('Botafogo')), 'Brasil', 1, 77, 28, 'BR1'),
+  mk('Matheus Cunha', 'Matheus Cunha de Oliveira', 'GK', 'Corinthians', avatar('Matheus Cunha', colorFor('Corinthians')), 'Brasil', 1, 76, 26, 'BR1'),
+  mk('Weverton', 'Weverton Pereira da Silva', 'GK', 'Palmeiras', wiki('Weverton_2021.jpg'), 'Brasil', 21, 82, 37, 'BR1'),
+  mk('Jandrei', 'Jandrei Scheunemann', 'GK', 'São Paulo', avatar('Jandrei', colorFor('São Paulo')), 'Brasil', 1, 78, 33, 'BR1'),
+  mk('Léo Jardim', 'Leonardo Christian Klein Jardim', 'GK', 'Vasco', avatar('Léo Jardim', colorFor('Vasco')), 'Brasil', 1, 76, 30, 'BR1'),
 
-  // ===== ZAGUEIROS (DF) =====
-  { name: 'Marquinhos', fullName: 'Marcos Aoás Corrêa', position: 'DF', team: 'PSG', photoUrl: wiki('Marquinhos_2019.jpg'), nationality: 'Brasil', shirtNumber: 5 },
-  { name: 'Éder Militão', fullName: 'Éder Gabriel Militão', position: 'DF', team: 'Real Madrid', photoUrl: wiki('Éder_Militão_2022.jpg'), nationality: 'Brasil', shirtNumber: 3 },
-  { name: 'Gabriel Magalhães', fullName: 'Gabriel dos Santos Magalhães', position: 'DF', team: 'Arsenal', photoUrl: wiki('Gabriel_Magalhães.jpg'), nationality: 'Brasil', shirtNumber: 6 },
-  { name: 'Bremer', fullName: 'Breno Lopes Cordeiro', position: 'DF', team: 'Juventus', photoUrl: wiki('Bremer_2022.jpg'), nationality: 'Brasil', shirtNumber: 3 },
-  { name: 'Daniel Alves', fullName: 'Daniel Alves da Silva', position: 'DF', team: 'São Paulo', photoUrl: wiki('Daniel_Alves_2019.jpg'), nationality: 'Brasil', shirtNumber: 2 },
-  { name: 'Danilo', fullName: 'Danilo Luiz da Silva', position: 'DF', team: 'Juventus', photoUrl: wiki('Danilo_Luiz_da_Silva_2021.jpg'), nationality: 'Brasil', shirtNumber: 6 },
-  { name: 'Alex Sandro', fullName: 'Alex Sandro Silva', position: 'DF', team: 'Fluminense', photoUrl: avatar('Alex Sandro', colorFor('Fluminense')), nationality: 'Brasil', shirtNumber: 6 },
-  { name: 'Renan Lodi', fullName: 'Renan Augusto Lodi dos Santos', position: 'DF', team: 'Marseille', photoUrl: avatar('Renan Lodi'), nationality: 'Brasil', shirtNumber: 6 },
-  { name: 'Ibañez', fullName: 'Roger Ibañez da Silva', position: 'DF', team: 'Al-Ahli', photoUrl: avatar('Ibañez'), nationality: 'Brasil', shirtNumber: 3 },
-  { name: 'David Luiz', fullName: 'David Luiz Moreira Marinho', position: 'DF', team: 'Flamengo', photoUrl: wiki('David_Luiz_2019.jpg'), nationality: 'Brasil', shirtNumber: 23 },
-  { name: 'Léo Pereira', fullName: 'Leonardo Pereira de Oliveira', position: 'DF', team: 'Flamengo', photoUrl: avatar('Léo Pereira', colorFor('Flamengo')), nationality: 'Brasil', shirtNumber: 4 },
-  { name: 'Pablo', fullName: 'Pablo Marçal Florentino', position: 'DF', team: 'Palmeiras', photoUrl: avatar('Pablo', colorFor('Palmeiras')), nationality: 'Brasil', shirtNumber: 4 },
-  { name: 'Gustavo Gómez', fullName: 'Gustavo Raúl Gómez Portillo', position: 'DF', team: 'Palmeiras', photoUrl: avatar('Gómez', colorFor('Palmeiras')), nationality: 'Paraguai', shirtNumber: 15 },
-  { name: 'Cacá', fullName: 'Carlos Eduardo Bendlin de Carvalho', position: 'DF', team: 'Corinthians', photoUrl: avatar('Cacá', colorFor('Corinthians')), nationality: 'Brasil', shirtNumber: 4 },
-  { name: 'Cuello', fullName: 'Bruno Amione Cuello', position: 'DF', team: 'Santos', photoUrl: avatar('Cuello', colorFor('Santos')), nationality: 'Argentina', shirtNumber: 4 },
-  { name: 'Léo Ortiz', fullName: 'Leonardo Fernández Ortiz', position: 'DF', team: 'Flamengo', photoUrl: avatar('Léo Ortiz', colorFor('Flamengo')), nationality: 'Brasil', shirtNumber: 4 },
-  { name: 'Kannemann', fullName: 'Walter Kannemann', position: 'DF', team: 'Grêmio', photoUrl: avatar('Kannemann', colorFor('Grêmio')), nationality: 'Argentina', shirtNumber: 4 },
-  { name: 'Mercado', fullName: 'Gabriel Iván Mercado', position: 'DF', team: 'Internacional', photoUrl: avatar('Mercado', colorFor('Internacional')), nationality: 'Argentina', shirtNumber: 4 },
-  { name: 'Vitão', fullName: 'Vitor Hugo de Oliveira Coelho', position: 'DF', team: 'Vasco', photoUrl: avatar('Vitão', colorFor('Vasco')), nationality: 'Brasil', shirtNumber: 4 },
-  { name: 'Junior Alonso', fullName: 'Junior Osmar Ignacio Alonso Mujica', position: 'DF', team: 'Bahia', photoUrl: avatar('Alonso', colorFor('Bahia')), nationality: 'Paraguai', shirtNumber: 4 },
-  { name: 'Titi', fullName: 'Weriston da Silva Souza', position: 'DF', team: 'Botafogo', photoUrl: avatar('Titi', colorFor('Botafogo')), nationality: 'Brasil', shirtNumber: 4 },
-  { name: 'Barboza', fullName: 'Luiz Carlos Batata Barboza', position: 'DF', team: 'Fluminense', photoUrl: avatar('Barboza', colorFor('Fluminense')), nationality: 'Brasil', shirtNumber: 4 },
+  // ===== ZAGUEIROS =====
+  mk('Marquinhos', 'Marcos Aoás Corrêa', 'DF', 'PSG', wiki('Marquinhos_2019.jpg'), 'Brasil', 5, 86, 31, 'TOP5', { pace: 80, defending: 87, physical: 84 }),
+  mk('Éder Militão', 'Éder Gabriel Militão', 'DF', 'Real Madrid', wiki('Éder_Militão_2022.jpg'), 'Brasil', 3, 84, 27, 'TOP5', { pace: 82, defending: 84, physical: 82 }),
+  mk('Gabriel Magalhães', 'Gabriel dos Santos Magalhães', 'DF', 'Arsenal', wiki('Gabriel_Magalhães.jpg'), 'Brasil', 6, 83, 27, 'TOP5', { pace: 75, defending: 84, physical: 86 }),
+  mk('Bremer', 'Breno Lopes Cordeiro', 'DF', 'Juventus', wiki('Bremer_2022.jpg'), 'Brasil', 3, 83, 28, 'TOP5', { pace: 80, defending: 85, physical: 85 }),
+  mk('Danilo', 'Danilo Luiz da Silva', 'DF', 'Juventus', wiki('Danilo_Luiz_da_Silva_2021.jpg'), 'Brasil', 6, 80, 34, 'TOP5'),
+  mk('Alex Sandro', 'Alex Sandro Silva', 'DF', 'Fluminense', avatar('Alex Sandro', colorFor('Fluminense')), 'Brasil', 6, 78, 35, 'BR1'),
+  mk('Renan Lodi', 'Renan Augusto Lodi dos Santos', 'DF', 'Marseille', avatar('Renan Lodi'), 'Brasil', 6, 79, 27, 'TOP10'),
+  mk('Ibañez', 'Roger Ibañez da Silva', 'DF', 'Al-Ahli', avatar('Ibañez'), 'Brasil', 3, 78, 26, 'OTHER'),
+  mk('David Luiz', 'David Luiz Moreira Marinho', 'DF', 'Flamengo', wiki('David_Luiz_2019.jpg'), 'Brasil', 23, 78, 38, 'BR1'),
+  mk('Léo Pereira', 'Leonardo Pereira de Oliveira', 'DF', 'Flamengo', avatar('Léo Pereira', colorFor('Flamengo')), 'Brasil', 4, 77, 30, 'BR1'),
+  mk('Gustavo Gómez', 'Gustavo Raúl Gómez Portillo', 'DF', 'Palmeiras', avatar('Gómez', colorFor('Palmeiras')), 'Paraguai', 15, 82, 32, 'BR1'),
+  mk('Cacá', 'Carlos Eduardo Bendlin de Carvalho', 'DF', 'Corinthians', avatar('Cacá', colorFor('Corinthians')), 'Brasil', 4, 75, 25, 'BR1'),
+  mk('Cuello', 'Bruno Amione Cuello', 'DF', 'Santos', avatar('Cuello', colorFor('Santos')), 'Argentina', 4, 75, 24, 'BR1'),
+  mk('Léo Ortiz', 'Leonardo Fernández Ortiz', 'DF', 'Flamengo', avatar('Léo Ortiz', colorFor('Flamengo')), 'Brasil', 4, 78, 29, 'BR1'),
+  mk('Kannemann', 'Walter Kannemann', 'DF', 'Grêmio', avatar('Kannemann', colorFor('Grêmio')), 'Argentina', 4, 78, 34, 'BR1'),
+  mk('Mercado', 'Gabriel Iván Mercado', 'DF', 'Internacional', avatar('Mercado', colorFor('Internacional')), 'Argentina', 4, 76, 38, 'BR1'),
+  mk('Vitão', 'Vitor Hugo de Oliveira Coelho', 'DF', 'Vasco', avatar('Vitão', colorFor('Vasco')), 'Brasil', 4, 76, 25, 'BR1'),
+  mk('Junior Alonso', 'Junior Osmar Ignacio Alonso Mujica', 'DF', 'Bahia', avatar('Alonso', colorFor('Bahia')), 'Paraguai', 4, 77, 33, 'BR1'),
+  mk('Titi', 'Weriston da Silva Souza', 'DF', 'Botafogo', avatar('Titi', colorFor('Botafogo')), 'Brasil', 4, 75, 28, 'BR1'),
+  mk('Barboza', 'Luiz Carlos Batata Barboza', 'DF', 'Fluminense', avatar('Barboza', colorFor('Fluminense')), 'Brasil', 4, 76, 28, 'BR1'),
 
-  // ===== MEIAS (MF) =====
-  { name: 'Casemiro', fullName: 'Carlos Henrique Casimiro', position: 'MF', team: 'Manchester United', photoUrl: wiki('Casemiro_2022.jpg'), nationality: 'Brasil', shirtNumber: 18 },
-  { name: 'Bruno Guimarães', fullName: 'Bruno Guimarães Rodriguez Moura', position: 'MF', team: 'Newcastle', photoUrl: wiki('Bruno_Guimarães_2022.jpg'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Lucas Paquetá', fullName: 'Lucas Tolentino Coelho de Lima', position: 'MF', team: 'West Ham', photoUrl: wiki('Lucas_Paquetá_2022.jpg'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Fabinho', fullName: 'Fábio Henrique Tavares', position: 'MF', team: 'Al-Ittihad', photoUrl: wiki('Fabinho_2018.jpg'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Fred', fullName: 'Frederico Rodrigues de Paula Santos', position: 'MF', team: 'Fenerbahçe', photoUrl: wiki('Fred_2018.jpg'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Andreas Pereira', fullName: 'Andreas Hugo Hoelgebaum Pereira', position: 'MF', team: 'Fulham', photoUrl: avatar('Andreas Pereira'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Everton Ribeiro', fullName: 'Everton Augusto de Barros Ribeiro', position: 'MF', team: 'Bahia', photoUrl: wiki('Everton_Ribeiro_2019.jpg'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Gerson', fullName: 'Gerson Santos da Silva', position: 'MF', team: 'Flamengo', photoUrl: wiki('Gerson_2019.jpg'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'De La Cruz', fullName: 'Giorgian Daniel de Arrascaeta Velázquez', position: 'MF', team: 'Flamengo', photoUrl: avatar('De La Cruz', colorFor('Flamengo')), nationality: 'Uruguai', shirtNumber: 10 },
-  { name: 'Pulgar', fullName: 'Erick Antonio Pulgar Farfán', position: 'MF', team: 'Flamengo', photoUrl: avatar('Pulgar', colorFor('Flamengo')), nationality: 'Chile', shirtNumber: 5 },
-  { name: 'Raphael Veiga', fullName: 'Raphael Veiga Macedo da Silva', position: 'MF', team: 'Palmeiras', photoUrl: avatar('Veiga', colorFor('Palmeiras')), nationality: 'Brasil', shirtNumber: 23 },
-  { name: 'Aníbal Moreno', fullName: 'José Aníbal Moreno Gómez', position: 'MF', team: 'Palmeiras', photoUrl: avatar('Moreno', colorFor('Palmeiras')), nationality: 'Argentina', shirtNumber: 5 },
-  { name: 'Richard Ríos', fullName: 'Richard Sánchez Ríos', position: 'MF', team: 'Palmeiras', photoUrl: avatar('Ríos', colorFor('Palmeiras')), nationality: 'Colômbia', shirtNumber: 8 },
-  { name: 'Rodrigo Garro', fullName: 'Rodrigo Javier Garro Baeza', position: 'MF', team: 'Corinthians', photoUrl: avatar('Garro', colorFor('Corinthians')), nationality: 'Argentina', shirtNumber: 10 },
-  { name: 'José Martínez', fullName: 'José Andrés Martínez Salas', position: 'MF', team: 'Corinthians', photoUrl: avatar('Martínez', colorFor('Corinthians')), nationality: 'Venezuela', shirtNumber: 5 },
-  { name: 'Lucas Moura', fullName: 'Lucas Rodrigues Moura da Silva', position: 'MF', team: 'São Paulo', photoUrl: wiki('Lucas_Moura_2018.jpg'), nationality: 'Brasil', shirtNumber: 7 },
-  { name: 'Luciano', fullName: 'Luciano da Silva Rocha', position: 'MF', team: 'São Paulo', photoUrl: avatar('Luciano', colorFor('São Paulo')), nationality: 'Brasil', shirtNumber: 10 },
-  { name: 'Alisson', fullName: 'Alisson Euler de Freitas Castro', position: 'MF', team: 'Atlético-MG', photoUrl: avatar('Alisson Euler', colorFor('Atlético-MG')), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Gustavo Scarpa', fullName: 'Gustavo Henrique Furtado Scarpa', position: 'MF', team: 'Atlético-MG', photoUrl: avatar('Scarpa', colorFor('Atlético-MG')), nationality: 'Brasil', shirtNumber: 14 },
-  { name: 'Hulk', fullName: 'Givanildo Vieira de Sousa', position: 'MF', team: 'Atlético-MG', photoUrl: wiki('Hulk_(footballer).jpg'), nationality: 'Brasil', shirtNumber: 7 },
-  { name: 'Arrascaeta', fullName: 'Giorgian de Arrascaeta', position: 'MF', team: 'Flamengo', photoUrl: wiki('Giorgian_de_Arrascaeta_2019.jpg'), nationality: 'Uruguai', shirtNumber: 14 },
-  { name: 'Paysandu', fullName: 'Rafael da Silva Lima', position: 'MF', team: 'Botafogo', photoUrl: avatar('Rafael', colorFor('Botafogo')), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Gregore', fullName: 'Gregore de Magalhães Silva', position: 'MF', team: 'Botafogo', photoUrl: avatar('Gregore', colorFor('Botafogo')), nationality: 'Brasil', shirtNumber: 5 },
-  { name: 'Thiago Almada', fullName: 'Thiago Ezequiel Almada', position: 'MF', team: 'Botafogo', photoUrl: avatar('Almada', colorFor('Botafogo')), nationality: 'Argentina', shirtNumber: 10 },
-  { name: 'Fernando', fullName: 'Fernando Francisco Reges', position: 'MF', team: 'Internacional', photoUrl: avatar('Fernando', colorFor('Internacional')), nationality: 'Brasil', shirtNumber: 5 },
-  { name: 'Alan Patrick', fullName: 'Alan Patrick de Souza Gouveia', position: 'MF', team: 'Internacional', photoUrl: avatar('Patrick', colorFor('Internacional')), nationality: 'Brasil', shirtNumber: 10 },
-  { name: 'Peyrera', fullName: 'Nicolás de la Cruz Peyrera', position: 'MF', team: 'Grêmio', photoUrl: avatar('de la Cruz', colorFor('Grêmio')), nationality: 'Uruguai', shirtNumber: 10 },
-  { name: 'Cristaldo', fullName: 'Franco Cristaldo', position: 'MF', team: 'Grêmio', photoUrl: avatar('Cristaldo', colorFor('Grêmio')), nationality: 'Argentina', shirtNumber: 8 },
-  { name: 'Otávio', fullName: 'Otávio Edmilson da Silva Monteiro', position: 'MF', team: 'Santos', photoUrl: avatar('Otávio', colorFor('Santos')), nationality: 'Brasil', shirtNumber: 10 },
-  { name: 'João Schmidt', fullName: 'João Schmidt de Souza', position: 'MF', team: 'Santos', photoUrl: avatar('João Schmidt', colorFor('Santos')), nationality: 'Brasil', shirtNumber: 5 },
-  { name: 'Philippe Coutinho', fullName: 'Philippe Coutinho Correia', position: 'MF', team: 'Vasco', photoUrl: wiki('Philippe_Coutinho_2019.jpg'), nationality: 'Brasil', shirtNumber: 10 },
+  // ===== MEIAS =====
+  mk('Casemiro', 'Carlos Henrique Casimiro', 'MF', 'Manchester United', wiki('Casemiro_2022.jpg'), 'Brasil', 18, 85, 33, 'TOP5', { pace: 65, passing: 80, defending: 86, physical: 88 }),
+  mk('Bruno Guimarães', 'Bruno Guimarães Rodriguez Moura', 'MF', 'Newcastle', wiki('Bruno_Guimarães_2022.jpg'), 'Brasil', 8, 84, 27, 'TOP5', { pace: 70, passing: 84, dribbling: 84, defending: 75, physical: 80 }),
+  mk('Lucas Paquetá', 'Lucas Tolentino Coelho de Lima', 'MF', 'West Ham', wiki('Lucas_Paquetá_2022.jpg'), 'Brasil', 8, 82, 28, 'TOP5', { pace: 72, passing: 82, dribbling: 86, defending: 65 }),
+  mk('Fabinho', 'Fábio Henrique Tavares', 'MF', 'Al-Ittihad', wiki('Fabinho_2018.jpg'), 'Brasil', 8, 80, 32, 'OTHER'),
+  mk('Fred', 'Frederico Rodrigues de Paula Santos', 'MF', 'Fenerbahçe', wiki('Fred_2018.jpg'), 'Brasil', 8, 78, 32, 'TOP10'),
+  mk('Andreas Pereira', 'Andreas Hugo Hoelgebaum Pereira', 'MF', 'Fulham', avatar('Andreas Pereira'), 'Brasil', 8, 79, 29, 'TOP5'),
+  mk('Everton Ribeiro', 'Everton Augusto de Barros Ribeiro', 'MF', 'Bahia', wiki('Everton_Ribeiro_2019.jpg'), 'Brasil', 8, 76, 36, 'BR1'),
+  mk('Gerson', 'Gerson Santos da Silva', 'MF', 'Flamengo', wiki('Gerson_2019.jpg'), 'Brasil', 8, 80, 28, 'BR1'),
+  mk('De La Cruz', 'Giorgian Daniel de Arrascaeta Velázquez', 'MF', 'Flamengo', avatar('De La Cruz', colorFor('Flamengo')), 'Uruguai', 10, 82, 27, 'BR1'),
+  mk('Pulgar', 'Erick Antonio Pulgar Farfán', 'MF', 'Flamengo', avatar('Pulgar', colorFor('Flamengo')), 'Chile', 5, 76, 31, 'BR1'),
+  mk('Raphael Veiga', 'Raphael Veiga Macedo da Silva', 'MF', 'Palmeiras', avatar('Veiga', colorFor('Palmeiras')), 'Brasil', 23, 78, 30, 'BR1'),
+  mk('Aníbal Moreno', 'José Aníbal Moreno Gómez', 'MF', 'Palmeiras', avatar('Moreno', colorFor('Palmeiras')), 'Argentina', 5, 76, 26, 'BR1'),
+  mk('Richard Ríos', 'Richard Sánchez Ríos', 'MF', 'Palmeiras', avatar('Ríos', colorFor('Palmeiras')), 'Colômbia', 8, 77, 25, 'BR1'),
+  mk('Rodrigo Garro', 'Rodrigo Javier Garro Baeza', 'MF', 'Corinthians', avatar('Garro', colorFor('Corinthians')), 'Argentina', 10, 79, 27, 'BR1'),
+  mk('José Martínez', 'José Andrés Martínez Salas', 'MF', 'Corinthians', avatar('Martínez', colorFor('Corinthians')), 'Venezuela', 5, 76, 32, 'BR1'),
+  mk('Lucas Moura', 'Lucas Rodrigues Moura da Silva', 'MF', 'São Paulo', wiki('Lucas_Moura_2018.jpg'), 'Brasil', 7, 78, 33, 'BR1'),
+  mk('Luciano', 'Luciano da Silva Rocha', 'MF', 'São Paulo', avatar('Luciano', colorFor('São Paulo')), 'Brasil', 10, 75, 32, 'BR1'),
+  mk('Gustavo Scarpa', 'Gustavo Henrique Furtado Scarpa', 'MF', 'Atlético-MG', avatar('Scarpa', colorFor('Atlético-MG')), 'Brasil', 14, 78, 31, 'BR1'),
+  mk('Hulk', 'Givanildo Vieira de Sousa', 'MF', 'Atlético-MG', wiki('Hulk_(footballer).jpg'), 'Brasil', 7, 79, 39, 'BR1', { pace: 70, shooting: 82, physical: 90 }),
+  mk('Arrascaeta', 'Giorgian de Arrascaeta', 'MF', 'Flamengo', wiki('Giorgian_de_Arrascaeta_2019.jpg'), 'Uruguai', 14, 83, 31, 'BR1', { pace: 72, passing: 84, dribbling: 86 }),
+  mk('Gregore', 'Gregore de Magalhães Silva', 'MF', 'Botafogo', avatar('Gregore', colorFor('Botafogo')), 'Brasil', 5, 76, 31, 'BR1'),
+  mk('Thiago Almada', 'Thiago Ezequiel Almada', 'MF', 'Botafogo', avatar('Almada', colorFor('Botafogo')), 'Argentina', 10, 82, 24, 'BR1'),
+  mk('Fernando', 'Fernando Francisco Reges', 'MF', 'Internacional', avatar('Fernando', colorFor('Internacional')), 'Brasil', 5, 76, 38, 'BR1'),
+  mk('Alan Patrick', 'Alan Patrick de Souza Gouveia', 'MF', 'Internacional', avatar('Patrick', colorFor('Internacional')), 'Brasil', 10, 78, 34, 'BR1'),
+  mk('Peyrera', 'Nicolás de la Cruz Peyrera', 'MF', 'Grêmio', avatar('de la Cruz', colorFor('Grêmio')), 'Uruguai', 10, 80, 28, 'BR1'),
+  mk('Cristaldo', 'Franco Cristaldo', 'MF', 'Grêmio', avatar('Cristaldo', colorFor('Grêmio')), 'Argentina', 8, 76, 28, 'BR1'),
+  mk('Otávio', 'Otávio Edmilson da Silva Monteiro', 'MF', 'Santos', avatar('Otávio', colorFor('Santos')), 'Brasil', 10, 75, 31, 'BR1'),
+  mk('João Schmidt', 'João Schmidt de Souza', 'MF', 'Santos', avatar('João Schmidt', colorFor('Santos')), 'Brasil', 5, 75, 32, 'BR1'),
+  mk('Philippe Coutinho', 'Philippe Coutinho Correia', 'MF', 'Vasco', wiki('Philippe_Coutinho_2019.jpg'), 'Brasil', 10, 76, 33, 'BR1'),
 
-  // ===== ATACANTES (FW) =====
-  { name: 'Neymar Jr', fullName: 'Neymar da Silva Santos Júnior', position: 'FW', team: 'Santos', photoUrl: wiki('Neymar_2022.jpg'), nationality: 'Brasil', shirtNumber: 10 },
-  { name: 'Vinicius Junior', fullName: 'Vinícius José Paixão de Oliveira Júnior', position: 'FW', team: 'Real Madrid', photoUrl: wiki('Vinícius_Júnior_2022.jpg'), nationality: 'Brasil', shirtNumber: 7 },
-  { name: 'Rodrygo', fullName: 'Rodrygo Silva de Goes', position: 'FW', team: 'Real Madrid', photoUrl: wiki('Rodrygo_2022.jpg'), nationality: 'Brasil', shirtNumber: 11 },
-  { name: 'Endrick', fullName: 'Endrick Felipe Moreira de Sousa', position: 'FW', team: 'Real Madrid', photoUrl: wiki('Endrick_2024.jpg'), nationality: 'Brasil', shirtNumber: 16 },
-  { name: 'Raphinha', fullName: 'Raphael Dias Belloli', position: 'FW', team: 'Barcelona', photoUrl: wiki('Raphinha_2022.jpg'), nationality: 'Brasil', shirtNumber: 22 },
-  { name: 'Antony', fullName: 'Antony Matheus dos Santos', position: 'FW', team: 'Manchester United', photoUrl: wiki('Antony_(footballer)_2022.jpg'), nationality: 'Brasil', shirtNumber: 21 },
-  { name: 'Gabriel Jesus', fullName: 'Gabriel Fernando de Jesus', position: 'FW', team: 'Arsenal', photoUrl: wiki('Gabriel_Jesus_2022.jpg'), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Richarlison', fullName: 'Richarlison de Andrade', position: 'FW', team: 'Tottenham', photoUrl: wiki('Richarlison_2022.jpg'), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Gabriel Martinelli', fullName: 'Gabriel Teodoro Martinelli Silva', position: 'FW', team: 'Arsenal', photoUrl: wiki('Gabriel_Martinelli_2022.jpg'), nationality: 'Brasil', shirtNumber: 11 },
-  { name: 'Pedro', fullName: 'Pedro Guilherme Abreu dos Santos', position: 'FW', team: 'Flamengo', photoUrl: wiki('Pedro_(footballer,_born_1997).jpg'), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Bruno Henrique', fullName: 'Bruno Henrique Pinto', position: 'FW', team: 'Flamengo', photoUrl: wiki('Bruno_Henrique_2019.jpg'), nationality: 'Brasil', shirtNumber: 27 },
-  { name: 'Plata', fullName: 'Gonzalo Adolfo Plata Cevallos', position: 'FW', team: 'Flamengo', photoUrl: avatar('Plata', colorFor('Flamengo')), nationality: 'Equador', shirtNumber: 21 },
-  { name: 'Estêvão', fullName: 'Estêvão Willian Almeida de Oliveira Gonçalves', position: 'FW', team: 'Palmeiras', photoUrl: avatar('Estêvão', colorFor('Palmeiras')), nationality: 'Brasil', shirtNumber: 41 },
-  { name: 'Flaco López', fullName: 'José Ignacio López Fernández', position: 'FW', team: 'Palmeiras', photoUrl: avatar('Flaco López', colorFor('Palmeiras')), nationality: 'Argentina', shirtNumber: 19 },
-  { name: 'Ríos', fullName: 'Mauricio Alberto Ríos Pérez', position: 'FW', team: 'Palmeiras', photoUrl: avatar('Maurício', colorFor('Palmeiras')), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Yuri Alberto', fullName: 'Yuri Alberto Monteiro da Silva', position: 'FW', team: 'Corinthians', photoUrl: avatar('Yuri Alberto', colorFor('Corinthians')), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Talles Magno', fullName: 'Talles Magno Bailão', position: 'FW', team: 'Corinthians', photoUrl: avatar('Talles Magno', colorFor('Corinthians')), nationality: 'Brasil', shirtNumber: 23 },
-  { name: 'Lucas Moura', fullName: 'Lucas Rodrigues Moura da Silva', position: 'FW', team: 'São Paulo', photoUrl: wiki('Lucas_Moura_2023.jpg'), nationality: 'Brasil', shirtNumber: 7 },
-  { name: 'Calleri', fullName: 'Jonathan Calleri Sánchez', position: 'FW', team: 'São Paulo', photoUrl: avatar('Calleri', colorFor('São Paulo')), nationality: 'Argentina', shirtNumber: 9 },
-  { name: 'Luciano', fullName: 'Luciano da Silva Rocha', position: 'FW', team: 'São Paulo', photoUrl: avatar('Luciano', colorFor('São Paulo')), nationality: 'Brasil', shirtNumber: 10 },
-  { name: 'Paulinho', fullName: 'José Paulo Bezerra Maciel Júnior', position: 'FW', team: 'Atlético-MG', photoUrl: wiki('Paulinho_(footballer,_born_1988).jpg'), nationality: 'Brasil', shirtNumber: 8 },
-  { name: 'Hulk', fullName: 'Givanildo Vieira de Sousa', position: 'FW', team: 'Atlético-MG', photoUrl: wiki('Hulk_(footballer).jpg'), nationality: 'Brasil', shirtNumber: 7 },
-  { name: 'Deyverson', fullName: 'Deyverson Brum Silva Acosta', position: 'FW', team: 'Atlético-MG', photoUrl: avatar('Deyverson', colorFor('Atlético-MG')), nationality: 'Brasil', shirtNumber: 19 },
-  { name: 'Luiz Henrique', fullName: 'Luiz Henrique de Andrade', position: 'FW', team: 'Botafogo', photoUrl: avatar('Luiz Henrique', colorFor('Botafogo')), nationality: 'Brasil', shirtNumber: 11 },
-  { name: 'Igor Jesus', fullName: 'Igor Jesus Maciel da Cruz', position: 'FW', team: 'Botafogo', photoUrl: avatar('Igor Jesus', colorFor('Botafogo')), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Tiquinho Soares', fullName: 'Francisco das Chagas Soares dos Santos', position: 'FW', team: 'Botafogo', photoUrl: avatar('Tiquinho', colorFor('Botafogo')), nationality: 'Brasil', shirtNumber: 19 },
-  { name: 'Borré', fullName: 'Rafael Santos Borré Maury', position: 'FW', team: 'Internacional', photoUrl: avatar('Borré', colorFor('Internacional')), nationality: 'Colômbia', shirtNumber: 19 },
-  { name: 'Enner Valencia', fullName: 'Enner Remberto Valencia Lastra', position: 'FW', team: 'Internacional', photoUrl: avatar('Valencia', colorFor('Internacional')), nationality: 'Equador', shirtNumber: 9 },
-  { name: 'Soteldo', fullName: 'Yeferson Julio Soteldo Martínez', position: 'FW', team: 'Santos', photoUrl: avatar('Soteldo', colorFor('Santos')), nationality: 'Venezuela', shirtNumber: 10 },
-  { name: 'Guilherme', fullName: 'Guilherme da Silva Madalena', position: 'FW', team: 'Santos', photoUrl: avatar('Guilherme', colorFor('Santos')), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Payet', fullName: 'Dimitri Payet', position: 'FW', team: 'Vasco', photoUrl: avatar('Payet', colorFor('Vasco')), nationality: 'França', shirtNumber: 27 },
-  { name: 'Vegetti', fullName: 'Pablo Federico Vegetti Sayago', position: 'FW', team: 'Vasco', photoUrl: avatar('Vegetti', colorFor('Vasco')), nationality: 'Argentina', shirtNumber: 9 },
-  { name: 'Everaldo', fullName: 'Everaldo de Jesus Pereira', position: 'FW', team: 'Cruzeiro', photoUrl: avatar('Everaldo', colorFor('Cruzeiro')), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Gabriel Veron', fullName: 'Gabriel Veron Fernandes de Souza', position: 'FW', team: 'Cruzeiro', photoUrl: avatar('Veron', colorFor('Cruzeiro')), nationality: 'Brasil', shirtNumber: 11 },
-  { name: 'Cauly', fullName: 'Cauly Oliveira Souza', position: 'FW', team: 'Fortaleza', photoUrl: avatar('Cauly', colorFor('Fortaleza')), nationality: 'Brasil', shirtNumber: 10 },
-  { name: 'Moisés', fullName: 'Moisés Vieira da Veiga', position: 'FW', team: 'Fortaleza', photoUrl: avatar('Moisés', colorFor('Fortaleza')), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Everaldo', fullName: 'Everaldo Soares Ferreira', position: 'FW', team: 'Bahia', photoUrl: avatar('Everaldo', colorFor('Bahia')), nationality: 'Brasil', shirtNumber: 9 },
-  { name: 'Caio Paulista', fullName: 'Caio João Paulo da Silva', position: 'FW', team: 'Bahia', photoUrl: avatar('Caio Paulista', colorFor('Bahia')), nationality: 'Brasil', shirtNumber: 11 },
+  // ===== ATACANTES =====
+  mk('Neymar Jr', 'Neymar da Silva Santos Júnior', 'FW', 'Santos', wiki('Neymar_2022.jpg'), 'Brasil', 10, 85, 33, 'BR1', { pace: 82, shooting: 80, dribbling: 92, physical: 65 }),
+  mk('Vinicius Junior', 'Vinícius José Paixão de Oliveira Júnior', 'FW', 'Real Madrid', wiki('Vinícius_Júnior_2022.jpg'), 'Brasil', 7, 89, 25, 'TOP5', { pace: 90, shooting: 80, dribbling: 90, physical: 70 }),
+  mk('Rodrygo', 'Rodrygo Silva de Goes', 'FW', 'Real Madrid', wiki('Rodrygo_2022.jpg'), 'Brasil', 11, 84, 25, 'TOP5', { pace: 85, shooting: 78, dribbling: 86 }),
+  mk('Endrick', 'Endrick Felipe Moreira de Sousa', 'FW', 'Real Madrid', wiki('Endrick_2024.jpg'), 'Brasil', 16, 78, 19, 'TOP5', { pace: 82, shooting: 76, dribbling: 80 }),
+  mk('Raphinha', 'Raphael Dias Belloli', 'FW', 'Barcelona', wiki('Raphinha_2022.jpg'), 'Brasil', 22, 84, 28, 'TOP5', { pace: 85, shooting: 80, dribbling: 84 }),
+  mk('Antony', 'Antony Matheus dos Santos', 'FW', 'Manchester United', wiki('Antony_(footballer)_2022.jpg'), 'Brasil', 21, 79, 25, 'TOP5'),
+  mk('Gabriel Jesus', 'Gabriel Fernando de Jesus', 'FW', 'Arsenal', wiki('Gabriel_Jesus_2022.jpg'), 'Brasil', 9, 81, 28, 'TOP5'),
+  mk('Richarlison', 'Richarlison de Andrade', 'FW', 'Tottenham', wiki('Richarlison_2022.jpg'), 'Brasil', 9, 79, 28, 'TOP5'),
+  mk('Gabriel Martinelli', 'Gabriel Teodoro Martinelli Silva', 'FW', 'Arsenal', wiki('Gabriel_Martinelli_2022.jpg'), 'Brasil', 11, 81, 24, 'TOP5'),
+  mk('Pedro', 'Pedro Guilherme Abreu dos Santos', 'FW', 'Flamengo', wiki('Pedro_(footballer,_born_1997).jpg'), 'Brasil', 9, 80, 28, 'BR1', { pace: 75, shooting: 84, physical: 78 }),
+  mk('Bruno Henrique', 'Bruno Henrique Pinto', 'FW', 'Flamengo', wiki('Bruno_Henrique_2019.jpg'), 'Brasil', 27, 77, 35, 'BR1'),
+  mk('Plata', 'Gonzalo Adolfo Plata Cevallos', 'FW', 'Flamengo', avatar('Plata', colorFor('Flamengo')), 'Equador', 21, 76, 24, 'BR1'),
+  mk('Estêvão', 'Estêvão Willian Almeida de Oliveira Gonçalves', 'FW', 'Palmeiras', avatar('Estêvão', colorFor('Palmeiras')), 'Brasil', 41, 76, 18, 'BR1'),
+  mk('Flaco López', 'José Ignacio López Fernández', 'FW', 'Palmeiras', avatar('Flaco López', colorFor('Palmeiras')), 'Argentina', 19, 75, 24, 'BR1'),
+  mk('Yuri Alberto', 'Yuri Alberto Monteiro da Silva', 'FW', 'Corinthians', avatar('Yuri Alberto', colorFor('Corinthians')), 'Brasil', 9, 78, 24, 'BR1'),
+  mk('Talles Magno', 'Talles Magno Bailão', 'FW', 'Corinthians', avatar('Talles Magno', colorFor('Corinthians')), 'Brasil', 23, 73, 23, 'BR1'),
+  mk('Calleri', 'Jonathan Calleri Sánchez', 'FW', 'São Paulo', avatar('Calleri', colorFor('São Paulo')), 'Argentina', 9, 77, 31, 'BR1'),
+  mk('Paulinho', 'José Paulo Bezerra Maciel Júnior', 'FW', 'Atlético-MG', wiki('Paulinho_(footballer,_born_1988).jpg'), 'Brasil', 8, 75, 37, 'BR1'),
+  mk('Deyverson', 'Deyverson Brum Silva Acosta', 'FW', 'Atlético-MG', avatar('Deyverson', colorFor('Atlético-MG')), 'Brasil', 19, 74, 34, 'BR1'),
+  mk('Luiz Henrique', 'Luiz Henrique de Andrade', 'FW', 'Botafogo', avatar('Luiz Henrique', colorFor('Botafogo')), 'Brasil', 11, 77, 23, 'BR1'),
+  mk('Igor Jesus', 'Igor Jesus Maciel da Cruz', 'FW', 'Botafogo', avatar('Igor Jesus', colorFor('Botafogo')), 'Brasil', 9, 75, 24, 'BR1'),
+  mk('Tiquinho Soares', 'Francisco das Chagas Soares dos Santos', 'FW', 'Botafogo', avatar('Tiquinho', colorFor('Botafogo')), 'Brasil', 19, 75, 39, 'BR1'),
+  mk('Borré', 'Rafael Santos Borré Maury', 'FW', 'Internacional', avatar('Borré', colorFor('Internacional')), 'Colômbia', 19, 77, 30, 'BR1'),
+  mk('Enner Valencia', 'Enner Remberto Valencia Lastra', 'FW', 'Internacional', avatar('Valencia', colorFor('Internacional')), 'Equador', 9, 77, 36, 'BR1'),
+  mk('Soteldo', 'Yeferson Julio Soteldo Martínez', 'FW', 'Santos', avatar('Soteldo', colorFor('Santos')), 'Venezuela', 10, 76, 28, 'BR1'),
+  mk('Guilherme', 'Guilherme da Silva Madalena', 'FW', 'Santos', avatar('Guilherme', colorFor('Santos')), 'Brasil', 9, 73, 24, 'BR1'),
+  mk('Payet', 'Dimitri Payet', 'FW', 'Vasco', avatar('Payet', colorFor('Vasco')), 'França', 27, 76, 39, 'BR1'),
+  mk('Vegetti', 'Pablo Federico Vegetti Sayago', 'FW', 'Vasco', avatar('Vegetti', colorFor('Vasco')), 'Argentina', 9, 75, 36, 'BR1'),
+  mk('Everaldo', 'Everaldo Soares Ferreira', 'FW', 'Bahia', avatar('Everaldo', colorFor('Bahia')), 'Brasil', 9, 73, 31, 'BR1'),
+  mk('Caio Paulista', 'Caio João Paulo da Silva', 'FW', 'Bahia', avatar('Caio Paulista', colorFor('Bahia')), 'Brasil', 11, 74, 29, 'BR1'),
+  mk('Everaldo', 'Everaldo Marques da Silva', 'FW', 'Grêmio (1970)', avatar('Everaldo', colorFor('Grêmio')), 'Brasil', 6, 78, 28, 'BR1', {}, true),
+  mk('Cauly', 'Cauly Oliveira Souza', 'FW', 'Fortaleza', avatar('Cauly', colorFor('Fortaleza')), 'Brasil', 10, 76, 31, 'BR1'),
+  mk('Moisés', 'Moisés Vieira da Veiga', 'FW', 'Fortaleza', avatar('Moisés', colorFor('Fortaleza')), 'Brasil', 9, 74, 27, 'BR1'),
+  mk('Gabriel Veron', 'Gabriel Veron Fernandes de Souza', 'FW', 'Cruzeiro', avatar('Veron', colorFor('Cruzeiro')), 'Brasil', 11, 75, 22, 'BR1'),
+
+  // ===== LENDAS APOSENTADOS (Dream Team only) =====
+  mk('Pelé', 'Edson Arantes do Nascimento', 'FW', 'Santos (retro)', wiki('Pele_con_brasil_%28cropped%29.jpg'), 'Brasil', 10, 98, 82, 'BR1', { pace: 92, shooting: 95, dribbling: 96, physical: 75 }, true),
+  mk('Maradona', 'Diego Armando Maradona', 'FW', 'Napoli (retro)', wiki('Maradona-Mundial_86_con_la_copa.JPG'), 'Argentina', 10, 97, 60, 'TOP5', { pace: 88, shooting: 90, dribbling: 97, physical: 70 }, true),
+  mk('Cruyff', 'Hendrik Johannes Cruijff', 'FW', 'Barcelona (retro)', wiki('Johan_Cruyff_1974_cropped.jpg'), 'Holanda', 14, 95, 68, 'TOP5', { pace: 90, shooting: 88, dribbling: 95 }, true),
+  mk('Zidane', 'Zinedine Yazid Zidane', 'MF', 'Real Madrid (retro)', wiki('Zinedine_Zidane_2017.jpg'), 'França', 5, 95, 53, 'TOP5', { pace: 78, passing: 92, dribbling: 95 }, true),
+  mk('Ronaldo R9', 'Ronaldo Luís Nazário de Lima', 'FW', 'Real Madrid (retro)', wiki('Ronaldo_2018.jpg'), 'Brasil', 9, 96, 48, 'TOP5', { pace: 92, shooting: 95, dribbling: 95, physical: 80 }, true),
+  mk('Ronaldinho', 'Ronaldo de Assis Moreira', 'MF', 'Barcelona (retro)', wiki('Ronaldinho_2012.jpg'), 'Brasil', 10, 94, 45, 'TOP5', { pace: 84, shooting: 88, dribbling: 96 }, true),
+  mk('Rivaldo', 'Vitor Borba Ferreira', 'MF', 'Barcelona (retro)', wiki('Rivaldo_2018.jpg'), 'Brasil', 10, 91, 53, 'TOP5', { pace: 80, shooting: 90, dribbling: 90 }, true),
+  mk('Roberto Carlos', 'Roberto Carlos da Silva Rocha', 'DF', 'Real Madrid (retro)', wiki('Roberto_Carlos_2018.jpg'), 'Brasil', 6, 92, 52, 'TOP5', { pace: 92, shooting: 80, defending: 85, physical: 85 }, true),
+  mk('Cafu', 'Marcos Evangelista de Moraes', 'DF', 'AS Roma (retro)', wiki('Cafu_2022.jpg'), 'Brasil', 2, 91, 54, 'TOP5', { pace: 90, defending: 86, physical: 84 }, true),
+  mk('Beckenbauer', 'Franz Anton Beckenbauer', 'DF', 'Bayern Munich (retro)', wiki('Bundesliga_2016-_Franz_Beckenbauer_1.jpg'), 'Alemanha', 5, 93, 78, 'TOP5', { pace: 78, defending: 92, passing: 85 }, true),
+  mk('Yashin', 'Lev Ivanovich Yashin', 'GK', 'Dynamo Moscow (retro)', wiki('Lev_Yashin_1967.jpg'), 'Rússia', 1, 93, 95, 'OTHER', {}, true),
+  mk('Di Stéfano', 'Alfredo Stéfano Di Stéfano Laulhé', 'FW', 'Real Madrid (retro)', wiki('Alfredo_Di_Stefano_1959.jpg'), 'Argentina', 9, 95, 88, 'TOP5', { pace: 88, shooting: 92, dribbling: 92 }, true),
+  mk('Puskás', 'Ferenc Puskás Bíró', 'FW', 'Real Madrid (retro)', wiki('Puskas_1962.jpg'), 'Hungria', 10, 94, 79, 'TOP5', { pace: 80, shooting: 95, physical: 82 }, true),
+  mk('Garrincha', 'Manuel Francisco dos Santos', 'FW', 'Botafogo (retro)', wiki('Garrincha_no_Botafogo.jpg'), 'Brasil', 7, 92, 50, 'BR1', { pace: 95, dribbling: 96 }, true),
+  mk('Zico', 'Arthur Antunes Coimbra', 'MF', 'Flamengo (retro)', wiki('Zico_2015.jpg'), 'Brasil', 10, 92, 72, 'BR1', { pace: 80, shooting: 90, passing: 92, dribbling: 92 }, true),
+  mk('Romário', 'Romário de Souza Faria', 'FW', 'PSV (retro)', wiki('Romario_1994.jpg'), 'Brasil', 11, 92, 59, 'TOP5', { pace: 88, shooting: 95, dribbling: 90 }, true),
+  mk('Bobby Charlton', 'Sir Robert Charlton', 'MF', 'Manchester United (retro)', wiki('Bobby_Charlton_1966.jpg'), 'Inglaterra', 9, 91, 86, 'TOP5', { pace: 78, shooting: 88, passing: 90 }, true),
+  mk('Eusébio', 'Eusébio da Silva Ferreira', 'FW', 'Benfica (retro)', wiki('Eusebio_1965.jpg'), 'Portugal', 9, 92, 71, 'TOP10', { pace: 90, shooting: 93 }, true),
+  mk('Platini', 'Michel François Platini', 'MF', 'Juventus (retro)', wiki('Michel_Platini_1984.jpg'), 'França', 10, 91, 70, 'TOP5', { passing: 92, shooting: 88, dribbling: 88 }, true),
+  mk('Maldini', 'Paolo Cesare Maldini', 'DF', 'AC Milan (retro)', wiki('Paolo_Maldini_2007.jpg'), 'Itália', 3, 92, 56, 'TOP5', { pace: 80, defending: 93, physical: 85 }, true),
 ]
-
-// Total: ~95 jogadores cobrindo todos os clubes do Brasileirão

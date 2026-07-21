@@ -24,6 +24,8 @@ import {
   type SecretTeamId,
 } from '@/components/effects/EasterEggs'
 import { MatchLobby } from '@/components/match/MatchLobby'
+import { TeamRatingCard } from '@/components/football/TeamRatingCard'
+import { GameModeSelector } from '@/components/football/GameModeSelector'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { getFormation, type FieldPosition } from '@/lib/football/formations'
 import { toast } from 'sonner'
@@ -35,6 +37,7 @@ export function TeamBuilderApp() {
     formationId,
     starters,
     reserves,
+    gameMode,
     setFormation,
     setStarter,
     removeStarter,
@@ -44,6 +47,7 @@ export function TeamBuilderApp() {
     clearTeam,
     initStarters,
     loadFromObject,
+    setGameMode,
   } = useTeamStore()
 
   const formation = getFormation(formationId)
@@ -284,6 +288,16 @@ export function TeamBuilderApp() {
           />
         </motion.div>
 
+        {/* Game Mode Selector */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.15 }}
+          className="mb-6"
+        >
+          <GameModeSelector value={gameMode} onChange={setGameMode} />
+        </motion.div>
+
         {/* Grid principal */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <motion.div
@@ -316,6 +330,10 @@ export function TeamBuilderApp() {
               onSubstitute={handleSubstitute}
               onRemove={removeReserve}
             />
+            {/* Team Rating Card */}
+            <div className="mt-4">
+              <TeamRatingCard starters={starters} reserves={reserves} />
+            </div>
           </motion.div>
         </div>
 
@@ -357,6 +375,7 @@ export function TeamBuilderApp() {
         position={searchMode === 'starter' ? activePosition : null}
         selectedPlayerIds={selectedIds}
         onSelect={handlePlayerSelect}
+        gameMode={gameMode}
       />
       <SubstitutionDialog
         open={substOpen}

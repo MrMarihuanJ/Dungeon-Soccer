@@ -56,6 +56,17 @@ export function PositionBall({ position, player, onClick, onRemove }: Props) {
               className="object-cover"
               unoptimized
             />
+            {/* Overall badge estilo FIFA (canto superior esquerdo) */}
+            {player.overall && (
+              <span className={`absolute left-0 top-0 rounded-br-md px-1 text-[10px] font-black leading-tight text-white ${
+                player.overall >= 90 ? 'bg-gradient-to-br from-yellow-400 to-amber-600'
+                  : player.overall >= 84 ? 'bg-gradient-to-br from-purple-500 to-purple-700'
+                    : player.overall >= 75 ? 'bg-gradient-to-br from-yellow-500 to-yellow-700'
+                      : 'bg-gradient-to-br from-gray-500 to-gray-700'
+              }`}>
+                {player.overall}
+              </span>
+            )}
             {player.shirtNumber && (
               <span className="absolute bottom-0 right-0 rounded-tl-md bg-emerald-500 px-1.5 text-[10px] font-bold text-white">
                 {player.shirtNumber}

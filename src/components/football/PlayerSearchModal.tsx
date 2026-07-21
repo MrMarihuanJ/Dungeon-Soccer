@@ -34,6 +34,17 @@ interface ApiPlayer {
   nationality?: string | null
   shirtNumber?: number | null
   source?: 'thesportsdb' | 'wikipedia' | 'local'
+  overall?: number
+  age?: number
+  pace?: number
+  shooting?: number
+  passing?: number
+  dribbling?: number
+  defending?: number
+  physical?: number
+  leagueTier?: string
+  isRetired?: boolean
+  isInactive?: boolean
 }
 
 interface Props {
@@ -42,6 +53,7 @@ interface Props {
   position: FieldPosition | null
   selectedPlayerIds: string[] // IDs já selecionados (titulares + reservas)
   onSelect: (player: SelectedPlayer) => void
+  gameMode?: 'DREAM_TEAM' | 'WORLD_CUP'
 }
 
 export function PlayerSearchModal({
@@ -50,6 +62,7 @@ export function PlayerSearchModal({
   position,
   selectedPlayerIds,
   onSelect,
+  gameMode = 'DREAM_TEAM',
 }: Props) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<ApiPlayer[]>([])
@@ -73,6 +86,7 @@ export function PlayerSearchModal({
       try {
         const params = new URLSearchParams({ q, limit: '15' })
         if (targetPos) params.set('pos', targetPos)
+        if (gameMode) params.set('mode', gameMode)
         const res = await fetch(`/api/players/search?${params.toString()}`, {
           cache: 'no-store',
         })
@@ -87,7 +101,7 @@ export function PlayerSearchModal({
         setLoading(false)
       }
     },
-    [targetPos],
+    [targetPos, gameMode],
   )
 
   // Debounce
@@ -120,6 +134,18 @@ export function PlayerSearchModal({
       photoUrl: p.photoUrl,
       nationality: p.nationality,
       shirtNumber: p.shirtNumber,
+      overall: p.overall,
+      age: p.age,
+      pace: p.pace,
+      shooting: p.shooting,
+      passing: p.passing,
+      dribbling: p.dribbling,
+      defending: p.defending,
+      physical: p.physical,
+      leagueTier: p.leagueTier,
+      isRetired: p.isRetired,
+      isInactive: p.isInactive,
+      source: p.source,
     }
     onSelect(sel)
     onOpenChange(false)
@@ -231,10 +257,17 @@ export function PlayerSearchModal({
                   {results.map((p) => {
                     const isSelected = selectedPlayerIds.includes(p.id)
                     const sourceBadge = p.source === 'thesportsdb'
-                      ? { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700' }
+                      ? { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
                       : p.source === 'wikipedia'
-                        ? { label: 'Wikipedia', cls: 'bg-amber-100 text-amber-700' }
-                        : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700' }
+                        ? { label: 'Wikipedia', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
+                        : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+                    // Overall badge estilo FIFA
+                    const overall = p.overall ?? 0
+                    const overallTier = overall >= 90 ? 'bg-gradient-to-br from-yellow-400 to-amber-600 text-amber-900'
+                      : overall >= 84 ? 'bg-gradient-to-br from-purple-500 to-purple-700 text-white'
+                        : overall >= 75 ? 'bg-gradient-to-br from-yellow-500 to-yellow-700 text-white'
+                          : overall >= 68 ? 'bg-gradient-to-br from-gray-300 to-gray-500 text-gray-900'
+                            : 'bg-gradient-to-br from-orange-400 to-orange-700 text-white'
                     return (
                       <li key={p.id}>
                         <button
@@ -244,10 +277,10 @@ export function PlayerSearchModal({
                           className={`group flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors ${
                             isSelected
                               ? 'cursor-not-allowed opacity-50'
-                              : 'hover:bg-emerald-50'
+                              : 'hover:bg-emerald-50 dark:hover:bg-emerald-900/20'
                           }`}
                         >
-                          <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-emerald-200 bg-gray-100">
+                          <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-emerald-200 bg-gray-100 dark:border-emerald-700 dark:bg-gray-800">
                             <Image
                               src={p.photoUrl}
                               alt={p.name}
@@ -256,7 +289,6 @@ export function PlayerSearchModal({
                               className="object-cover"
                               unoptimized
                               onError={(e) => {
-                                // Fallback se a foto não carregar
                                 const target = e.currentTarget as HTMLImageElement
                                 target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(p.name)}&background=0d8a3f&color=fff&size=200&bold=true`
                               }}
@@ -264,23 +296,36 @@ export function PlayerSearchModal({
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <span className="truncate font-semibold text-gray-900">
+                              <span className="truncate font-semibold text-gray-900 dark:text-gray-100">
                                 {p.name}
                               </span>
                               {p.shirtNumber && (
-                                <span className="rounded bg-emerald-100 px-1 text-[10px] font-bold text-emerald-700">
+                                <span className="rounded bg-emerald-100 px-1 text-[10px] font-bold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
                                   #{p.shirtNumber}
+                                </span>
+                              )}
+                              {p.isRetired && (
+                                <span className="rounded bg-purple-100 px-1 text-[9px] font-bold text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
+                                  👑 LENDA
                                 </span>
                               )}
                               <span className={`rounded px-1 text-[9px] font-medium ${sourceBadge.cls}`}>
                                 {sourceBadge.label}
                               </span>
                             </div>
-                            <div className="truncate text-xs text-gray-500">
+                            <div className="truncate text-xs text-gray-500 dark:text-gray-400">
                               {p.fullName} · {p.team}
                               {p.nationality ? ` · ${p.nationality}` : ''}
+                              {p.age ? ` · ${p.age}a` : ''}
                             </div>
                           </div>
+                          {/* Overall badge estilo FIFA */}
+                          {overall > 0 && (
+                            <div className={`flex h-9 w-9 shrink-0 flex-col items-center justify-center rounded-lg ${overallTier}`}>
+                              <span className="text-sm font-black leading-none">{overall}</span>
+                              <span className="text-[7px] font-bold uppercase leading-none">OVR</span>
+                            </div>
+                          )}
                           <div className="shrink-0">
                             {isSelected ? (
                               <Badge variant="outline" className="text-[10px] text-gray-400">

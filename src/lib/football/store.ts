@@ -19,6 +19,19 @@ export interface SelectedPlayer {
   photoUrl: string    // URL da foto
   nationality?: string | null
   shirtNumber?: number | null
+  // Sistema de rating estilo FIFA
+  overall?: number
+  age?: number
+  pace?: number
+  shooting?: number
+  passing?: number
+  dribbling?: number
+  defending?: number
+  physical?: number
+  leagueTier?: string
+  isRetired?: boolean
+  isInactive?: boolean
+  source?: string
 }
 
 // Map: positionId -> SelectedPlayer | null
@@ -28,6 +41,7 @@ interface TeamState {
   formationId: string
   starters: StartersMap
   reserves: SelectedPlayer[] // lista simples de reservas
+  gameMode: 'DREAM_TEAM' | 'WORLD_CUP'
 
   setFormation: (id: string) => void
   setStarter: (positionId: string, player: SelectedPlayer) => void
@@ -41,6 +55,8 @@ interface TeamState {
   initStarters: () => void
   // Carrega time a partir de objeto (do servidor ou easter egg)
   loadFromObject: (team: { formation: string; starters: any; reserves: any }) => void
+  // Define o modo de jogo (Dream Team / World Cup)
+  setGameMode: (mode: 'DREAM_TEAM' | 'WORLD_CUP') => void
 }
 
 const buildEmptyStarters = (formationId: string): StartersMap => {
@@ -58,6 +74,7 @@ export const useTeamStore = create<TeamState>()(
       formationId: '4-3-3',
       starters: buildEmptyStarters('4-3-3'),
       reserves: [],
+      gameMode: 'DREAM_TEAM',
 
       setFormation: (id) =>
         set((state) => {
@@ -159,6 +176,28 @@ export const useTeamStore = create<TeamState>()(
           }
           const reservesList: SelectedPlayer[] = Array.isArray(team.reserves) ? team.reserves : []
           return { formationId: team.formation, starters: map, reserves: reservesList }
+        }),
+
+      setGameMode: (mode) =>
+        set((state) => {
+          // Ao trocar para World Cup, remove jogadores aposentados/inativos do time
+          if (mode === 'WORLD_CUP') {
+            const newStarters: StartersMap = {}
+            const removed: SelectedPlayer[] = []
+            Object.entries(state.starters).forEach(([posId, player]) => {
+              if (player && (player.isRetired || player.isInactive)) {
+                newStarters[posId] = null
+                removed.push(player)
+              } else {
+                newStarters[posId] = player
+              }
+            })
+            // Reservas aposentados também são removidos
+            const newReserves = state.reserves.filter((r) => !r.isRetired && !r.isInactive)
+            return { gameMode: mode, starters: newStarters, reserves: newReserves }
+          }
+          // Dream Team permite todos
+          return { gameMode: mode }
         }),
     }),
     {
