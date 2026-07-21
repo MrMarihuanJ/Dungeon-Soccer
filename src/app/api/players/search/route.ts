@@ -32,6 +32,18 @@ interface UnifiedPlayer {
   nationality?: string | null
   shirtNumber?: number | null
   source: 'thesportsdb' | 'wikipedia' | 'local'
+  // Rating estilo FIFA (apenas para jogadores locais; externos terão default)
+  overall?: number
+  age?: number
+  pace?: number
+  shooting?: number
+  passing?: number
+  dribbling?: number
+  defending?: number
+  physical?: number
+  leagueTier?: string
+  isRetired?: boolean
+  isInactive?: boolean
 }
 
 // -------- TheSportsDB --------
@@ -148,18 +160,20 @@ async function searchWikipedia(query: string, limit: number): Promise<UnifiedPla
 }
 
 // -------- Banco interno (último fallback) --------
-async function searchLocal(query: string, limit: number, pos?: string | null): Promise<UnifiedPlayer[]> {
+async function searchLocal(query: string, limit: number, pos?: string | null, mode?: string | null): Promise<UnifiedPlayer[]> {
   try {
     const where = {
       AND: [
         { OR: [{ name: { contains: query } }, { fullName: { contains: query } }] },
         ...(pos ? [{ position: pos }] : []),
+        // Filtro por modo de jogo
+        ...(mode === 'WORLD_CUP' ? [{ isRetired: false }, { isInactive: false }] : []),
       ],
     }
     const players = await db.player.findMany({
       where,
       take: limit,
-      orderBy: [{ name: 'asc' }],
+      orderBy: [{ overall: 'desc' }, { name: 'asc' }],
       select: {
         id: true,
         name: true,
@@ -169,6 +183,17 @@ async function searchLocal(query: string, limit: number, pos?: string | null): P
         photoUrl: true,
         nationality: true,
         shirtNumber: true,
+        overall: true,
+        age: true,
+        pace: true,
+        shooting: true,
+        passing: true,
+        dribbling: true,
+        defending: true,
+        physical: true,
+        leagueTier: true,
+        isRetired: true,
+        isInactive: true,
       },
     })
     return players.map((p) => ({
@@ -189,6 +214,7 @@ export async function GET(req: NextRequest) {
     const q = (searchParams.get('q') ?? '').trim().toLowerCase()
     const limit = Math.min(Number(searchParams.get('limit') ?? 15), 30)
     const pos = searchParams.get('pos') // GK | DF | MF | FW
+    const mode = searchParams.get('mode') // DREAM_TEAM | WORLD_CUP
 
     if (!q || q.length < 2) {
       return NextResponse.json({
@@ -202,13 +228,19 @@ export async function GET(req: NextRequest) {
     const [sdbResults, wikiResults, localResults] = await Promise.all([
       searchTheSportsDB(q, limit),
       searchWikipedia(q, Math.min(limit, 5)),
-      searchLocal(q, limit, pos),
+      searchLocal(q, limit, pos, mode),
     ])
+
+    // No modo WORLD_CUP, filtra resultados externos (sem isRetired detectável)
+    // TheSportsDB tem campo strStatus que diz "Retired" às vezes
+    const filteredSdb = mode === 'WORLD_CUP'
+      ? sdbResults.filter((p) => !p.team.toLowerCase().includes('retro') && !p.team.toLowerCase().includes('retired'))
+      : sdbResults
 
     // 2. Combina resultados, remove duplicados por nome
     const seen = new Set<string>()
     const all: UnifiedPlayer[] = []
-    for (const p of [...sdbResults, ...localResults, ...wikiResults]) {
+    for (const p of [...filteredSdb, ...localResults, ...wikiResults]) {
       const key = p.name.toLowerCase().trim()
       if (seen.has(key)) continue
       seen.add(key)

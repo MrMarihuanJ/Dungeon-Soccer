@@ -1,6 +1,5 @@
 // =====================================================================
 // API: /api/seed
-// --------------------------------------------------------------------
 // Popula o banco de dados na primeira execução (deploy na Vercel).
 // Idempotente: se já existem jogadores, não duplica.
 // =====================================================================
@@ -22,7 +21,6 @@ export async function POST() {
       })
     }
 
-    // Insere em lotes para evitar timeouts na Vercel
     const batch = PLAYERS_SEED.map((p) =>
       db.player.create({
         data: {
@@ -33,6 +31,17 @@ export async function POST() {
           photoUrl: p.photoUrl,
           nationality: p.nationality,
           shirtNumber: p.shirtNumber ?? null,
+          overall: p.overall,
+          age: p.age,
+          pace: p.pace ?? 70,
+          shooting: p.shooting ?? 70,
+          passing: p.passing ?? 70,
+          dribbling: p.dribbling ?? 70,
+          defending: p.defending ?? 70,
+          physical: p.physical ?? 70,
+          leagueTier: p.leagueTier ?? 'OTHER',
+          isRetired: p.isRetired ?? false,
+          isInactive: p.isInactive ?? false,
         },
       }),
     )
@@ -57,7 +66,8 @@ export async function POST() {
 export async function GET() {
   try {
     const total = await db.player.count()
-    return NextResponse.json({ ok: true, total })
+    const retired = await db.player.count({ where: { isRetired: true } })
+    return NextResponse.json({ ok: true, total, retired })
   } catch (err) {
     console.error('[API/seed GET] erro:', err)
     return NextResponse.json({ ok: false, total: 0, error: String(err) }, { status: 500 })
