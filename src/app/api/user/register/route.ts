@@ -11,9 +11,9 @@ import {
   validatePassword,
   signUserToken,
   buildUserCookieHeader,
-  findUserByEmailOrUsername,
 } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { Prisma } from '@prisma/client'
 
 export const dynamic = 'force-dynamic'
 
@@ -52,8 +52,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: passCheck.error }, { status: 400 })
     }
 
-    // Verifica duplicidade
-    const existing = await findUserByEmailOrUsername(identifierForDup(email, username))
+    // Verifica duplicidade de email E username
+    const existing = await db.user.findFirst({
+      where: {
+        OR: [{ email: email.toLowerCase() }, { username }],
+      },
+    })
     if (existing) {
       if (existing.email === email.toLowerCase()) {
         return NextResponse.json({ ok: false, error: 'Email já cadastrado.' }, { status: 409 })
@@ -86,13 +90,16 @@ export async function POST(req: NextRequest) {
     return res
   } catch (err) {
     console.error('[user/register] erro:', err)
+    // Trata erro de constraint única do Prisma (P2002)
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      const target = (err.meta?.target as string[])?.[0]
+      if (target === 'username') {
+        return NextResponse.json({ ok: false, error: 'Nome de usuário já existe.' }, { status: 409 })
+      }
+      if (target === 'email') {
+        return NextResponse.json({ ok: false, error: 'Email já cadastrado.' }, { status: 409 })
+      }
+    }
     return NextResponse.json({ ok: false, error: 'Erro interno no cadastro.' }, { status: 500 })
   }
-}
-
-// Helper: busca por email OU username (para detectar duplicidade)
-function identifierForDup(email: string, username: string): string {
-  // findUserByEmailOrUsername faz OR, basta passar um dos dois — passamos o email
-  // mas a função busca ambos. Aqui apenas retornamos o email.
-  return email
 }
