@@ -1,0 +1,149 @@
+// ====================================================================
+// Prisma Schema - Dungeon and Soccer
+// --------------------------------------------------------------------
+// Para desenvolvimento local, usamos SQLite (arquivo ./dev.db).
+// Para produção (Vercel + Neon), basta alterar o provider para
+// "postgresql" e definir DATABASE_URL com a connection string do Neon.
+// ====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // DEV:  provider = "sqlite"
+  // PROD: provider = "postgresql"
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===== Jogadores do banco local =====
+model Player {
+  id          String   @id @default(cuid())
+  name        String
+  fullName    String
+  position    String   // GK, DF, MF, FW
+  team        String
+  photoUrl    String?
+  nationality String?
+  shirtNumber Int?
+  value       Float?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+  @@index([team])
+  @@index([position])
+}
+
+// ===== Usuários (login individual) =====
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  username     String    @unique
+  passwordHash String
+  displayName  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  teams        UserTeam[]
+  wins         Int       @default(0)
+  losses       Int       @default(0)
+  draws        Int       @default(0)
+  xp           Int       @default(0)
+  // Relations de amizade
+  friendshipsA   Friendship[]   @relation("FriendA")
+  friendshipsB   Friendship[]   @relation("FriendB")
+  friendRequestsSent     FriendRequest[] @relation("FriendReqFrom")
+  friendRequestsReceived FriendRequest[] @relation("FriendReqTo")
+  // Relations de partidas
+  matchesHome  Match[]   @relation("MatchHome")
+  matchesAway  Match[]   @relation("MatchAway")
+}
+
+// ===== Times salvos por usuário =====
+model UserTeam {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String   @default("Meu Time")
+  formation String
+  starters  String   // JSON serializado
+  reserves  String   // JSON serializado
+  isPrimary Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Mantido para compatibilidade com versões anteriores
+model SavedTeam {
+  id        String   @id @default(cuid())
+  name      String
+  formation String
+  starters  String
+  reserves  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ===== Amizades =====
+model Friendship {
+  id          String   @id @default(cuid())
+  userAId     String
+  userBId     String
+  status      String   @default("ACCEPTED") // ACCEPTED | PENDING
+  createdAt   DateTime @default(now())
+  userA       User     @relation("FriendA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB       User     @relation("FriendB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userBId])
+}
+
+// ===== Convites de amizade pendentes =====
+model FriendRequest {
+  id         String   @id @default(cuid())
+  fromUserId String
+  toUserId   String
+  status     String   @default("PENDING") // PENDING | ACCEPTED | REJECTED
+  createdAt  DateTime @default(now())
+  fromUser   User     @relation("FriendReqFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser     User     @relation("FriendReqTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@index([toUserId])
+}
+
+// ===== Partidas RPG =====
+model Match {
+  id           String   @id @default(cuid())
+  // Estado: COIN_FLIP | IN_PROGRESS | FINISHED
+  status       String   @default("COIN_FLIP")
+  // "heads" (cara) ou "tails" (coroa)
+  coinResult   String?
+  // ID do usuário que começa com a bola
+  startingUserId String?
+  // IDs dos 2 jogadores
+  homeUserId   String
+  awayUserId   String
+  homeUser     User     @relation("MatchHome", fields: [homeUserId], references: [id], onDelete: Cascade)
+  awayUser     User     @relation("MatchAway", fields: [awayUserId], references: [id], onDelete: Cascade)
+  // Posse atual: HOME | AWAY
+  currentPossession String?
+  // Placar
+  homeScore    Int      @default(0)
+  awayScore    Int      @default(0)
+  // Jogador que ganhou (HOME | AWAY | DRAW)
+  winner       String?
+  // Quantos turnos cada um já jogou
+  turnCount    Int      @default(0)
+  // JSON: events do jogo [{ turn, possession, action, dice, success }]
+  eventsJson   String   @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([homeUserId])
+  @@index([awayUserId])
+}
