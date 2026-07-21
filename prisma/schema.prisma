@@ -1,9 +1,9 @@
 // ====================================================================
 // Prisma Schema - Dungeon and Soccer
 // --------------------------------------------------------------------
-// Para desenvolvimento local, usamos SQLite (arquivo ./dev.db).
-// Para produção (Vercel + Neon), basta alterar o provider para
-// "postgresql" e definir DATABASE_URL com a connection string do Neon.
+// Usa PostgreSQL em todos os ambientes (dev e prod).
+// - DEV: rode um Postgres local OU use um branch "dev" no Neon
+// - PROD: Neon Postgres (connection string em DATABASE_URL)
 // ====================================================================
 
 generator client {
@@ -11,9 +11,7 @@ generator client {
 }
 
 datasource db {
-  // DEV:  provider = "sqlite"
-  // PROD: provider = "postgresql"
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
