@@ -89,7 +89,7 @@ export function buildUserCookieHeader(token: string): string {
     `${USER_COOKIE_NAME}=${token}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Strict',
+    'SameSite=Lax',
     `Max-Age=${USER_TOKEN_TTL}`,
   ]
   if (process.env.NODE_ENV === 'production') parts.push('Secure')
@@ -97,7 +97,15 @@ export function buildUserCookieHeader(token: string): string {
 }
 
 export function buildClearUserCookieHeader(): string {
-  return `${USER_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`
+  const parts = [
+    `${USER_COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ]
+  if (process.env.NODE_ENV === 'production') parts.push('Secure')
+  return parts.join('; ')
 }
 
 export function readUserTokenFromRequest(req: Request): string | null {

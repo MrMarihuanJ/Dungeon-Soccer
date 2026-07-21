@@ -2,7 +2,7 @@
 // Auth Library - Sistema de autenticação simples com HMAC + cookie
 // --------------------------------------------------------------------
 // - Tokens são JSON assinados com HMAC-SHA256 (sem dependências extras)
-// - Cookie HTTP-only, SameSite=Strict, Secure em produção
+// - Cookie HTTP-only, SameSite=Lax, Secure em produção
 // - Credenciais admin via variáveis de ambiente
 // =====================================================================
 
@@ -82,7 +82,7 @@ export function buildCookieHeader(token: string): string {
     `${COOKIE_NAME}=${token}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Strict',
+    'SameSite=Lax',
     `Max-Age=${TOKEN_TTL_SECONDS}`,
   ]
   if (process.env.NODE_ENV === 'production') {
@@ -92,7 +92,17 @@ export function buildCookieHeader(token: string): string {
 }
 
 export function buildClearCookieHeader(): string {
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`
+  const parts = [
+    `${COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ]
+  if (process.env.NODE_ENV === 'production') {
+    parts.push('Secure')
+  }
+  return parts.join('; ')
 }
 
 // Helper para ler cookie do header Cookie em uma API route
