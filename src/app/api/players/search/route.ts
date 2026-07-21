@@ -164,7 +164,11 @@ async function searchLocal(query: string, limit: number, pos?: string | null, mo
   try {
     const where = {
       AND: [
-        { OR: [{ name: { contains: query } }, { fullName: { contains: query } }] },
+        { OR: [
+          { name: { contains: query, mode: 'insensitive' as const } },
+          { fullName: { contains: query, mode: 'insensitive' as const } },
+          { team: { contains: query, mode: 'insensitive' as const } },
+        ] },
         ...(pos ? [{ position: pos }] : []),
         // Filtro por modo de jogo
         ...(mode === 'WORLD_CUP' ? [{ isRetired: false }, { isInactive: false }] : []),
