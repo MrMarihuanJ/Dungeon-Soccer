@@ -28,12 +28,26 @@ model Player {
   nationality String?
   shirtNumber Int?
   value       Float?
+  // ===== Sistema de rating estilo FIFA =====
+  overall     Int      @default(75)  // Overall rating 0-99
+  age         Int      @default(25)  // Idade
+  pace        Int      @default(70)  // Velocidade
+  shooting    Int      @default(70)  // Finalização
+  passing     Int      @default(70)  // Passe
+  dribbling   Int      @default(70)  // Drible
+  defending   Int      @default(70)  // Defesa
+  physical    Int      @default(70)  // Físico
+  leagueTier  String   @default("BR1") // Tier da liga: BR1, TOP5, TOP10, TOP20, OTHER (ver player-rating.ts)
+  isRetired   Boolean  @default(false) // true se jogador está aposentado/falecido (Dream Team only)
+  isInactive  Boolean  @default(false) // true se jogador está sem clube/sem atividade recente
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([name])
   @@index([team])
   @@index([position])
+  @@index([overall])
+  @@index([isRetired])
 }
 
 // ===== Usuários (login individual) =====
@@ -121,6 +135,8 @@ model Match {
   id           String   @id @default(cuid())
   // Estado: COIN_FLIP | IN_PROGRESS | FINISHED
   status       String   @default("COIN_FLIP")
+  // Modo: DREAM_TEAM | WORLD_CUP
+  mode         String   @default("DREAM_TEAM")
   // "heads" (cara) ou "tails" (coroa)
   coinResult   String?
   // ID do usuário que começa com a bola
@@ -141,6 +157,9 @@ model Match {
   turnCount    Int      @default(0)
   // JSON: events do jogo [{ turn, possession, action, dice, success }]
   eventsJson   String   @default("[]")
+  // Ratings dos times no início da partida (para histórico)
+  homeTeamRating Int?
+  awayTeamRating Int?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

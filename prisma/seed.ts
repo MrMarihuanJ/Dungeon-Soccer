@@ -1,6 +1,5 @@
 // =====================================================================
-// Script de Seed - Popula o banco com jogadores
-// --------------------------------------------------------------------
+// Script de Seed - Popula o banco com jogadores + ratings
 // Uso: bun run db:seed
 // =====================================================================
 
@@ -12,11 +11,9 @@ const prisma = new PrismaClient()
 async function main() {
   console.log('🌱 Iniciando seed do banco de dados...')
 
-  // Limpa jogadores existentes (cuidado em produção!)
   await prisma.player.deleteMany({})
   console.log('🧹 Tabela de jogadores limpa.')
 
-  // Insere jogadores
   for (const p of PLAYERS_SEED) {
     await prisma.player.create({
       data: {
@@ -27,12 +24,24 @@ async function main() {
         photoUrl: p.photoUrl,
         nationality: p.nationality,
         shirtNumber: p.shirtNumber ?? null,
+        overall: p.overall,
+        age: p.age,
+        pace: p.pace ?? 70,
+        shooting: p.shooting ?? 70,
+        passing: p.passing ?? 70,
+        dribbling: p.dribbling ?? 70,
+        defending: p.defending ?? 70,
+        physical: p.physical ?? 70,
+        leagueTier: p.leagueTier ?? 'OTHER',
+        isRetired: p.isRetired ?? false,
+        isInactive: p.isInactive ?? false,
       },
     })
   }
 
   const total = await prisma.player.count()
-  console.log(`✅ Seed concluído! ${total} jogadores inseridos.`)
+  const retired = await prisma.player.count({ where: { isRetired: true } })
+  console.log(`✅ Seed concluído! ${total} jogadores inseridos (${retired} lendas aposentados).`)
 }
 
 main()
