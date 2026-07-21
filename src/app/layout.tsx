@@ -33,8 +33,9 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Dungeon and Soccer" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "https://d31zra5bs5df64.cloudfront.net/prod/3EtgiNCWS6G4PfqToisDBrrJRA3/images/gen_3Goub46NHJ9CW7kz3WieKmAxptg.png?Expires=1784654705&Key-Pair-Id=K2FT0I8VPJSP5H&Signature=PpOraPD5PKth7bllEOGECcOAttGJrUZVduhvimwOrCb0J7joE62E0j0vTRwbCSEpQ9Pb7CvSjBWiDYSXNMhZ-1~mD8T6-96-N9mWoDVLvJGDrlZQcejkwoN9CH3bjeZAfSXB8W4aRdHfkZeFjRs3q2geaq0Mrn8MuY4ila9oWOptnhwA5jemareT8R5wHoUmBRA8Id8eSzgRgQ4CoizjX5rReK3hejxw2URtJe6Fq4ayvCDNlSqJEuWGVqa850~5AaEu3mR2Ff7LVVUuAR7TG6xENuBpZZ3-UpdLrAlURcvKsg8Gwb~oJiIkOqiTt9S9WLYsTMIqFiMWzzDEp5laoQ__",
   },
+
   openGraph: {
     title: "Dungeon and Soccer · Monte seu Time dos Sonhos",
     description:
