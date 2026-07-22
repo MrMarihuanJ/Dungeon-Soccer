@@ -18,17 +18,23 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Swords, Trophy, ArrowLeft, Coins, Play, Loader2, History, ChevronRight,
+  AlertTriangle, Users,
 } from 'lucide-react'
 import { CoinFlip } from './CoinFlip'
 import { DiceRoll } from './DiceRoll'
 import { ActionCard } from './ActionCard'
+import { SubstitutionModal } from './SubstitutionModal'
+import { VARReview } from './VARReview'
+import { FreeKickDialog } from './FreeKickDialog'
 import {
   sampleActions, sampleMixedActions, CATEGORY_META,
   type FootballAction,
 } from '@/lib/dnd-actions'
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
+  type PenaltyEvent, type TeamMatchState,
 } from '@/lib/match-engine'
+import type { SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
 
 interface Player {
@@ -50,7 +56,7 @@ interface Props {
   onExit: () => void
 }
 
-type Phase = 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED'
+type Phase = 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION'
 
 export function MatchArena({
   matchId, homeUser, awayUser, currentUserId, initialState, onExit,
@@ -69,6 +75,8 @@ export function MatchArena({
     maxTurns: 24,
     events: [],
     winner: null,
+    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
   })
 
   const [phase, setPhase] = useState<Phase>(
@@ -86,6 +94,19 @@ export function MatchArena({
   const [availableActions, setAvailableActions] = useState<FootballAction[]>([])
   const [processing, setProcessing] = useState(false)
   const [turn, setTurn] = useState(1)
+
+  // New: penalty/substitution/VAR/freekick states
+  const [currentPenalty, setCurrentPenalty] = useState<PenaltyEvent | null>(null)
+  const [varOpen, setVarOpen] = useState(false)
+  const [varEventDesc, setVarEventDesc] = useState('')
+  const [freeKickOpen, setFreeKickOpen] = useState(false)
+  const [freeKickPossession, setFreeKickPossession] = useState<Possession>('HOME')
+  const [subOpen, setSubOpen] = useState(false)
+  const [subIsForced, setSubIsForced] = useState(false)
+  const [subInjuredPlayer, setSubInjuredPlayer] = useState<SelectedPlayer | null>(null)
+  const [myReserves, setMyReserves] = useState<SelectedPlayer[]>([])
+  const [myStarters, setMyStarters] = useState<SelectedPlayer[]>([])
+  const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
 
   const isHome = currentUserId === homeUser.id
   const mySide: Possession = isHome ? 'HOME' : 'AWAY'
@@ -192,32 +213,171 @@ export function MatchArena({
           toast.error('💀 CRITICAL FAIL! Falha automática!')
         }
 
-        // Após 2s, processa próximo turno
-        setTimeout(() => {
-          if (data.newState.status === 'FINISHED') {
-            setPhase('FINISHED')
-          } else {
-            const stillMyTurn = data.newState.currentPossession === mySide
-            setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-            if (stillMyTurn) {
-              // Próximo turno do mesmo jogador: sorteia 5 novas ações
-              drawMixedActions()
-              setTurn((t) => t + 1)
-            } else {
-              // Posse passou pro adversário
-              setAvailableActions([])
-              // Simula jogada do adversário após 1.5s
-              setTimeout(() => simulateOpponent(), 1500)
-            }
+        // Handle penalty events
+        if (data.event.penaltyEvent) {
+          const pe = data.event.penaltyEvent
+          setCurrentPenalty(pe)
+
+          // Show penalty toast
+          const penaltyEmojis: Record<string, string> = {
+            FOUL: '🟨', OFFSIDE: '🚫', CORNER: '🚩', BALL_OUT: '📤',
+            YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
+            PENALTY_KICK: '⚪', VAR_REVIEW: '📺',
           }
-          setProcessing(false)
-        }, 2200)
+          toast(`${penaltyEmojis[pe.type] ?? '⚠️'} ${pe.description}`, {
+            duration: 4000,
+            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
+          })
+
+          // Process penalty flow after showing the dice result
+          setTimeout(() => {
+            handlePenaltyFlow(pe)
+          }, 2500)
+          return
+        }
+
+        // No penalty: normal flow
+        proceedToNextTurn(data)
+        setProcessing(false)
       } catch {
         toast.error('Erro de rede.')
         setDiceRolling(false)
         setProcessing(false)
       }
     }, 1800)
+  }
+
+  // ===== Handle penalty event flow =====
+  const handlePenaltyFlow = (pe: PenaltyEvent) => {
+    // 1. VAR review (if required)
+    if (pe.requiresVAR) {
+      setVarEventDesc(pe.description)
+      setVarOpen(true)
+      setPendingPenalty(pe)
+      return // VAR will call back, then we continue
+    }
+    processPenaltyAfterVAR(pe)
+  }
+
+  const processPenaltyAfterVAR = (pe: PenaltyEvent) => {
+    // 2. Injury → substitution needed
+    if (pe.type === 'INJURY' && pe.requiresSubstitution) {
+      setSubIsForced(true)
+      // Create a placeholder injured player from the ID
+      const injPlayer: SelectedPlayer = pe.injuredPlayerId
+        ? { id: pe.injuredPlayerId, name: 'Jogador Lesionado', fullName: 'Jogador Lesionado', team: '', position: 'MF', photoUrl: '' }
+        : null
+      setSubInjuredPlayer(injPlayer)
+      setSubOpen(true)
+      return
+    }
+    // 3. Free kick needed
+    if (pe.requiresFreeKick || pe.type === 'FOUL') {
+      setFreeKickPossession(pe.favoredPossession)
+      setFreeKickOpen(true)
+      return
+    }
+    // 4. Penalty kick → also goes to free kick flow with special context
+    if (pe.type === 'PENALTY_KICK') {
+      setFreeKickPossession(pe.favoredPossession)
+      setFreeKickOpen(true)
+      return
+    }
+    // 5. No special flow needed (offside, corner, ball_out, cards without sub)
+    finishPenaltyAndContinue()
+  }
+
+  const finishPenaltyAndContinue = () => {
+    setCurrentPenalty(null)
+    setPendingPenalty(null)
+    if (state.status === 'FINISHED') {
+      setPhase('FINISHED')
+    } else {
+      const stillMyTurn = state.currentPossession === mySide
+      setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+      if (stillMyTurn) {
+        drawMixedActions()
+        setTurn((t) => t + 1)
+      } else {
+        setAvailableActions([])
+        setTimeout(() => simulateOpponent(), 1500)
+      }
+    }
+    setProcessing(false)
+  }
+
+  // VAR decision callback
+  const handleVARDecision = (decision: 'CONFIRMED' | 'OVERTURNED') => {
+    setVarOpen(false)
+    toast(decision === 'CONFIRMED' ? '📺 VAR confirmou a decisão!' : '📺 VAR inverteu a decisão!', {
+      duration: 3000,
+    })
+    if (pendingPenalty) {
+      if (decision === 'OVERTURNED') {
+        // Overturned: skip the penalty (e.g., no foul, no card)
+        finishPenaltyAndContinue()
+      } else {
+        processPenaltyAfterVAR(pendingPenalty)
+      }
+    } else {
+      finishPenaltyAndContinue()
+    }
+  }
+
+  // Free kick play callback
+  const handleFreeKickPlay = async (kickerId: string, action: FootballAction) => {
+    setFreeKickOpen(false)
+    // Process the free kick as a normal action
+    await handleSelectAction(action)
+  }
+
+  // Substitution callback
+  const handleSubstitution = (outPlayerId: string, inPlayerId: string) => {
+    setSubOpen(false)
+    const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+    const updatedTeamState: TeamMatchState = {
+      ...myTeamState,
+      substitutionsUsed: myTeamState.substitutionsUsed + 1,
+      injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
+    }
+    setState((s) => ({
+      ...s,
+      homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
+      awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
+    }))
+    toast.success('✅ Substituição realizada!')
+    finishPenaltyAndContinue()
+  }
+
+  // Continue after penalty flow (shared helper)
+  const proceedToNextTurn = (data: any) => {
+    setTimeout(() => {
+      if (data.newState.status === 'FINISHED') {
+        setPhase('FINISHED')
+      } else {
+        const stillMyTurn = data.newState.currentPossession === mySide
+        setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+        if (stillMyTurn) {
+          drawMixedActions()
+          setTurn((t) => t + 1)
+        } else {
+          setAvailableActions([])
+          setTimeout(() => simulateOpponent(), 1500)
+        }
+      }
+    }, 2200)
+  }
+
+  // ===== Voluntary substitution (player can request anytime) =====
+  const handleVoluntarySub = () => {
+    const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+    if (myTeamState.substitutionsUsed >= myTeamState.maxSubstitutions) {
+      toast.error('Limite de 5 substituições atingido!')
+      return
+    }
+    setSubIsForced(false)
+    setSubInjuredPlayer(null)
+    setSubOpen(true)
   }
 
   // ===== Simula jogada do adversário (IA simples) =====
@@ -263,6 +423,30 @@ export function MatchArena({
           toast.success(`⚽ GOOOOL do ${scorer}!`, { duration: 4000 })
         }
 
+        // Handle penalty for opponent too
+        if (data.event.penaltyEvent) {
+          const pe = data.event.penaltyEvent
+          const penaltyEmojis: Record<string, string> = {
+            FOUL: '🟨', OFFSIDE: '🚫', CORNER: '🚩', BALL_OUT: '📤',
+            YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
+            PENALTY_KICK: '⚪', VAR_REVIEW: '📺',
+          }
+          toast(`${penaltyEmojis[pe.type] ?? '⚠️'} ${pe.description}`, {
+            duration: 4000,
+            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
+          })
+          // For opponent, auto-process penalties (no UI)
+          if (pe.type === 'RED_CARD') {
+            setState((s) => ({
+              ...s,
+              awayTeamState: {
+                ...s.awayTeamState,
+                redCards: s.awayTeamState.redCards + 1,
+              },
+            }))
+          }
+        }
+
         setTimeout(() => {
           if (data.newState.status === 'FINISHED') {
             setPhase('FINISHED')
@@ -306,6 +490,16 @@ export function MatchArena({
             <span className="font-bold">Partida RPG</span>
             <Badge variant="outline" className="border-emerald-700 text-emerald-300">
               Turno {turn} / {state.maxTurns}
+            </Badge>
+            {/* Match stats badges */}
+            <Badge variant="outline" className="border-yellow-700 text-yellow-300 text-[10px]">
+              🟡 {state.homeTeamState.yellowCards + state.awayTeamState.yellowCards}
+            </Badge>
+            <Badge variant="outline" className="border-red-700 text-red-300 text-[10px]">
+              🔴 {state.homeTeamState.redCards + state.awayTeamState.redCards}
+            </Badge>
+            <Badge variant="outline" className="border-emerald-700 text-emerald-300 text-[10px]">
+              🔄 {isHome ? state.homeTeamState.substitutionsUsed : state.awayTeamState.substitutionsUsed}/5
             </Badge>
           </div>
         </div>
@@ -468,14 +662,26 @@ export function MatchArena({
             {phase === 'PLAYER_TURN' && !processing && availableActions.length > 0 && (
               <Card className="border-emerald-500/30 bg-gray-900/60">
                 <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-emerald-400">
-                    <Swords className="h-5 w-5" />
-                    {turn === 1 ? 'Escolha sua saída de bola' : 'Escolha sua próxima jogada'}
-                  </CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2 text-emerald-400">
+                      <Swords className="h-5 w-5" />
+                      {turn === 1 ? 'Escolha sua saída de bola' : 'Escolha sua próxima jogada'}
+                    </CardTitle>
+                    {/* Voluntary sub button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleVoluntarySub}
+                      className="border-emerald-700 text-emerald-300 text-xs hover:bg-emerald-900/30"
+                    >
+                      <Users className="h-3 w-3" />
+                      Substituir
+                    </Button>
+                  </div>
                   <p className="text-xs text-gray-400">
                     {turn === 1
                       ? '3 opções de saída de bola disponíveis.'
-                      : '5 estratégias sorteadas das 100+ disponíveis. Clique para jogar o dado!'}
+                      : '5 estratégias sorteadas das 139+ disponíveis. Clique para jogar o dado!'}
                   </p>
                 </CardHeader>
                 <CardContent>
@@ -492,7 +698,7 @@ export function MatchArena({
                   </div>
                 </CardContent>
               </Card>
-            )}
+            )
 
             {/* Loading do oponente */}
             {phase === 'OPPONENT_TURN' && (
@@ -568,8 +774,27 @@ export function MatchArena({
                           🎲{e.roll.dice}+{e.roll.bonus}={e.roll.total}
                         </span>
                         {e.isGoal && <span className="text-amber-400">⚽ GOL!</span>}
-                        {!e.isGoal && e.roll.success && <span className="text-emerald-400">✓</span>}
-                        {!e.isGoal && !e.roll.success && <span className="text-red-400">✗</span>}
+                        {e.penaltyEvent && (
+                          <span className={
+                            e.penaltyEvent.type === 'RED_CARD' ? 'text-red-400' :
+                            e.penaltyEvent.type === 'YELLOW_CARD' ? 'text-yellow-400' :
+                            e.penaltyEvent.type === 'INJURY' ? 'text-orange-400' :
+                            e.penaltyEvent.type === 'PENALTY_KICK' ? 'text-white' :
+                            'text-gray-400'
+                          }>
+                            {e.penaltyEvent.type === 'FOUL' && '🟨'}
+                            {e.penaltyEvent.type === 'OFFSIDE' && '🚫'}
+                            {e.penaltyEvent.type === 'YELLOW_CARD' && '🟡'}
+                            {e.penaltyEvent.type === 'RED_CARD' && '🔴'}
+                            {e.penaltyEvent.type === 'INJURY' && '🏥'}
+                            {e.penaltyEvent.type === 'PENALTY_KICK' && '⚪'}
+                            {e.penaltyEvent.type === 'VAR_REVIEW' && '📺'}
+                            {e.penaltyEvent.type === 'CORNER' && '🚩'}
+                            {e.penaltyEvent.type === 'BALL_OUT' && '📤'}
+                          </span>
+                        )}
+                        {!e.isGoal && !e.penaltyEvent && e.roll.success && <span className="text-emerald-400">✓</span>}
+                        {!e.isGoal && !e.penaltyEvent && !e.roll.success && <span className="text-red-400">✗</span>}
                       </li>
                     )
                   })}
@@ -579,6 +804,33 @@ export function MatchArena({
           </Card>
         )}
       </main>
+
+      {/* ===== MODALS: VAR, Substitution, Free Kick ===== */}
+      <VARReview
+        open={varOpen}
+        onClose={handleVARDecision}
+        originalEvent={varEventDesc}
+      />
+
+      <SubstitutionModal
+        open={subOpen}
+        onClose={() => { setSubOpen(false); finishPenaltyAndContinue() }}
+        onConfirm={handleSubstitution}
+        injuredPlayer={subInjuredPlayer}
+        reserves={myReserves}
+        starters={myStarters}
+        substitutionsUsed={isHome ? state.homeTeamState.substitutionsUsed : state.awayTeamState.substitutionsUsed}
+        maxSubstitutions={5}
+        isForced={subIsForced}
+      />
+
+      <FreeKickDialog
+        open={freeKickOpen}
+        onClose={() => { setFreeKickOpen(false); finishPenaltyAndContinue() }}
+        onPlayFreeKick={handleFreeKickPlay}
+        fieldPlayers={myStarters}
+        possession={freeKickPossession}
+      />
     </div>
   )
 }
