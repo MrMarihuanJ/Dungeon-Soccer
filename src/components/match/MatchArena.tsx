@@ -166,8 +166,9 @@ export function MatchArena({
         }
         setTurn(1)
       }, 2600)
-    } catch {
-      toast.error('Erro de rede.')
+    } catch (err) {
+      console.error('[MatchArena] coin flip error:', err)
+      toast.error('Erro de conexão ao lançar moeda. Verifique se você está logado.')
       setCoinFlipping(false)
     }
   }
@@ -249,8 +250,9 @@ export function MatchArena({
         // No penalty: normal flow
         proceedToNextTurn(data)
         setProcessing(false)
-      } catch {
-        toast.error('Erro de rede.')
+      } catch (err) {
+        console.error('[MatchArena] action error:', err)
+        toast.error('Erro de conexão. Verifique se você está logado.')
         setDiceRolling(false)
         setProcessing(false)
       }
@@ -483,7 +485,8 @@ export function MatchArena({
           }
           setProcessing(false)
         }, 2200)
-      } catch {
+      } catch (err) {
+        console.error('[MatchArena] opponent action error:', err)
         setDiceRolling(false)
       }
     }, 1800)

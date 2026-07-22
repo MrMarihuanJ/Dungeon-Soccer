@@ -50,12 +50,19 @@ export function FriendsPanel({ onChallenge }: Props) {
         fetch('/api/user/friends/list', { cache: 'no-store' }),
         fetch('/api/user/friends/requests', { cache: 'no-store' }),
       ])
+      if (!fr.ok || !rq.ok) {
+        if (fr.status === 401 || rq.status === 401) {
+          toast.error('Sessão expirada. Faça login novamente.')
+        }
+        return
+      }
       const frData = await fr.json()
       const rqData = await rq.json()
       if (frData.ok) setFriends(frData.friends)
       if (rqData.ok) setRequests(rqData.requests)
-    } catch {
-      toast.error('Erro ao carregar amigos.')
+    } catch (err) {
+      console.error('[FriendsPanel] load error:', err)
+      toast.error('Erro ao carregar amigos. Verifique sua conexão.')
     } finally {
       setLoading(false)
     }

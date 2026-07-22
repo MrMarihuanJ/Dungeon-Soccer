@@ -51,7 +51,13 @@ export function MatchLobby({ currentUser, onExit }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ opponentId: friend.id }),
       })
-      const data = await res.json()
+      let data: any
+      try {
+        data = await res.json()
+      } catch {
+        toast.error(`Erro no servidor (${res.status}). Tente novamente.`)
+        return
+      }
       if (!data.ok) {
         toast.error(data.error || 'Erro ao criar partida.')
         return
@@ -60,8 +66,9 @@ export function MatchLobby({ currentUser, onExit }: Props) {
       setOpponent(friend)
       setState('match')
       toast.success(`Partida contra ${friend.username} iniciada!`)
-    } catch {
-      toast.error('Erro de rede.')
+    } catch (err) {
+      console.error('[MatchLobby] challenge error:', err)
+      toast.error('Erro de conexão. Verifique se você está logado e tente novamente.')
     } finally {
       setCreating(false)
     }
