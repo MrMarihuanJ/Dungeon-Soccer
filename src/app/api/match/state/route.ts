@@ -3,12 +3,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import type { TeamMatchState } from '@/lib/match-engine'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
+
+  await ensureDbSync()
 
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')

@@ -18,12 +18,15 @@ import {
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
 import { Prisma } from '@prisma/client'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
+
+  await ensureDbSync()
 
   const body = await req.json().catch(() => ({}))
   const matchId = String(body.matchId ?? '')
