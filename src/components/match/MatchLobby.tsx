@@ -1,17 +1,18 @@
 'use client'
 
 // =====================================================================
-// MatchLobby - Tela inicial do modo RPG: escolhe amigo para desafiar
+// MatchLobby - Tela inicial do modo RPG: escolhe modo e amigo
 // =====================================================================
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { ArrowLeft, Swords, BookOpen, Trophy, Dice5, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, Swords, BookOpen, Trophy, Dice5, AlertTriangle, Clock, Zap, Medal } from 'lucide-react'
 import { FriendsPanel } from './FriendsPanel'
 import { MatchArena } from './MatchArena'
 import { toast } from 'sonner'
+import { GAME_MODE_CONFIG, type GameMode } from '@/lib/match-engine'
 
 interface Friend {
   id: string
@@ -43,6 +44,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
   const [opponent, setOpponent] = useState<Friend | null>(null)
   const [creating, setCreating] = useState(false)
   const [lastError, setLastError] = useState<{ error: string; detail?: string } | null>(null)
+  const [selectedGameMode, setSelectedGameMode] = useState<GameMode>('QUICK_MATCH')
 
   const handleChallenge = async (friend: Friend) => {
     setCreating(true)
@@ -51,7 +53,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
       const res = await fetch('/api/match/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opponentId: friend.id }),
+        body: JSON.stringify({ opponentId: friend.id, gameMode: selectedGameMode }),
       })
       let data: any
       try {
@@ -98,6 +100,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
           displayName: opponent.displayName,
         }}
         currentUserId={currentUser.id}
+        gameMode={selectedGameMode}
         onExit={() => {
           setState('friends')
           setMatchId(null)
@@ -156,11 +159,6 @@ export function MatchLobby({ currentUser, onExit }: Props) {
                 {lastError.detail && (
                   <p className="mt-1 text-xs text-amber-200/60 font-mono break-all">{lastError.detail}</p>
                 )}
-                {(lastError.error.includes('banco') || lastError.error.includes('SQL') || lastError.error.includes('tabela') || lastError.error.includes('coluna') || lastError.error.includes('setup')) && (
-                  <p className="mt-2 text-xs text-gray-400">
-                    Execute o arquivo <code className="rounded bg-gray-800 px-1 text-amber-300">sql-setup-complete.sql</code> no Neon Console (SQL Editor) para corrigir.
-                  </p>
-                )}
               </div>
               <Button
                 variant="ghost"
@@ -173,6 +171,78 @@ export function MatchLobby({ currentUser, onExit }: Props) {
             </div>
           </motion.div>
         )}
+
+        {/* ===== Seleção de Modo de Jogo ===== */}
+        <motion.div
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-6"
+        >
+          <h2 className="mb-3 text-center text-lg font-bold text-gray-200">
+            <Zap className="mr-2 inline h-5 w-5 text-amber-400" />
+            Escolha o Modo de Jogo
+          </h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {(['QUICK_MATCH', 'TIMED_10', 'FULL_90'] as GameMode[]).map((mode) => {
+              const config = GAME_MODE_CONFIG[mode]
+              const isSelected = selectedGameMode === mode
+              return (
+                <motion.button
+                  key={mode}
+                  onClick={() => setSelectedGameMode(mode)}
+                  className={`relative overflow-hidden rounded-xl border-2 p-4 text-left transition-all ${
+                    isSelected
+                      ? 'border-amber-400 bg-amber-950/30 shadow-lg shadow-amber-500/10'
+                      : 'border-gray-700 bg-gray-900/40 hover:border-gray-500 hover:bg-gray-900/60'
+                  }`}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  {isSelected && (
+                    <motion.div
+                      layoutId="gameModeIndicator"
+                      className="absolute inset-0 bg-amber-400/5"
+                      transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                    />
+                  )}
+                  <div className="relative z-10">
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="text-2xl">{config.emoji}</span>
+                      <span className={`font-bold ${isSelected ? 'text-amber-300' : 'text-gray-300'}`}>
+                        {config.label}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400 leading-relaxed">
+                      {config.description}
+                    </p>
+                    <div className="mt-3 flex items-center gap-3 text-[10px]">
+                      <span className="flex items-center gap-1 text-emerald-400">
+                        <Medal className="h-3 w-3" />
+                        +{config.xpWin} XP
+                      </span>
+                      {config.goalsToWin > 0 && (
+                        <span className="text-amber-300">
+                          ⚽ {config.goalsToWin} gols
+                        </span>
+                      )}
+                      {config.durationMs > 0 && (
+                        <span className="flex items-center gap-1 text-sky-400">
+                          <Clock className="h-3 w-3" />
+                          {config.durationMs / 60000} min
+                        </span>
+                      )}
+                      {config.turnTimerSeconds > 0 && (
+                        <span className="text-gray-500">
+                          ⏳ {config.turnTimerSeconds}s/turno
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </motion.button>
+              )
+            })}
+          </div>
+        </motion.div>
 
         {/* Cards explicativos */}
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -224,7 +294,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
               >
                 <Swords className="h-10 w-10 text-amber-400" />
               </motion.div>
-              <p className="text-sm text-gray-300">Criando partida...</p>
+              <p className="text-sm text-gray-300">Criando partida ({GAME_MODE_CONFIG[selectedGameMode].label})...</p>
             </div>
           </div>
         )}
