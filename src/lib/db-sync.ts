@@ -165,6 +165,14 @@ ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamRating" INTEGER;
 CREATE INDEX IF NOT EXISTS "Match_homeUserId_idx" ON "Match"("homeUserId");
 CREATE INDEX IF NOT EXISTS "Match_awayUserId_idx" ON "Match"("awayUserId");
 
+-- ===== Corrige colunas fantasmas (NOT NULL sem default, que não estão no schema Prisma) =====
+-- A coluna "matchNum" existe no banco mas NÃO está no schema Prisma.
+-- O Prisma faz INSERT sem enviar essa coluna, causando: Null constraint violation.
+-- Solução: tornar a coluna nullable ou dar um default.
+ALTER TABLE "Match" ALTER COLUMN "matchNum" DROP NOT NULL;
+-- Se existirem outras colunas fantasmas NOT NULL sem default, ajuste aqui:
+-- ALTER TABLE "Match" ALTER COLUMN "<coluna>" DROP NOT NULL;
+
 -- ===== Foreign keys (só se não existirem) =====
 DO $$
 BEGIN
@@ -203,25 +211,48 @@ export async function ensureDbSync(): Promise<void> {
   if (!syncPromise) {
     syncPromise = (async () => {
       try {
-        // Divide o SQL em statements individuais para executar separadamente
-        // $executeRawUnsafe não suporta DO $$ blocks com ponto-e-vírgula interno
-        // Então executamos o SQL inteiro como uma única operação
+        // 1. Executa o SQL de setup (CREATE TABLE + ADD COLUMN)
+        // $executeRawUnsafe suporta múltiplos statements separados por ;
         await db.$executeRawUnsafe(SETUP_SQL)
-        console.log('[db-sync] Database sync completed successfully')
+        console.log('[db-sync] Setup SQL completed')
       } catch (err: any) {
         const msg = err?.message || String(err)
-        // Alguns erros são esperados (ex: constraint já existe, tabela já existe)
-        // Esses são OK e não devem impedir o funcionamento
-        if (msg.includes('already exists') || msg.includes('already has')) {
-          console.log('[db-sync] Sync completed (some objects already existed)')
+        if (msg.includes('already exists') || msg.includes('already has') || msg.includes('cannot cast')) {
+          console.log('[db-sync] Setup completed (some objects already existed)')
         } else {
-          console.error('[db-sync] Sync failed:', msg.slice(0, 500))
-          // Não lançamos o erro para não quebrar a request
-          // O Prisma vai dar o erro real na query seguinte se algo estiver realmente errado
+          console.error('[db-sync] Setup SQL error:', msg.slice(0, 500))
         }
-      } finally {
-        syncDone = true
       }
+
+      // 2. Verifica e corrige colunas fantasmas na tabela Match
+      // Colunas NOT NULL sem default que não estão no schema Prisma causam
+      // "Null constraint violation" no INSERT
+      try {
+        const ghostColumns = await db.$queryRaw<Array<{ column_name: string; is_nullable: string; column_default: string | null }>>`
+          SELECT column_name, is_nullable, column_default
+          FROM information_schema.columns
+          WHERE table_name = 'Match'
+            AND is_nullable = 'NO'
+            AND column_default IS NULL
+            AND column_name NOT IN (
+              'id', 'status', 'mode', 'homeUserId', 'awayUserId',
+              'homeScore', 'awayScore', 'turnCount', 'homeProgress', 'awayProgress',
+              'eventsJson', 'homeTeamStateJson', 'awayTeamStateJson'
+            )
+        `
+        for (const col of ghostColumns) {
+          console.log(`[db-sync] Fixing ghost column: Match.${col.column_name} (NOT NULL without default) → making nullable`)
+          await db.$executeRawUnsafe(`ALTER TABLE "Match" ALTER COLUMN "${col.column_name}" DROP NOT NULL`)
+        }
+        if (ghostColumns.length === 0) {
+          console.log('[db-sync] No ghost columns found in Match table')
+        }
+      } catch (err: any) {
+        const msg = err?.message || String(err)
+        console.error('[db-sync] Ghost column check error:', msg.slice(0, 300))
+      }
+
+      syncDone = true
     })()
   }
 
