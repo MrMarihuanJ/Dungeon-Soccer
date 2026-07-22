@@ -80,7 +80,7 @@ function formatTeamText(
     })
   }
 
-  text += `\n🎮 Jogue em: dungeon-and-soccer.vercel.app`
+  text += `\n🎮 Jogue em: dungeonnsoccer.vercel.app`
 
   if (username) {
     text += `\n👤 @${username}`
