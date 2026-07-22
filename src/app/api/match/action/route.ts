@@ -17,6 +17,7 @@ import {
 } from '@/lib/match-engine'
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
+import { Prisma } from '@prisma/client'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,15 +50,20 @@ export async function POST(req: NextRequest) {
     const coin = flipCoin()
     const startingSide = coinToPossession(coin)
 
-    await db.match.update({
-      where: { id: matchId },
-      data: {
-        status: 'IN_PROGRESS',
-        coinResult: coin,
-        startingUserId: startingSide === 'HOME' ? match.homeUserId : match.awayUserId,
-        currentPossession: startingSide,
-      },
-    })
+    try {
+      await db.match.update({
+        where: { id: matchId },
+        data: {
+          status: 'IN_PROGRESS',
+          coinResult: coin,
+          startingUserId: startingSide === 'HOME' ? match.homeUserId : match.awayUserId,
+          currentPossession: startingSide,
+        },
+      })
+    } catch (err) {
+      console.error('[match/action] coin flip update error:', err)
+      return NextResponse.json({ ok: false, error: 'Erro ao atualizar partida. Verifique se o banco está atualizado.' }, { status: 500 })
+    }
 
     return NextResponse.json({
       ok: true,
@@ -159,7 +165,12 @@ export async function POST(req: NextRequest) {
         await db.user.update({ where: { id: match.awayUserId }, data: { draws: { increment: 1 }, xp: { increment: 20 } } })
       }
     }
-    await db.match.update({ where: { id: matchId }, data: updateData })
+    try {
+      await db.match.update({ where: { id: matchId }, data: updateData })
+    } catch (err) {
+      console.error('[match/action] update error:', err)
+      return NextResponse.json({ ok: false, error: 'Erro ao salvar jogada. Tente novamente.' }, { status: 500 })
+    }
 
     return NextResponse.json({
       ok: true,
