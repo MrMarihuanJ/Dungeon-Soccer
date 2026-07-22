@@ -33,7 +33,7 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Dungeon and Soccer" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/logo.png",
   },
   openGraph: {
     title: "Dungeon and Soccer · Monte seu Time dos Sonhos",

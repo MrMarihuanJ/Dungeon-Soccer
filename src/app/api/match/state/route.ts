@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import type { TeamMatchState } from '@/lib/match-engine'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,11 +28,35 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Sem acesso a esta partida.' }, { status: 403 })
   }
 
+  // Parse team states from JSON
+  const defaultTeamState: TeamMatchState = {
+    substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
+    injuredPlayers: [], sentOffPlayers: [],
+  }
+
+  let homeTeamState = defaultTeamState
+  let awayTeamState = defaultTeamState
+
+  try {
+    if (match.homeTeamStateJson && match.homeTeamStateJson !== '{}') {
+      homeTeamState = JSON.parse(match.homeTeamStateJson) as TeamMatchState
+    }
+  } catch { /* use default */ }
+  try {
+    if (match.awayTeamStateJson && match.awayTeamStateJson !== '{}') {
+      awayTeamState = JSON.parse(match.awayTeamStateJson) as TeamMatchState
+    }
+  } catch { /* use default */ }
+
   return NextResponse.json({
     ok: true,
     match: {
       ...match,
       events: JSON.parse(match.eventsJson),
+      homeProgress: match.homeProgress ?? 0,
+      awayProgress: match.awayProgress ?? 0,
+      homeTeamState,
+      awayTeamState,
     },
   })
 }

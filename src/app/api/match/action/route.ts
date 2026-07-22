@@ -13,7 +13,7 @@ import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import {
   flipCoin, coinToPossession, resolveAction, applyActionToState,
-  createInitialMatchState, type MatchState, type CoinResult,
+  createInitialMatchState, type MatchState, type CoinResult, type TeamMatchState,
 } from '@/lib/match-engine'
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
@@ -85,19 +85,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Ação inválida.' }, { status: 400 })
     }
 
-    // Verifica se é a vez do usuário (com tolerância: o oponente é simulado localmente)
-    // Em uma implementação multiplayer real com WebSocket, isso seria estrito.
-    // Para esta versão single-player (com IA simulando o amigo), permitimos que qualquer
-    // jogador da partida processe a jogada — o frontend controla o fluxo de turnos.
     const isHome = match.homeUserId === session.userId
     const currentSide = (match.currentPossession as 'HOME' | 'AWAY') || 'HOME'
-    const userSide: 'HOME' | 'AWAY' = isHome ? 'HOME' : 'AWAY'
-    // Comentar a rejeição abaixo para permitir simulação de oponente:
-    // if (currentSide !== userSide) {
-    //   return NextResponse.json({ ok: false, error: 'Não é sua vez.' }, { status: 400 })
-    // }
 
-    // Reconstrói o estado a partir do banco
+    // Reconstrói o estado a partir do banco (agora com progresso persistido!)
+    const defaultTeamState: TeamMatchState = {
+      substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
+      injuredPlayers: [], sentOffPlayers: [],
+    }
+
+    let homeTeamState = defaultTeamState
+    let awayTeamState = defaultTeamState
+
+    // Parse team states from JSON
+    try {
+      if (match.homeTeamStateJson && match.homeTeamStateJson !== '{}') {
+        homeTeamState = JSON.parse(match.homeTeamStateJson) as TeamMatchState
+      }
+    } catch { /* use default */ }
+    try {
+      if (match.awayTeamStateJson && match.awayTeamStateJson !== '{}') {
+        awayTeamState = JSON.parse(match.awayTeamStateJson) as TeamMatchState
+      }
+    } catch { /* use default */ }
+
     const state: MatchState = {
       matchId: match.id,
       status: match.status as MatchState['status'],
@@ -106,14 +117,14 @@ export async function POST(req: NextRequest) {
       currentPossession: currentSide,
       homeScore: match.homeScore,
       awayScore: match.awayScore,
-      homeProgress: 0,  // progresso não é persistido (reset a cada play)
-      awayProgress: 0,
+      homeProgress: match.homeProgress ?? 0,
+      awayProgress: match.awayProgress ?? 0,
       turnCount: match.turnCount,
       maxTurns: 24,
       events: JSON.parse(match.eventsJson),
       winner: null,
-      homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
-      awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+      homeTeamState,
+      awayTeamState,
     }
 
     // Processa a jogada
@@ -121,13 +132,17 @@ export async function POST(req: NextRequest) {
     const newState = applyActionToState(state, action, roll)
     const lastEvent = newState.events[newState.events.length - 1]
 
-    // Atualiza a partida no banco
+    // Atualiza a partida no banco (agora persistindo progresso e team states!)
     const updateData: any = {
       currentPossession: newState.currentPossession,
       homeScore: newState.homeScore,
       awayScore: newState.awayScore,
       turnCount: newState.turnCount,
+      homeProgress: newState.homeProgress,
+      awayProgress: newState.awayProgress,
       eventsJson: JSON.stringify(newState.events),
+      homeTeamStateJson: JSON.stringify(newState.homeTeamState),
+      awayTeamStateJson: JSON.stringify(newState.awayTeamState),
     }
     if (newState.status === 'FINISHED') {
       updateData.status = 'FINISHED'
@@ -158,6 +173,8 @@ export async function POST(req: NextRequest) {
         awayProgress: newState.awayProgress,
         turnCount: newState.turnCount,
         winner: newState.winner,
+        homeTeamState: newState.homeTeamState,
+        awayTeamState: newState.awayTeamState,
       },
     })
   }
