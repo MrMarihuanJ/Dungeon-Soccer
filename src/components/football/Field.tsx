@@ -13,9 +13,10 @@ interface Props {
   starters: StartersMap
   onSelectPosition: (pos: FieldPosition) => void
   onRemovePosition: (pos: FieldPosition) => void
+  onViewStats?: (player: SelectedPlayer) => void
 }
 
-export function Field({ formation, starters, onSelectPosition, onRemovePosition }: Props) {
+export function Field({ formation, starters, onSelectPosition, onRemovePosition, onViewStats }: Props) {
   return (
     <div className="relative w-full overflow-hidden rounded-2xl shadow-2xl ring-1 ring-emerald-900/40 dark:ring-emerald-500/20">
       {/* Gramado - tema claro: emerald vibrante / tema escuro: emerald profundo */}
@@ -57,6 +58,7 @@ export function Field({ formation, starters, onSelectPosition, onRemovePosition 
             player={starters[p.id] ?? null}
             onClick={() => onSelectPosition(p)}
             onRemove={() => onRemovePosition(p)}
+            onViewStats={onViewStats}
           />
         ))}
 

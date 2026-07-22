@@ -34,7 +34,7 @@ import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
   type PenaltyEvent, type TeamMatchState,
 } from '@/lib/match-engine'
-import type { SelectedPlayer } from '@/lib/football/store'
+import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
 
 interface Player {
@@ -107,6 +107,14 @@ export function MatchArena({
   const [myReserves, setMyReserves] = useState<SelectedPlayer[]>([])
   const [myStarters, setMyStarters] = useState<SelectedPlayer[]>([])
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
+
+  // Populate starters/reserves from the Zustand store
+  const { starters: storeStarters, reserves: storeReserves } = useTeamStore()
+  useEffect(() => {
+    const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
+    setMyStarters(startersList)
+    setMyReserves(storeReserves)
+  }, [storeStarters, storeReserves])
 
   const isHome = currentUserId === homeUser.id
   const mySide: Possession = isHome ? 'HOME' : 'AWAY'
@@ -199,6 +207,8 @@ export function MatchArena({
           turnCount: data.newState.turnCount,
           status: data.newState.status,
           winner: data.newState.winner,
+          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
+          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
           events: [...s.events, data.event],
         }))
         setDiceRolling(false)
@@ -263,10 +273,19 @@ export function MatchArena({
     // 2. Injury → substitution needed
     if (pe.type === 'INJURY' && pe.requiresSubstitution) {
       setSubIsForced(true)
-      // Create a placeholder injured player from the ID
-      const injPlayer: SelectedPlayer = pe.injuredPlayerId
-        ? { id: pe.injuredPlayerId, name: 'Jogador Lesionado', fullName: 'Jogador Lesionado', team: '', position: 'MF', photoUrl: '' }
-        : null
+      // Find the real player from myStarters by ID, or use a random starter if no ID
+      let injPlayer: SelectedPlayer | null = null
+      if (pe.injuredPlayerId) {
+        injPlayer = myStarters.find(p => p.id === pe.injuredPlayerId) || null
+      }
+      if (!injPlayer && myStarters.length > 0) {
+        // Pick a random starter as the injured player
+        injPlayer = myStarters[Math.floor(Math.random() * myStarters.length)]
+      }
+      if (!injPlayer) {
+        // Fallback placeholder
+        injPlayer = { id: pe.injuredPlayerId || 'unknown', name: 'Jogador Lesionado', fullName: 'Jogador Lesionado', team: '', position: 'MF', photoUrl: '' }
+      }
       setSubInjuredPlayer(injPlayer)
       setSubOpen(true)
       return
@@ -414,6 +433,8 @@ export function MatchArena({
           turnCount: data.newState.turnCount,
           status: data.newState.status,
           winner: data.newState.winner,
+          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
+          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
           events: [...s.events, data.event],
         }))
         setDiceRolling(false)
@@ -698,7 +719,7 @@ export function MatchArena({
                   </div>
                 </CardContent>
               </Card>
-            )
+            )}
 
             {/* Loading do oponente */}
             {phase === 'OPPONENT_TURN' && (

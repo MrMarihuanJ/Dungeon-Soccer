@@ -18,7 +18,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Search, UserPlus, AlertCircle, X } from 'lucide-react'
+import { Search, UserPlus, AlertCircle, X, Globe } from 'lucide-react'
 import Image from 'next/image'
 import type { FieldPosition, PositionRole } from '@/lib/football/formations'
 import { ROLE_TO_POSITION } from '@/lib/football/formations'
@@ -326,7 +326,19 @@ export function PlayerSearchModal({
                               <span className="text-[7px] font-bold uppercase leading-none">OVR</span>
                             </div>
                           )}
-                          <div className="shrink-0">
+                          <div className="shrink-0 flex items-center gap-1">
+                            {/* ogol.com.br link */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                window.open(`https://www.ogol.com.br/search.php?search=${encodeURIComponent(p.name)}`, '_blank')
+                              }}
+                              className="rounded p-1 text-gray-400 transition-colors hover:bg-green-100 hover:text-green-600 dark:hover:bg-green-900/30 dark:hover:text-green-400"
+                              title="Ver no ogol.com.br"
+                            >
+                              <Globe className="h-3.5 w-3.5" />
+                            </button>
                             {isSelected ? (
                               <Badge variant="outline" className="text-[10px] text-gray-400">
                                 já no time
@@ -345,7 +357,7 @@ export function PlayerSearchModal({
           </ScrollArea>
 
           <p className="text-center text-[11px] text-gray-400">
-            🌍 Busca mundial em tempo real · TheSportsDB + Wikipedia + banco local
+            🌍 Busca mundial em tempo real · TheSportsDB + Wikipedia + banco local + ogol.com.br
           </p>
         </div>
       </DialogContent>

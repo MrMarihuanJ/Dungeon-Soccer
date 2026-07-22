@@ -2,10 +2,11 @@
 
 // =====================================================================
 // PositionBall - Bola flutuante com foto do jogador (com tema + animação)
+// Agora inclui botão de ver estatísticas no ogol.com.br
 // =====================================================================
 
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, X, Shirt } from 'lucide-react'
+import { Plus, X, Shirt, BarChart3 } from 'lucide-react'
 import Image from 'next/image'
 import type { SelectedPlayer } from '@/lib/football/store'
 import type { FieldPosition } from '@/lib/football/formations'
@@ -15,9 +16,10 @@ interface Props {
   player: SelectedPlayer | null
   onClick: () => void
   onRemove: () => void
+  onViewStats?: (player: SelectedPlayer) => void
 }
 
-export function PositionBall({ position, player, onClick, onRemove }: Props) {
+export function PositionBall({ position, player, onClick, onRemove, onViewStats }: Props) {
   return (
     <div
       className="absolute flex flex-col items-center"
@@ -103,17 +105,34 @@ export function PositionBall({ position, player, onClick, onRemove }: Props) {
                 {player.team}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onRemove()
-              }}
-              className="mt-1 flex items-center gap-1 rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-medium text-white shadow-sm transition-colors hover:bg-red-600"
-              aria-label={`Remover ${player.name}`}
-            >
-              <X className="h-2.5 w-2.5" /> Remover
-            </button>
+            <div className="mt-1 flex items-center gap-1">
+              {/* Stats button */}
+              {onViewStats && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onViewStats(player)
+                  }}
+                  className="flex items-center gap-1 rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-medium text-white shadow-sm transition-colors hover:bg-emerald-600"
+                  aria-label={`Ver estatísticas de ${player.name}`}
+                >
+                  <BarChart3 className="h-2.5 w-2.5" /> Stats
+                </button>
+              )}
+              {/* Remove button */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onRemove()
+                }}
+                className="flex items-center gap-1 rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-medium text-white shadow-sm transition-colors hover:bg-red-600"
+                aria-label={`Remover ${player.name}`}
+              >
+                <X className="h-2.5 w-2.5" /> Remover
+              </button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

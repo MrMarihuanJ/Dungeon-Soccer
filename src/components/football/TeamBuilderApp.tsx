@@ -2,7 +2,8 @@
 
 // =====================================================================
 // TeamBuilderApp - Aplicação principal do montador de times
-// Inclui: tema dark/light, easter eggs, salvar time por usuário
+// Inclui: tema dark/light, easter eggs, salvar time por usuário,
+//         compartilhar time, ver estatísticas no ogol.com.br
 // =====================================================================
 
 import { useEffect, useState, useCallback } from 'react'
@@ -15,6 +16,8 @@ import { Header } from '@/components/football/Header'
 import { Instructions } from '@/components/football/Instructions'
 import { Toolbar } from '@/components/football/Toolbar'
 import { Footer } from '@/components/football/Footer'
+import { ShareTeamDialog } from '@/components/football/ShareTeamDialog'
+import { PlayerStatsDialog } from '@/components/football/PlayerStatsDialog'
 import {
   EasterEggs,
   SECRET_TEAMS,
@@ -29,6 +32,8 @@ import { GameModeSelector } from '@/components/football/GameModeSelector'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { getFormation, type FieldPosition } from '@/lib/football/formations'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Share2, BarChart3 } from 'lucide-react'
 
 type SearchMode = 'starter' | 'reserve'
 
@@ -60,6 +65,11 @@ export function TeamBuilderApp() {
   const [reserveToEnter, setReserveToEnter] = useState<SelectedPlayer | null>(null)
   const [matchMode, setMatchMode] = useState(false)
   const [currentUser, setCurrentUser] = useState<{ id: string; username: string; displayName?: string | null } | null>(null)
+
+  // New: share & stats dialogs
+  const [shareOpen, setShareOpen] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [statsPlayer, setStatsPlayer] = useState<SelectedPlayer | null>(null)
 
   // Verifica usuário logado (para o modo de partida)
   useEffect(() => {
@@ -192,15 +202,15 @@ export function TeamBuilderApp() {
     )
 
     // Constrói o objeto de starters mapeado por posição
-    const starters: Record<string, SelectedPlayer> = {}
+    const startersObj: Record<string, SelectedPlayer> = {}
     withPhotos.forEach(([posId, player]) => {
-      starters[posId as string] = player as SelectedPlayer
+      startersObj[posId as string] = player as SelectedPlayer
     })
 
     // Aplica o time no store
     loadFromObject({
       formation: config.formation,
-      starters,
+      starters: startersObj,
       reserves: [],
     })
 
@@ -272,20 +282,36 @@ export function TeamBuilderApp() {
           </p>
         </motion.section>
 
-        {/* Toolbar */}
+        {/* Toolbar + Share button */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
           className="mb-6"
         >
-          <Toolbar
-            formationId={formationId}
-            onFormationChange={setFormation}
-            onAddReserve={handleAddReserve}
-            startersCount={startersCount}
-            reservesCount={reserves.length}
-          />
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <Toolbar
+                formationId={formationId}
+                onFormationChange={setFormation}
+                onAddReserve={handleAddReserve}
+                startersCount={startersCount}
+                reservesCount={reserves.length}
+              />
+            </div>
+            {/* Share button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShareOpen(true)}
+              disabled={startersCount === 0}
+              className="gap-1 border-emerald-700 text-emerald-300 hover:bg-emerald-900/30"
+              title="Compartilhar time"
+            >
+              <Share2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Compartilhar</span>
+            </Button>
+          </div>
         </motion.div>
 
         {/* Game Mode Selector */}
@@ -311,6 +337,10 @@ export function TeamBuilderApp() {
               starters={starters}
               onSelectPosition={handleSelectPosition}
               onRemovePosition={handleRemovePosition}
+              onViewStats={(player) => {
+                setStatsPlayer(player)
+                setStatsOpen(true)
+              }}
             />
             <p className="mt-2 text-center text-xs text-muted-foreground">
               💡 Clique numa bola para adicionar jogador. A busca é em tempo real e cobre
@@ -330,9 +360,24 @@ export function TeamBuilderApp() {
               onSubstitute={handleSubstitute}
               onRemove={removeReserve}
             />
-            {/* Team Rating Card */}
-            <div className="mt-4">
+            {/* Team Rating Card + Stats/Share buttons */}
+            <div className="mt-4 space-y-3">
               <TeamRatingCard starters={starters} reserves={reserves} />
+
+              {/* Quick action buttons */}
+              {startersCount > 0 && (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShareOpen(true)}
+                    className="flex-1 gap-1 border-emerald-700 text-emerald-300 text-xs hover:bg-emerald-900/30"
+                  >
+                    <Share2 className="h-3.5 w-3.5" />
+                    Compartilhar Time
+                  </Button>
+                </div>
+              )}
             </div>
           </motion.div>
         </div>
@@ -354,11 +399,24 @@ export function TeamBuilderApp() {
                   <motion.div
                     key={p.id}
                     whileHover={{ scale: 1.04 }}
-                    className="rounded-lg border border-border bg-card p-2 text-center shadow-sm"
+                    className="group relative rounded-lg border border-border bg-card p-2 text-center shadow-sm"
                   >
                     <div className="text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-400">{p.label}</div>
                     <div className="truncate text-sm font-semibold text-foreground">{player.name}</div>
                     <div className="truncate text-[11px] text-muted-foreground">{player.team}</div>
+                    {/* Stats button (appears on hover) */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setStatsPlayer(player)
+                        setStatsOpen(true)
+                      }}
+                      className="absolute -top-1 -right-1 hidden h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white group-hover:flex"
+                      title="Ver estatísticas no ogol.com.br"
+                    >
+                      <BarChart3 className="h-3 w-3" />
+                    </button>
                   </motion.div>
                 )
               })}
@@ -386,6 +444,21 @@ export function TeamBuilderApp() {
         onConfirm={handleConfirmSubstitution}
       />
       <Instructions open={instructionsOpen} onOpenChange={setInstructionsOpen} />
+
+      {/* New: Share & Stats dialogs */}
+      <ShareTeamDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        formationId={formationId}
+        starters={starters}
+        reserves={reserves}
+        username={currentUser?.username}
+      />
+      <PlayerStatsDialog
+        open={statsOpen}
+        onOpenChange={setStatsOpen}
+        player={statsPlayer}
+      />
     </div>
   )
 }
