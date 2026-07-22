@@ -153,8 +153,14 @@ model Match {
   winner       String?
   // Quantos turnos cada um já jogou
   turnCount    Int      @default(0)
+  // Progresso no campo (0-100, reseta a cada gol)
+  homeProgress  Int      @default(0)
+  awayProgress  Int      @default(0)
   // JSON: events do jogo [{ turn, possession, action, dice, success }]
   eventsJson   String   @default("[]")
+  // JSON: estado dos times (substituições, cartões, lesionados, expulsos)
+  homeTeamStateJson String   @default("{}")
+  awayTeamStateJson String   @default("{}")
   // Ratings dos times no início da partida (para histórico)
   homeTeamRating Int?
   awayTeamRating Int?
