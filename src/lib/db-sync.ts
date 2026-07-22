@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS "Match" (
   "id" TEXT NOT NULL,
   "status" TEXT NOT NULL DEFAULT 'COIN_FLIP',
   "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM',
+  "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH',
   "coinResult" TEXT,
   "startingUserId" TEXT,
   "homeUserId" TEXT NOT NULL,
@@ -141,6 +142,13 @@ CREATE TABLE IF NOT EXISTS "Match" (
   "awayTeamStateJson" TEXT NOT NULL DEFAULT '{}',
   "homeTeamRating" INTEGER,
   "awayTeamRating" INTEGER,
+  "matchStartedAt" TIMESTAMP(3),
+  "pausedAt" TIMESTAMP(3),
+  "totalPausedMs" INTEGER NOT NULL DEFAULT 0,
+  "halftimeTaken" BOOLEAN NOT NULL DEFAULT false,
+  "secondHalfStartedAt" TIMESTAMP(3),
+  "xpReward" INTEGER NOT NULL DEFAULT 0,
+  "turnStartedAt" TIMESTAMP(3),
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "Match_pkey" PRIMARY KEY ("id")
@@ -148,6 +156,7 @@ CREATE TABLE IF NOT EXISTS "Match" (
 -- Adiciona colunas faltantes caso a tabela já exista com schema antigo
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'COIN_FLIP';
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM';
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH';
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "coinResult" TEXT;
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "startingUserId" TEXT;
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "currentPossession" TEXT;
@@ -162,6 +171,13 @@ ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamStateJson" TEXT NOT NULL D
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamStateJson" TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamRating" INTEGER;
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamRating" INTEGER;
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "matchStartedAt" TIMESTAMP(3);
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3);
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "totalPausedMs" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "halftimeTaken" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "secondHalfStartedAt" TIMESTAMP(3);
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "xpReward" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnStartedAt" TIMESTAMP(3);
 CREATE INDEX IF NOT EXISTS "Match_homeUserId_idx" ON "Match"("homeUserId");
 CREATE INDEX IF NOT EXISTS "Match_awayUserId_idx" ON "Match"("awayUserId");
 
@@ -235,9 +251,10 @@ export async function ensureDbSync(): Promise<void> {
             AND is_nullable = 'NO'
             AND column_default IS NULL
             AND column_name NOT IN (
-              'id', 'status', 'mode', 'homeUserId', 'awayUserId',
+              'id', 'status', 'mode', 'gameMode', 'homeUserId', 'awayUserId',
               'homeScore', 'awayScore', 'turnCount', 'homeProgress', 'awayProgress',
-              'eventsJson', 'homeTeamStateJson', 'awayTeamStateJson'
+              'eventsJson', 'homeTeamStateJson', 'awayTeamStateJson',
+              'totalPausedMs', 'xpReward', 'createdAt', 'updatedAt'
             )
         `
         for (const col of ghostColumns) {

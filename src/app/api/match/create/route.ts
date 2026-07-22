@@ -1,7 +1,7 @@
 // =====================================================================
 // POST /api/match/create - cria nova partida contra amigo
 // --------------------------------------------------------------------
-// Body: { opponentId: string }
+// Body: { opponentId: string, gameMode?: 'QUICK_MATCH' | 'TIMED_10' | 'FULL_90' }
 // Auto-sync: garante que a tabela Match existe antes de criar.
 // =====================================================================
 
@@ -9,8 +9,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import { ensureDbSync } from '@/lib/db-sync'
+import { GAME_MODE_CONFIG, type GameMode } from '@/lib/match-engine'
 
 export const dynamic = 'force-dynamic'
+
+const VALID_GAME_MODES: GameMode[] = ['QUICK_MATCH', 'TIMED_10', 'FULL_90']
 
 export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
@@ -29,6 +32,10 @@ export async function POST(req: NextRequest) {
   if (!opponentId) {
     return NextResponse.json({ ok: false, error: 'opponentId obrigatório.' }, { status: 400 })
   }
+
+  // Validar gameMode
+  const gameMode: GameMode = VALID_GAME_MODES.includes(body.gameMode) ? body.gameMode : 'QUICK_MATCH'
+  const modeConfig = GAME_MODE_CONFIG[gameMode]
 
   // Não pode jogar contra si mesmo
   if (opponentId === session.userId) {
@@ -54,8 +61,6 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     console.error('[match/create] friendship check error:', err)
     const msg = err instanceof Error ? err.message : String(err)
-    // Se falhar aqui, pode ser que a tabela Friendship também não exista
-    // Tenta sync de novo e retorna erro descritivo
     if (msg.includes('does not exist') || msg.includes('relation')) {
       return NextResponse.json({
         ok: false,
@@ -70,24 +75,28 @@ export async function POST(req: NextRequest) {
     }, { status: 500 })
   }
 
-  // Cria a partida
+  // Cria a partida com gameMode e xpReward
+  const matchData = {
+    homeUserId: session.userId,
+    awayUserId: opponentId,
+    status: 'COIN_FLIP' as const,
+    mode: 'DREAM_TEAM' as const,
+    gameMode,
+    homeScore: 0,
+    awayScore: 0,
+    turnCount: 0,
+    homeProgress: 0,
+    awayProgress: 0,
+    eventsJson: '[]',
+    homeTeamStateJson: '{}',
+    awayTeamStateJson: '{}',
+    xpReward: modeConfig.xpWin,
+    totalPausedMs: 0,
+    halftimeTaken: false,
+  }
+
   try {
-    const match = await db.match.create({
-      data: {
-        homeUserId: session.userId,
-        awayUserId: opponentId,
-        status: 'COIN_FLIP',
-        mode: 'DREAM_TEAM',
-        homeScore: 0,
-        awayScore: 0,
-        turnCount: 0,
-        homeProgress: 0,
-        awayProgress: 0,
-        eventsJson: '[]',
-        homeTeamStateJson: '{}',
-        awayTeamStateJson: '{}',
-      },
-    })
+    const match = await db.match.create({ data: matchData })
 
     return NextResponse.json({
       ok: true,
@@ -96,6 +105,8 @@ export async function POST(req: NextRequest) {
         status: match.status,
         homeUserId: match.homeUserId,
         awayUserId: match.awayUserId,
+        gameMode: match.gameMode,
+        xpReward: match.xpReward,
       },
     })
   } catch (err: any) {
@@ -114,6 +125,7 @@ export async function POST(req: NextRequest) {
             "id" TEXT NOT NULL,
             "status" TEXT NOT NULL DEFAULT 'COIN_FLIP',
             "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM',
+            "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH',
             "coinResult" TEXT,
             "startingUserId" TEXT,
             "homeUserId" TEXT NOT NULL,
@@ -130,46 +142,30 @@ export async function POST(req: NextRequest) {
             "awayTeamStateJson" TEXT NOT NULL DEFAULT '{}',
             "homeTeamRating" INTEGER,
             "awayTeamRating" INTEGER,
+            "matchStartedAt" TIMESTAMP(3),
+            "pausedAt" TIMESTAMP(3),
+            "totalPausedMs" INTEGER NOT NULL DEFAULT 0,
+            "halftimeTaken" BOOLEAN NOT NULL DEFAULT false,
+            "secondHalfStartedAt" TIMESTAMP(3),
+            "xpReward" INTEGER NOT NULL DEFAULT 0,
+            "turnStartedAt" TIMESTAMP(3),
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "Match_pkey" PRIMARY KEY ("id")
           );
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'COIN_FLIP';
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM';
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "coinResult" TEXT;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "startingUserId" TEXT;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "currentPossession" TEXT;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeScore" INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayScore" INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "winner" TEXT;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnCount" INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeProgress" INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayProgress" INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "eventsJson" TEXT NOT NULL DEFAULT '[]';
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamStateJson" TEXT NOT NULL DEFAULT '{}';
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamStateJson" TEXT NOT NULL DEFAULT '{}';
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamRating" INTEGER;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamRating" INTEGER;
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH';
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "matchStartedAt" TIMESTAMP(3);
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3);
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "totalPausedMs" INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "halftimeTaken" BOOLEAN NOT NULL DEFAULT false;
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "secondHalfStartedAt" TIMESTAMP(3);
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "xpReward" INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnStartedAt" TIMESTAMP(3);
           CREATE INDEX IF NOT EXISTS "Match_homeUserId_idx" ON "Match"("homeUserId");
           CREATE INDEX IF NOT EXISTS "Match_awayUserId_idx" ON "Match"("awayUserId");
         `)
         // Retry
-        const match = await db.match.create({
-          data: {
-            homeUserId: session.userId,
-            awayUserId: opponentId,
-            status: 'COIN_FLIP',
-            mode: 'DREAM_TEAM',
-            homeScore: 0,
-            awayScore: 0,
-            turnCount: 0,
-            homeProgress: 0,
-            awayProgress: 0,
-            eventsJson: '[]',
-            homeTeamStateJson: '{}',
-            awayTeamStateJson: '{}',
-          },
-        })
+        const match = await db.match.create({ data: matchData })
         return NextResponse.json({
           ok: true,
           match: {
@@ -177,6 +173,8 @@ export async function POST(req: NextRequest) {
             status: match.status,
             homeUserId: match.homeUserId,
             awayUserId: match.awayUserId,
+            gameMode: match.gameMode,
+            xpReward: match.xpReward,
           },
         })
       } catch (retryErr: any) {
