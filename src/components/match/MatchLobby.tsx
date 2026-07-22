@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { ArrowLeft, Swords, BookOpen, Trophy, Dice5 } from 'lucide-react'
+import { ArrowLeft, Swords, BookOpen, Trophy, Dice5, AlertTriangle } from 'lucide-react'
 import { FriendsPanel } from './FriendsPanel'
 import { MatchArena } from './MatchArena'
 import { toast } from 'sonner'
@@ -42,9 +42,11 @@ export function MatchLobby({ currentUser, onExit }: Props) {
   const [matchId, setMatchId] = useState<string | null>(null)
   const [opponent, setOpponent] = useState<Friend | null>(null)
   const [creating, setCreating] = useState(false)
+  const [lastError, setLastError] = useState<{ error: string; detail?: string } | null>(null)
 
   const handleChallenge = async (friend: Friend) => {
     setCreating(true)
+    setLastError(null)
     try {
       const res = await fetch('/api/match/create', {
         method: 'POST',
@@ -55,11 +57,18 @@ export function MatchLobby({ currentUser, onExit }: Props) {
       try {
         data = await res.json()
       } catch {
-        toast.error(`Erro no servidor (${res.status}). Tente novamente.`)
+        if (res.status === 401) {
+          toast.error('Sessão expirada. Faça login novamente.')
+        } else {
+          toast.error(`Erro no servidor (${res.status}). Tente novamente.`)
+        }
         return
       }
       if (!data.ok) {
-        toast.error(data.error || 'Erro ao criar partida.')
+        const errorMsg = data.error || 'Erro ao criar partida.'
+        const errorDetail = data.detail || ''
+        setLastError({ error: errorMsg, detail: errorDetail })
+        toast.error(errorMsg)
         return
       }
       setMatchId(data.match.id)
@@ -68,7 +77,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
       toast.success(`Partida contra ${friend.username} iniciada!`)
     } catch (err) {
       console.error('[MatchLobby] challenge error:', err)
-      toast.error('Erro de conexão. Verifique se você está logado e tente novamente.')
+      toast.error('Erro de conexão. Verifique sua internet e tente novamente.')
     } finally {
       setCreating(false)
     }
@@ -132,6 +141,38 @@ export function MatchLobby({ currentUser, onExit }: Props) {
             lance a moeda, role o d20 e execute mais de 100 ações estratégicas!
           </p>
         </motion.div>
+
+        {/* Aviso de erro detalhado */}
+        {lastError && (
+          <motion.div
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-4 rounded-lg border border-amber-500/50 bg-amber-950/40 p-4"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-amber-300">{lastError.error}</p>
+                {lastError.detail && (
+                  <p className="mt-1 text-xs text-amber-200/60 font-mono break-all">{lastError.detail}</p>
+                )}
+                {(lastError.error.includes('banco') || lastError.error.includes('SQL') || lastError.error.includes('tabela') || lastError.error.includes('coluna') || lastError.error.includes('setup')) && (
+                  <p className="mt-2 text-xs text-gray-400">
+                    Execute o arquivo <code className="rounded bg-gray-800 px-1 text-amber-300">sql-setup-complete.sql</code> no Neon Console (SQL Editor) para corrigir.
+                  </p>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setLastError(null)}
+                className="shrink-0 text-amber-400 hover:bg-amber-900/30"
+              >
+                ✕
+              </Button>
+            </div>
+          </motion.div>
+        )}
 
         {/* Cards explicativos */}
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
