@@ -45,6 +45,10 @@ interface ApiPlayer {
   leagueTier?: string
   isRetired?: boolean
   isInactive?: boolean
+  // Links externos para detalhes do jogador
+  transfermarktUrl?: string | null
+  sofascoreUrl?: string | null
+  ogolUrl?: string | null
 }
 
 interface Props {
@@ -329,18 +333,48 @@ export function PlayerSearchModal({
                             </div>
                           )}
                           <div className="shrink-0 flex items-center gap-1">
+                            {/* Transfermarkt link */}
+                            {p.transfermarktUrl && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(p.transfermarktUrl!, '_blank')
+                                }}
+                                className="rounded p-1 text-gray-400 transition-colors hover:bg-indigo-100 hover:text-indigo-600 dark:hover:bg-indigo-900/30 dark:hover:text-indigo-400"
+                                title="Ver no Transfermarkt"
+                              >
+                                <Globe className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            {/* Sofascore link */}
+                            {p.sofascoreUrl && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(p.sofascoreUrl!, '_blank')
+                                }}
+                                className="rounded p-1 text-gray-400 transition-colors hover:bg-orange-100 hover:text-orange-600 dark:hover:bg-orange-900/30 dark:hover:text-orange-400"
+                                title="Ver no Sofascore"
+                              >
+                                <Globe className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                             {/* ogol.com.br link */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                window.open(`https://www.ogol.com.br/search.php?search=${encodeURIComponent(p.name)}`, '_blank')
-                              }}
-                              className="rounded p-1 text-gray-400 transition-colors hover:bg-green-100 hover:text-green-600 dark:hover:bg-green-900/30 dark:hover:text-green-400"
-                              title="Ver no ogol.com.br"
-                            >
-                              <Globe className="h-3.5 w-3.5" />
-                            </button>
+                            {p.ogolUrl && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(p.ogolUrl!, '_blank')
+                                }}
+                                className="rounded p-1 text-gray-400 transition-colors hover:bg-green-100 hover:text-green-600 dark:hover:bg-green-900/30 dark:hover:text-green-400"
+                                title="Ver no ogol.com.br"
+                              >
+                                <Globe className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                             {isSelected ? (
                               <Badge variant="outline" className="text-[10px] text-gray-400">
                                 já no time
