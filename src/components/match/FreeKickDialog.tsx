@@ -18,7 +18,6 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Target, Shield, Zap, ChevronRight } from 'lucide-react'
 import { sampleFreeKickActions, CATEGORY_META, type FootballAction } from '@/lib/dnd-actions'
 import type { SelectedPlayer } from '@/lib/football/store'
@@ -94,7 +93,7 @@ export function FreeKickDialog({
               <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
                 Quem bate a falta?
               </p>
-              <ScrollArea className="max-h-[320px]">
+              <div className="max-h-[320px] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4b5563 transparent' }}>
                 <ul className="space-y-2">
                   {fieldPlayers.map((player) => (
                     <motion.li
@@ -124,7 +123,7 @@ export function FreeKickDialog({
                     </motion.li>
                   ))}
                 </ul>
-              </ScrollArea>
+              </div>
             </motion.div>
           )}
 

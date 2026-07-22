@@ -38,6 +38,7 @@ import {
   type PenaltyEvent, type TeamMatchState, type GameMode,
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
+  pickPlayerForAction,
 } from '@/lib/match-engine'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
@@ -303,7 +304,17 @@ export function MatchArena({
     const actions = sampleMixedActions(1)
     const action = actions[0]
     if (action) {
-      handleSelectAction(action)
+      // Seleciona jogador automaticamente
+      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
+      let autoPlayerName: string | undefined
+      if (startersList.length > 0) {
+        const { player } = pickPlayerForAction(
+          startersList.map(p => ({ name: p.name, position: p.position })),
+          action.category,
+        )
+        autoPlayerName = player
+      }
+      handleSelectAction(action, autoPlayerName)
     }
   }
 
@@ -432,12 +443,25 @@ export function MatchArena({
   }
 
   // ===== PLAYER seleciona ação =====
-  const handleSelectAction = async (action: FootballAction) => {
+  const handleSelectAction = async (action: FootballAction, forcedPlayerName?: string) => {
     if (processing || diceRolling) return
     setProcessing(true)
     setDiceRolling(true)
     setLastRoll(null)
     setLastEvent(null)
+
+    // Seleciona jogador para narrativa
+    let playerName = forcedPlayerName
+    let targetPlayerName: string | undefined
+    if (!playerName) {
+      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
+      const { player, target } = pickPlayerForAction(
+        startersList.map(p => ({ name: p.name, position: p.position })),
+        action.category,
+      )
+      playerName = player
+      targetPlayerName = target
+    }
 
     // Aguarda animação do dado (1.8s)
     setTimeout(async () => {
@@ -445,7 +469,13 @@ export function MatchArena({
         const res = await fetch('/api/match/action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ matchId, type: 'PLAY_ACTION', action }),
+          body: JSON.stringify({
+            matchId,
+            type: 'PLAY_ACTION',
+            action,
+            playerName: playerName || undefined,
+            targetPlayerName: targetPlayerName || undefined,
+          }),
         })
         const data = await res.json()
 
@@ -508,7 +538,8 @@ export function MatchArena({
         // Toast para eventos especiais
         if (data.event.isGoal) {
           const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
-          toast.success(`⚽ GOOOOL do ${scorer}!`, { duration: 4000 })
+          const goalPlayerName = data.event.playerName || scorer
+          toast.success(`⚽ GOOOOL! ${goalPlayerName} marca para ${scorer}!`, { duration: 4000 })
 
           // Check for QUICK_MATCH win condition
           if (gameMode === 'QUICK_MATCH') {
@@ -641,7 +672,14 @@ export function MatchArena({
   // Free kick play callback
   const handleFreeKickPlay = async (kickerId: string, action: FootballAction) => {
     setFreeKickOpen(false)
-    await handleSelectAction(action)
+    // IMPORTANTE: reset processing/diceRolling antes de chamar handleSelectAction
+    // pois as flags ficaram presas do turno anterior que gerou a falta
+    setProcessing(false)
+    setDiceRolling(false)
+    // Encontra o nome do batedor para a narrativa
+    const kicker = myStarters.find(p => p.id === kickerId)
+    const kickerName = kicker?.name
+    await handleSelectAction(action, kickerName)
   }
 
   // Substitution callback
@@ -702,12 +740,31 @@ export function MatchArena({
     const action = actions[0]
     if (!action) return
 
+    // Gera nome de jogador para o adversário (usa os mesmos titulares como "time adversário")
+    const oppStarters = myStarters.length > 0 ? myStarters : []
+    let oppPlayerName: string | undefined
+    let oppTargetName: string | undefined
+    if (oppStarters.length > 0) {
+      const { player, target } = pickPlayerForAction(
+        oppStarters.map(p => ({ name: p.name, position: p.position })),
+        action.category,
+      )
+      oppPlayerName = player
+      oppTargetName = target
+    }
+
     setTimeout(async () => {
       try {
         const res = await fetch('/api/match/action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ matchId, type: 'PLAY_ACTION', action }),
+          body: JSON.stringify({
+            matchId,
+            type: 'PLAY_ACTION',
+            action,
+            playerName: oppPlayerName,
+            targetPlayerName: oppTargetName,
+          }),
         })
         const data = await res.json()
 
@@ -759,7 +816,8 @@ export function MatchArena({
 
         if (data.event.isGoal) {
           const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
-          toast.success(`⚽ GOOOOL do ${scorer}!`, { duration: 4000 })
+          const goalPlayerName = data.event.playerName || scorer
+          toast.success(`⚽ GOOOOL! ${goalPlayerName} marca para ${scorer}!`, { duration: 4000 })
 
           // Check for QUICK_MATCH win
           if (gameMode === 'QUICK_MATCH') {
@@ -1131,6 +1189,17 @@ export function MatchArena({
                         <span className="text-2xl">{lastEvent.action.emoji}</span>{' '}
                         <strong className="text-white">{lastEvent.action.name}</strong>
                       </p>
+                      {/* Narrativa com nome do jogador */}
+                      {lastEvent.narrative && (
+                        <p className="mt-1 text-sm font-medium text-amber-200">
+                          {lastEvent.narrative}
+                        </p>
+                      )}
+                      {!lastEvent.narrative && lastEvent.playerName && (
+                        <p className="mt-1 text-xs text-gray-300">
+                          {lastEvent.playerName}{lastEvent.targetPlayerName ? ` para ${lastEvent.targetPlayerName}` : ''}
+                        </p>
+                      )}
                       <p className="mt-1 text-xs text-gray-400">
                         {lastEvent.isGoal ? (
                           <span className="text-amber-400">⚽ GOL! Progresso zerado, bola para o adversário.</span>
@@ -1263,7 +1332,16 @@ export function MatchArena({
                           <strong className={e.possession === 'HOME' ? 'text-emerald-400' : 'text-sky-400'}>
                             {scorer.username}
                           </strong>{' '}
-                          fez <strong>{e.action.name}</strong>
+                          {e.narrative ? (
+                            <span className="text-amber-200">{e.narrative}</span>
+                          ) : (
+                            <>
+                              {e.playerName && (
+                                <span className="text-amber-300">{e.playerName} </span>
+                              )}
+                              fez <strong>{e.action.name}</strong>
+                            </>
+                          )}
                         </span>
                         <span className="font-mono text-gray-400">
                           🎲{e.roll.dice}+{e.roll.bonus}={e.roll.total}
