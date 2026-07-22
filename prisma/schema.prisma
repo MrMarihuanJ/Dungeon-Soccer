@@ -131,11 +131,13 @@ model FriendRequest {
 // ===== Partidas RPG =====
 model Match {
   id           String   @id @default(cuid())
-  // Estado: COIN_FLIP | IN_PROGRESS | FINISHED
+  // Estado: COIN_FLIP | IN_PROGRESS | PAUSED | HALFTIME | FINISHED
   status       String   @default("COIN_FLIP")
-  // Modo: DREAM_TEAM | WORLD_CUP
+  // Modo de time: DREAM_TEAM | WORLD_CUP
   mode         String   @default("DREAM_TEAM")
-  // "heads" (cara) ou "tails" (coroa)
+  // Modo de jogo: QUICK_MATCH | TIMED_10 | FULL_90
+  gameMode     String   @default("QUICK_MATCH")
+  // "heads" (cara) ou "coroa" (tails)
   coinResult   String?
   // ID do usuário que começa com a bola
   startingUserId String?
@@ -164,6 +166,23 @@ model Match {
   // Ratings dos times no início da partida (para histórico)
   homeTeamRating Int?
   awayTeamRating Int?
+
+  // ===== Timer e Pausa =====
+  // Quando a partida começou (após o coin flip)
+  matchStartedAt    DateTime?
+  // Quando a partida foi pausada (null = não pausada)
+  pausedAt          DateTime?
+  // Total de milissegundos gastos em pausa
+  totalPausedMs     Int      @default(0)
+  // Se o intervalo já foi feito (modo FULL_90)
+  halftimeTaken     Boolean  @default(false)
+  // Quando o segundo tempo começou (FULL_90)
+  secondHalfStartedAt DateTime?
+  // Recompensa de XP baseada no modo de jogo
+  xpReward          Int      @default(0)
+  // Timestamp do início do turno atual (para timer de decisão)
+  turnStartedAt     DateTime?
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
