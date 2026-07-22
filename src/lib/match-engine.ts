@@ -853,7 +853,7 @@ export function pickPlayerForAction(
 
   // Para defesa, prioriza defensores
   if (category === 'DEFEND') {
-    const defenders = players.filter(p => p.position === 'DF' || p.position === 'GK')
+    const defenders = players.filter(p => p.position === 'DF' || p.position === 'LD' || p.position === 'LE' || p.position === 'GK')
     if (defenders.length > 0) {
       const player = defenders[Math.floor(Math.random() * defenders.length)].name
       const { target } = pickTwoRandomPlayers(players)

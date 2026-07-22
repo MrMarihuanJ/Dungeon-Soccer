@@ -176,9 +176,18 @@ export const getFormation = (id: string): Formation =>
   FORMATIONS.find((f) => f.id === id) ?? DEFAULT_FORMATION
 
 // Mapeia cada role tático para a posição genérica usada na busca de jogadores
-export const ROLE_TO_POSITION: Record<PositionRole, 'GK' | 'DF' | 'MF' | 'FW'> = {
+// Posições simplificadas para busca/filtro (incluindo laterais como distinct)
+export type SimplifiedPosition = 'GK' | 'DF' | 'LD' | 'LE' | 'MF' | 'FW'
+
+// Grupo de posição para compatibilidade de substituição
+// DF, LD e LE são todos defensores compatíveis entre si
+export const POSITION_GROUPS: Record<SimplifiedPosition, 'DEF' | 'MID' | 'ATT' | 'GK'> = {
+  GK: 'GK', DF: 'DEF', LD: 'DEF', LE: 'DEF', MF: 'MID', FW: 'ATT',
+}
+
+export const ROLE_TO_POSITION: Record<PositionRole, SimplifiedPosition> = {
   GK: 'GK',
-  LB: 'DF', CB: 'DF', RB: 'DF', LWB: 'DF', RWB: 'DF',
+  LB: 'LE', CB: 'DF', RB: 'LD', LWB: 'LE', RWB: 'LD',
   DM: 'MF', CM: 'MF', AM: 'MF', LM: 'MF', RM: 'MF',
   LW: 'FW', RW: 'FW', SS: 'FW', ST: 'FW',
 }

@@ -7,7 +7,7 @@
 export interface PlayerSeed {
   name: string
   fullName: string
-  position: 'GK' | 'DF' | 'MF' | 'FW'
+  position: 'GK' | 'DF' | 'LD' | 'LE' | 'MF' | 'FW'
   team: string
   photoUrl: string
   nationality: string
@@ -52,12 +52,12 @@ const mk = (
 ): PlayerSeed => ({
   name, fullName, position, team, photoUrl, nationality, shirtNumber,
   overall, age, leagueTier,
-  pace: attrs?.pace ?? (position === 'GK' ? 50 : position === 'DF' ? 65 : position === 'MF' ? 70 : 80),
-  shooting: attrs?.shooting ?? (position === 'GK' ? 30 : position === 'DF' ? 45 : position === 'MF' ? 70 : 85),
-  passing: attrs?.passing ?? (position === 'GK' ? 50 : position === 'DF' ? 65 : position === 'MF' ? 80 : 75),
-  dribbling: attrs?.dribbling ?? (position === 'GK' ? 40 : position === 'DF' ? 60 : position === 'MF' ? 80 : 85),
-  defending: attrs?.defending ?? (position === 'GK' ? 30 : position === 'DF' ? 85 : position === 'MF' ? 65 : 40),
-  physical: attrs?.physical ?? (position === 'GK' ? 70 : position === 'DF' ? 80 : position === 'MF' ? 70 : 75),
+  pace: attrs?.pace ?? (position === 'GK' ? 50 : position === 'DF' ? 65 : position === 'LD' || position === 'LE' ? 78 : position === 'MF' ? 70 : 80),
+  shooting: attrs?.shooting ?? (position === 'GK' ? 30 : position === 'DF' ? 45 : position === 'LD' || position === 'LE' ? 55 : position === 'MF' ? 70 : 85),
+  passing: attrs?.passing ?? (position === 'GK' ? 50 : position === 'DF' ? 65 : position === 'LD' || position === 'LE' ? 72 : position === 'MF' ? 80 : 75),
+  dribbling: attrs?.dribbling ?? (position === 'GK' ? 40 : position === 'DF' ? 60 : position === 'LD' || position === 'LE' ? 75 : position === 'MF' ? 80 : 85),
+  defending: attrs?.defending ?? (position === 'GK' ? 30 : position === 'DF' ? 85 : position === 'LD' || position === 'LE' ? 78 : position === 'MF' ? 65 : 40),
+  physical: attrs?.physical ?? (position === 'GK' ? 70 : position === 'DF' ? 80 : position === 'LD' || position === 'LE' ? 75 : position === 'MF' ? 70 : 75),
   isRetired,
   isInactive: false,
 })
@@ -81,9 +81,9 @@ export const PLAYERS_SEED: PlayerSeed[] = [
   mk('Éder Militão', 'Éder Gabriel Militão', 'DF', 'Real Madrid', wiki('Éder_Militão_2022.jpg'), 'Brasil', 3, 84, 27, 'TOP5', { pace: 82, defending: 84, physical: 82 }),
   mk('Gabriel Magalhães', 'Gabriel dos Santos Magalhães', 'DF', 'Arsenal', wiki('Gabriel_Magalhães.jpg'), 'Brasil', 6, 83, 27, 'TOP5', { pace: 75, defending: 84, physical: 86 }),
   mk('Bremer', 'Breno Lopes Cordeiro', 'DF', 'Juventus', wiki('Bremer_2022.jpg'), 'Brasil', 3, 83, 28, 'TOP5', { pace: 80, defending: 85, physical: 85 }),
-  mk('Danilo', 'Danilo Luiz da Silva', 'DF', 'Juventus', wiki('Danilo_Luiz_da_Silva_2021.jpg'), 'Brasil', 6, 80, 34, 'TOP5'),
-  mk('Alex Sandro', 'Alex Sandro Silva', 'DF', 'Fluminense', avatar('Alex Sandro', colorFor('Fluminense')), 'Brasil', 6, 78, 35, 'BR1'),
-  mk('Renan Lodi', 'Renan Augusto Lodi dos Santos', 'DF', 'Marseille', avatar('Renan Lodi'), 'Brasil', 6, 79, 27, 'TOP10'),
+  mk('Danilo', 'Danilo Luiz da Silva', 'LD', 'Juventus', wiki('Danilo_Luiz_da_Silva_2021.jpg'), 'Brasil', 6, 80, 34, 'TOP5'),
+  mk('Alex Sandro', 'Alex Sandro Silva', 'LE', 'Fluminense', avatar('Alex Sandro', colorFor('Fluminense')), 'Brasil', 6, 78, 35, 'BR1'),
+  mk('Renan Lodi', 'Renan Augusto Lodi dos Santos', 'LE', 'Marseille', avatar('Renan Lodi'), 'Brasil', 6, 79, 27, 'TOP10'),
   mk('Ibañez', 'Roger Ibañez da Silva', 'DF', 'Al-Ahli', avatar('Ibañez'), 'Brasil', 3, 78, 26, 'OTHER'),
   mk('David Luiz', 'David Luiz Moreira Marinho', 'DF', 'Flamengo', wiki('David_Luiz_2019.jpg'), 'Brasil', 23, 78, 38, 'BR1'),
   mk('Léo Pereira', 'Leonardo Pereira de Oliveira', 'DF', 'Flamengo', avatar('Léo Pereira', colorFor('Flamengo')), 'Brasil', 4, 77, 30, 'BR1'),
@@ -173,8 +173,8 @@ export const PLAYERS_SEED: PlayerSeed[] = [
   mk('Ronaldo R9', 'Ronaldo Luís Nazário de Lima', 'FW', 'Real Madrid (retro)', wiki('Ronaldo_2018.jpg'), 'Brasil', 9, 96, 48, 'TOP5', { pace: 92, shooting: 95, dribbling: 95, physical: 80 }, true),
   mk('Ronaldinho', 'Ronaldo de Assis Moreira', 'MF', 'Barcelona (retro)', wiki('Ronaldinho_2012.jpg'), 'Brasil', 10, 94, 45, 'TOP5', { pace: 84, shooting: 88, dribbling: 96 }, true),
   mk('Rivaldo', 'Vitor Borba Ferreira', 'MF', 'Barcelona (retro)', wiki('Rivaldo_2018.jpg'), 'Brasil', 10, 91, 53, 'TOP5', { pace: 80, shooting: 90, dribbling: 90 }, true),
-  mk('Roberto Carlos', 'Roberto Carlos da Silva Rocha', 'DF', 'Real Madrid (retro)', wiki('Roberto_Carlos_2018.jpg'), 'Brasil', 6, 92, 52, 'TOP5', { pace: 92, shooting: 80, defending: 85, physical: 85 }, true),
-  mk('Cafu', 'Marcos Evangelista de Moraes', 'DF', 'AS Roma (retro)', wiki('Cafu_2022.jpg'), 'Brasil', 2, 91, 54, 'TOP5', { pace: 90, defending: 86, physical: 84 }, true),
+  mk('Roberto Carlos', 'Roberto Carlos da Silva Rocha', 'LE', 'Real Madrid (retro)', wiki('Roberto_Carlos_2018.jpg'), 'Brasil', 6, 92, 52, 'TOP5', { pace: 92, shooting: 80, defending: 85, physical: 85 }, true),
+  mk('Cafu', 'Marcos Evangelista de Moraes', 'LD', 'AS Roma (retro)', wiki('Cafu_2022.jpg'), 'Brasil', 2, 91, 54, 'TOP5', { pace: 90, defending: 86, physical: 84 }, true),
   mk('Beckenbauer', 'Franz Anton Beckenbauer', 'DF', 'Bayern Munich (retro)', wiki('Bundesliga_2016-_Franz_Beckenbauer_1.jpg'), 'Alemanha', 5, 93, 78, 'TOP5', { pace: 78, defending: 92, passing: 85 }, true),
   mk('Yashin', 'Lev Ivanovich Yashin', 'GK', 'Dynamo Moscow (retro)', wiki('Lev_Yashin_1967.jpg'), 'Rússia', 1, 93, 95, 'OTHER', {}, true),
   mk('Di Stéfano', 'Alfredo Stéfano Di Stéfano Laulhé', 'FW', 'Real Madrid (retro)', wiki('Alfredo_Di_Stefano_1959.jpg'), 'Argentina', 9, 95, 88, 'TOP5', { pace: 88, shooting: 92, dribbling: 92 }, true),

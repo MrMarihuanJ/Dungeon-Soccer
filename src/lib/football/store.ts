@@ -15,7 +15,7 @@ export interface SelectedPlayer {
   name: string        // Nome curto
   fullName: string    // Nome completo
   team: string        // Time atual
-  position: string    // GK | DF | MF | FW
+  position: string    // GK | DF | LD | LE | MF | FW
   photoUrl: string    // URL da foto
   nationality?: string | null
   shirtNumber?: number | null
