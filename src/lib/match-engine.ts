@@ -324,6 +324,10 @@ export interface MatchEvent {
   timestamp: number
   penaltyEvent?: PenaltyEvent | null
   varResult?: { decision: 'CONFIRMED' | 'OVERTURNED'; dice: number; description: string } | null
+  // ===== Narrativa com nome de jogador =====
+  playerName?: string
+  targetPlayerName?: string
+  narrative?: string
 }
 
 export interface MatchState {
@@ -702,12 +706,179 @@ export function coinToPossession(coin: CoinResult): Possession {
 }
 
 // =====================================================================
+// Gera narrativa com nome de jogador para a ação
+// =====================================================================
+const NARRATIVE_TEMPLATES: Record<string, string[]> = {
+  KICKOFF: [
+    '{player} faz a saída de bola.',
+    '{player} inicia a jogada pelo meio.',
+    '{player} toca a bola para começar.',
+  ],
+  PASS: [
+    '{player} faz {action} para {target}.',
+    '{player} executa {action} encontrando {target}.',
+    '{target} recebe {action} de {player}.',
+    '{player} procura {target} com {action}.',
+  ],
+  DRIBBLE: [
+    '{player} tenta {action}!',
+    '{player} arrisca {action} pelo lado!',
+    '{player} sai driblando com {action}!',
+  ],
+  SHOOT: [
+    '{player} arrisca {action}!',
+    '{player} solta {action} de fora da área!',
+    '{player} finaliza com {action}!',
+  ],
+  DEFEND: [
+    '{player} faz {action}!',
+    '{player} corta o ataque com {action}!',
+    '{player} intercepta com {action}!',
+  ],
+  SPECIAL: [
+    '{player} executa {action}!',
+    '{player} brilha com {action}!',
+    '{player} tenta a jogada especial: {action}!',
+  ],
+  FREE_KICK: [
+    '{player} cobra a falta com {action}!',
+    '{player} bate a falta: {action}!',
+    '{player} prepara {action} na cobrança!',
+  ],
+}
+
+const GOAL_NARRATIVE_TEMPLATES: string[] = [
+  'GOOOL! {player} faz {action} e marca!',
+  'GOOOL! {player} bateu {action} e balançou a rede!',
+  'GOOOL! {player} marca com {action}!',
+  'GOOOL! Que golaço de {player}! {action} perfeito!',
+  'GOOOL! {player} não perdoa! {action} no ângulo!',
+]
+
+const FAIL_NARRATIVE_TEMPLATES: string[] = [
+  '{player} erra {action}.',
+  '{player} perde a bola tentando {action}.',
+  '{action} de {player} não funciona.',
+]
+
+/**
+ * Gera uma narrativa descritiva para a jogada.
+ * @param action Ação de futebol
+ * @param playerName Nome do jogador que executa
+ * @param targetPlayerName Nome do jogador que recebe (para passes)
+ * @param isGoal Se resultou em gol
+ * @param success Se a jogada foi bem-sucedida
+ */
+export function generateNarrative(
+  action: FootballAction | { id: string; name: string; emoji: string; category: string; dc: number },
+  playerName: string,
+  targetPlayerName?: string,
+  isGoal?: boolean,
+  success?: boolean,
+): string {
+  const category = action.category as string
+  const actionName = action.name.toLowerCase()
+
+  if (isGoal) {
+    const templates = GOAL_NARRATIVE_TEMPLATES
+    const template = templates[Math.floor(Math.random() * templates.length)]
+    return template
+      .replace('{player}', playerName)
+      .replace('{action}', actionName)
+  }
+
+  if (!success) {
+    const templates = FAIL_NARRATIVE_TEMPLATES
+    const template = templates[Math.floor(Math.random() * templates.length)]
+    return template
+      .replace('{player}', playerName)
+      .replace('{action}', actionName)
+  }
+
+  const templates = NARRATIVE_TEMPLATES[category] || NARRATIVE_TEMPLATES['PASS']
+  const template = templates[Math.floor(Math.random() * templates.length)]
+  return template
+    .replace('{player}', playerName)
+    .replace('{action}', actionName)
+    .replace('{target}', targetPlayerName || 'companheiro')
+}
+
+/**
+ * Seleciona um jogador aleatório da lista de titulares.
+ * Pode filtrar por posição preferida da ação.
+ */
+export function pickRandomPlayer(players: { name: string; position: string }[]): string {
+  if (players.length === 0) return 'Jogador'
+  const idx = Math.floor(Math.random() * players.length)
+  return players[idx].name
+}
+
+/**
+ * Seleciona dois jogadores diferentes da lista (para passes/passes longos).
+ */
+export function pickTwoRandomPlayers(players: { name: string; position: string }[]): { player: string; target: string } {
+  if (players.length <= 1) return { player: pickRandomPlayer(players), target: 'companheiro' }
+  const idx1 = Math.floor(Math.random() * players.length)
+  let idx2 = Math.floor(Math.random() * players.length)
+  while (idx2 === idx1 && players.length > 1) {
+    idx2 = Math.floor(Math.random() * players.length)
+  }
+  return { player: players[idx1].name, target: players[idx2].name }
+}
+
+/**
+ * Seleciona jogador baseado na categoria da ação (prioriza posição adequada).
+ */
+export function pickPlayerForAction(
+  players: { name: string; position: string }[],
+  category: string,
+): { player: string; target: string } {
+  if (players.length === 0) return { player: 'Jogador', target: 'companheiro' }
+
+  // Para chutes, prioriza atacantes
+  if (category === 'SHOOT' || category === 'FREE_KICK') {
+    const attackers = players.filter(p => p.position === 'FW')
+    if (attackers.length > 0) {
+      const player = attackers[Math.floor(Math.random() * attackers.length)].name
+      const { target } = pickTwoRandomPlayers(players)
+      return { player, target }
+    }
+    const midfielders = players.filter(p => p.position === 'MF')
+    if (midfielders.length > 0) {
+      const player = midfielders[Math.floor(Math.random() * midfielders.length)].name
+      const { target } = pickTwoRandomPlayers(players)
+      return { player, target }
+    }
+  }
+
+  // Para defesa, prioriza defensores
+  if (category === 'DEFEND') {
+    const defenders = players.filter(p => p.position === 'DF' || p.position === 'GK')
+    if (defenders.length > 0) {
+      const player = defenders[Math.floor(Math.random() * defenders.length)].name
+      const { target } = pickTwoRandomPlayers(players)
+      return { player, target }
+    }
+  }
+
+  // Para passes, pega dois jogadores diferentes
+  if (category === 'PASS' || category === 'KICKOFF') {
+    return pickTwoRandomPlayers(players)
+  }
+
+  // Para outros, seleciona aleatoriamente
+  return pickTwoRandomPlayers(players)
+}
+
+// =====================================================================
 // Processa uma jogada e atualiza o estado
 // =====================================================================
 export function applyActionToState(
   state: MatchState,
   action: FootballAction,
   roll: DiceRollResult,
+  playerName?: string,
+  targetPlayerName?: string,
 ): MatchState {
   const newState: MatchState = {
     ...state,
@@ -732,6 +903,8 @@ export function applyActionToState(
     isGoal: false,
     possessionChanged: false,
     timestamp: Date.now(),
+    playerName: playerName || undefined,
+    targetPlayerName: targetPlayerName || undefined,
   }
 
   newState.turnCount += 1
@@ -910,6 +1083,17 @@ export function applyActionToState(
         newState.awayProgress = Math.max(0, newState.awayProgress - 10)
       }
     }
+  }
+
+  // Gera narrativa com nome de jogador
+  if (event.playerName) {
+    event.narrative = generateNarrative(
+      event.action,
+      event.playerName,
+      event.targetPlayerName,
+      event.isGoal,
+      event.roll.success,
+    )
   }
 
   newState.events.push(event)

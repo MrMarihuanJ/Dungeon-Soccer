@@ -224,9 +224,13 @@ export async function POST(req: NextRequest) {
       matchEndReason: '',
     }
 
+    // Player names para narrativa (enviados pelo cliente)
+    const playerName = body.playerName ? String(body.playerName) : undefined
+    const targetPlayerName = body.targetPlayerName ? String(body.targetPlayerName) : undefined
+
     // Processa a jogada
     const roll = resolveAction(action)
-    const newState = applyActionToState(state, action, roll)
+    const newState = applyActionToState(state, action, roll, playerName, targetPlayerName)
     const lastEvent = newState.events[newState.events.length - 1]
 
     // Atualiza a partida no banco
