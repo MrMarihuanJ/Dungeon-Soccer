@@ -147,12 +147,15 @@ export function fallbackPhoto(name: string): string {
 }
 
 // =====================================================================
-// Mapeia positionId → posição genérica (GK/DF/MF/FW)
+// Mapeia positionId → posição genérica (GK/DF/LD/LE/MF/FW)
 // =====================================================================
-export function posToPosition(posId: string): 'GK' | 'DF' | 'MF' | 'FW' {
+export function posToPosition(posId: string): 'GK' | 'DF' | 'LD' | 'LE' | 'MF' | 'FW' {
   if (posId === 'gk') return 'GK'
-  if (['lb', 'lcb', 'rcb', 'rb'].includes(posId)) return 'DF'
-  if (['dm', 'lcm', 'rcm', 'cam', 'lm', 'rm'].includes(posId)) return 'MF'
+  if (posId === 'lb') return 'LE'   // Lateral Esquerdo
+  if (posId === 'rb') return 'LD'   // Lateral Direito
+  if (['lcb', 'rcb', 'ccb'].includes(posId)) return 'DF'  // Zagueiro
+  if (['lwb', 'rwb'].includes(posId)) return posId === 'lwb' ? 'LE' : 'LD' // Ala
+  if (['dm', 'lcm', 'rcm', 'cam', 'ldm', 'rdm', 'lam', 'ram', 'lm', 'rm', 'ccm'].includes(posId)) return 'MF'
   return 'FW' // lw, st, rw, ss
 }
 

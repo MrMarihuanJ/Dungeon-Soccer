@@ -20,7 +20,7 @@ import { ArrowRight, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import { useState } from 'react'
 import type { SelectedPlayer } from '@/lib/football/store'
-import type { Formation } from '@/lib/football/formations'
+import { ROLE_TO_POSITION, POSITION_GROUPS, type SimplifiedPosition, type Formation } from '@/lib/football/formations'
 
 interface Props {
   open: boolean
@@ -48,8 +48,12 @@ export function SubstitutionDialog({
     .map((p) => ({ position: p, player: starters[p.id] }))
     .filter((x) => x.player !== null) as { position: typeof formation.positions[number]; player: SelectedPlayer }[]
 
-  // Filtra por posição compatível (mesma posição genérica)
-  const compatible = filledStarters.filter((x) => x.player.position === reserve.position)
+  // Filtra por posição compatível (mesmo grupo defensivo: DF/LD/LE são compatíveis)
+  const reserveGroup = POSITION_GROUPS[reserve.position as SimplifiedPosition] ?? 'DEF'
+  const compatible = filledStarters.filter((x) => {
+    const starterGroup = POSITION_GROUPS[x.player.position as SimplifiedPosition] ?? 'DEF'
+    return reserveGroup === starterGroup
+  })
   const list = allowAnyPosition ? filledStarters : compatible
 
   return (

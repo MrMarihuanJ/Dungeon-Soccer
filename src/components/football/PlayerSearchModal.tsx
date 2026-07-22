@@ -33,7 +33,7 @@ interface ApiPlayer {
   photoUrl: string
   nationality?: string | null
   shirtNumber?: number | null
-  source?: 'thesportsdb' | 'wikipedia' | 'local'
+  source?: 'thesportsdb' | 'transfermarkt' | 'sofascore' | 'local'
   overall?: number
   age?: number
   pace?: number
@@ -161,8 +161,8 @@ export function PlayerSearchModal({
           </DialogTitle>
           <DialogDescription>
             {position
-              ? `Busca mundial em tempo real via TheSportsDB + Wikipedia + banco local. Filtro automático: ${targetPos}.`
-              : 'Busca mundial em tempo real via TheSportsDB + Wikipedia + banco local. Digite o nome de qualquer jogador do mundo.'}
+              ? `Busca mundial em tempo real via TheSportsDB + Transfermarkt + Sofascore + banco local. Filtro automático: ${targetPos}.`
+              : 'Busca mundial em tempo real via TheSportsDB + Transfermarkt + Sofascore + banco local. Digite o nome de qualquer jogador do mundo.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -258,9 +258,11 @@ export function PlayerSearchModal({
                     const isSelected = selectedPlayerIds.includes(p.id)
                     const sourceBadge = p.source === 'thesportsdb'
                       ? { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
-                      : p.source === 'wikipedia'
-                        ? { label: 'Wikipedia', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
-                        : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+                      : p.source === 'transfermarkt'
+                        ? { label: 'Transfermarkt', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' }
+                        : p.source === 'sofascore'
+                          ? { label: 'Sofascore', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
+                          : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
                     // Overall badge estilo FIFA
                     const overall = p.overall ?? 0
                     const overallTier = overall >= 90 ? 'bg-gradient-to-br from-yellow-400 to-amber-600 text-amber-900'
@@ -357,7 +359,7 @@ export function PlayerSearchModal({
           </ScrollArea>
 
           <p className="text-center text-[11px] text-gray-400">
-            🌍 Busca mundial em tempo real · TheSportsDB + Wikipedia + banco local + ogol.com.br
+            🌍 Busca mundial em tempo real · TheSportsDB + Transfermarkt + Sofascore + banco local + ogol.com.br
           </p>
         </div>
       </DialogContent>

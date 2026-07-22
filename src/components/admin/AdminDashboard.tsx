@@ -46,6 +46,8 @@ interface Props {
 const POS_LABEL: Record<string, string> = {
   GK: 'Goleiro',
   DF: 'Zagueiro',
+  LD: 'Lateral Direito',
+  LE: 'Lateral Esquerdo',
   MF: 'Meia',
   FW: 'Atacante',
 }
@@ -54,6 +56,7 @@ const emptyForm = {
   name: '',
   fullName: '',
   position: 'FW',
+  // Also keep LD/LE available for editing form defaults
   team: '',
   photoUrl: '',
   nationality: '',
@@ -266,7 +269,7 @@ export function AdminDashboard({ username, onLogout, onBack }: Props) {
               </div>
               <div>
                 <div className="text-2xl font-bold text-white">3 fontes</div>
-                <div className="text-xs text-gray-400">TheSportsDB + Wikipedia + Local</div>
+                <div className="text-xs text-gray-400">TheSportsDB + Transfermarkt + Sofascore + Local</div>
               </div>
             </CardContent>
           </Card>
@@ -327,6 +330,8 @@ export function AdminDashboard({ username, onLogout, onBack }: Props) {
                       <SelectContent>
                         <SelectItem value="GK">Goleiro</SelectItem>
                         <SelectItem value="DF">Zagueiro</SelectItem>
+                        <SelectItem value="LD">Lateral Direito</SelectItem>
+                        <SelectItem value="LE">Lateral Esquerdo</SelectItem>
                         <SelectItem value="MF">Meia</SelectItem>
                         <SelectItem value="FW">Atacante</SelectItem>
                       </SelectContent>
@@ -455,6 +460,8 @@ export function AdminDashboard({ username, onLogout, onBack }: Props) {
                                 <SelectContent>
                                   <SelectItem value="GK">Goleiro</SelectItem>
                                   <SelectItem value="DF">Zagueiro</SelectItem>
+                                  <SelectItem value="LD">Lateral Direito</SelectItem>
+                                  <SelectItem value="LE">Lateral Esquerdo</SelectItem>
                                   <SelectItem value="MF">Meia</SelectItem>
                                   <SelectItem value="FW">Atacante</SelectItem>
                                 </SelectContent>
@@ -566,7 +573,7 @@ export function AdminDashboard({ username, onLogout, onBack }: Props) {
           <div>
             <strong className="text-emerald-300">Busca em tempo real ativa.</strong> Os usuários do
             site podem buscar <strong>qualquer jogador do mundo</strong> — os resultados vêm da
-            TheSportsDB (mundial) + Wikipedia + banco local. Os registros que você adicionar aqui
+            TheSportsDB + Transfermarkt + Sofascore + banco local. Os registros que você adicionar aqui
             aparecerão junto com os externos.
           </div>
         </div>

@@ -23,6 +23,8 @@ interface Props {
 const POS_LABEL: Record<string, string> = {
   GK: 'Goleiro',
   DF: 'Zagueiro',
+  LD: 'Lateral Direito',
+  LE: 'Lateral Esquerdo',
   MF: 'Meia',
   FW: 'Atacante',
 }
@@ -30,6 +32,8 @@ const POS_LABEL: Record<string, string> = {
 const POS_COLOR: Record<string, string> = {
   GK: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   DF: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
+  LD: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300',
+  LE: 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300',
   MF: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
   FW: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300',
 }
