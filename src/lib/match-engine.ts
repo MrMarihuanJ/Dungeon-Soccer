@@ -42,6 +42,40 @@ export interface DiceRollResult {
   exceptional: boolean  // sucesso excecional (margem >= 5)
 }
 
+// ===== PENALTY/FOUL EVENTS =====
+export type PenaltyEventType =
+  | 'FOUL'           // Falta comum
+  | 'OFFSIDE'        // Impedimento
+  | 'CORNER'         // Escanteio
+  | 'BALL_OUT'       // Bola para fora
+  | 'YELLOW_CARD'    // Cartão amarelo
+  | 'RED_CARD'       // Cartão vermelho
+  | 'INJURY'         // Jogador lesionado
+  | 'PENALTY_KICK'   // Pênalti
+  | 'VAR_REVIEW'     // Revisão do VAR
+
+export interface PenaltyEvent {
+  type: PenaltyEventType
+  possession: Possession  // quem sofreu a penalidade (time que COMETEU a falta)
+  favoredPossession: Possession  // quem foi favorecido
+  description: string
+  injuredPlayerId?: string  // se houver lesão
+  cardPlayerId?: string     // quem recebeu cartão
+  requiresSubstitution: boolean  // se precisa substituição por lesão
+  requiresVAR: boolean      // se precisa revisão do VAR
+  varDecision?: 'CONFIRMED' | 'OVERTURNED'  // decisão do VAR
+  requiresFreeKick: boolean  // se precisa cobrança de falta
+}
+
+export interface TeamMatchState {
+  substitutionsUsed: number
+  maxSubstitutions: number
+  redCards: number
+  yellowCards: number
+  injuredPlayers: string[]   // IDs dos jogadores lesionados
+  sentOffPlayers: string[]   // IDs dos jogadores expulsos
+}
+
 export interface MatchEvent {
   turn: number
   possession: Possession
@@ -58,6 +92,8 @@ export interface MatchEvent {
   isGoal: boolean
   possessionChanged: boolean
   timestamp: number
+  penaltyEvent?: PenaltyEvent | null
+  varResult?: { decision: 'CONFIRMED' | 'OVERTURNED'; dice: number; description: string } | null
 }
 
 export interface MatchState {
@@ -74,6 +110,8 @@ export interface MatchState {
   maxTurns: number
   events: MatchEvent[]
   winner: Possession | 'DRAW' | null
+  homeTeamState: TeamMatchState
+  awayTeamState: TeamMatchState
 }
 
 // =====================================================================
@@ -124,6 +162,260 @@ export function resolveAction(action: FootballAction, extraBonus = 0): DiceRollR
 }
 
 // =====================================================================
+// Sistema de Penalizações — gerado a partir de rolagens baixas
+// =====================================================================
+const PENALTY_DESCRIPTIONS: Record<PenaltyEventType, string[]> = {
+  FOUL: [
+    'Falta dura no meio-campo!',
+    'Carrinho por trinho! Falta perigosa!',
+    'Entrada forte, o juiz marca falta!',
+    'Empurrão na área! Falta cobrar.',
+    'Mão na bola do adversário, falta!',
+    'Corte agressivo, falta marcada!',
+  ],
+  OFFSIDE: [
+    'Impedimento! Jogador adiantado.',
+    'Linha traçada, impedimento marcado!',
+    'Tava na cara do gol, mas tava impedido!',
+  ],
+  CORNER: [
+    'Escanteio para o ataque! Bola sai pela linha de fundo.',
+    'Defensor espalmou pra escanteio!',
+    'Cruzamento desviado, escanteio!',
+  ],
+  BALL_OUT: [
+    'Bola vai pra lateral! Arremesso.',
+    'Passe longo demais, bola saiu!',
+    'Chutou pro lado, bola fora do campo!',
+  ],
+  YELLOW_CARD: [
+    'Cartão amarelo! Falta reiterada.',
+    'Amarelo! Protestou demais com o juiz.',
+    'Cartão amarelo por falta tática dura!',
+    'Amarelo! Simulação detectada.',
+    'Cartão amarelo por demora no jogo!',
+  ],
+  RED_CARD: [
+    'CARTÃO VERMELHO! Falta violentíssima!',
+    'Vermelho direto! Voo dangerous play!',
+    'Segundo amarelo = vermelho! Expulso!',
+    'Vermelho! Mão na bola na área impedindo gol!',
+  ],
+  INJURY: [
+    'Jogador caiu e não consegue continuar! Lesão!',
+    'Medical team entra! Jogador machucado!',
+    'Tropeço feio! Parece lesão muscular!',
+    'Colisão forte! Jogador no chão!',
+  ],
+  PENALTY_KICK: [
+    'PÊNALTI! Falta dentro da área!',
+    'Mão na bola do defensor! Pênalti marcado!',
+    'Carrinho na área! Pênalti!',
+  ],
+  VAR_REVIEW: [
+    '📺 VAR! Juiz pede revisão!',
+    '📺 VAR! Lance sendo analisado!',
+    '📺 VAR! Decisão sendo revista!',
+  ],
+}
+
+export function generatePenaltyEvent(
+  dice: number,
+  possession: Possession,
+  playerIds: string[] = [],
+): PenaltyEvent | null {
+  // Only trigger penalties on low dice rolls (1-5) or critical fails
+  if (dice > 5 && dice !== 1) return null
+
+  const opponent: Possession = possession === 'HOME' ? 'AWAY' : 'HOME'
+  
+  // Weight-based random selection depending on dice value
+  const roll = Math.random()
+  
+  // Dice 1 (critical fail) = much more likely to get severe penalties
+  if (dice === 1) {
+    // Critical fail: 40% red card, 25% penalty, 20% injury, 10% yellow, 5% foul
+    if (roll < 0.25) {
+      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
+      return {
+        type: 'PENALTY_KICK',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.PENALTY_KICK[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.PENALTY_KICK.length)],
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.7, // Penalty often goes to VAR
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.65) {
+      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
+      return {
+        type: 'RED_CARD',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.RED_CARD[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.RED_CARD.length)],
+        cardPlayerId: pid,
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.5,
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.85) {
+      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
+      return {
+        type: 'INJURY',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.INJURY[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.INJURY.length)],
+        injuredPlayerId: pid,
+        requiresSubstitution: true,
+        requiresVAR: false,
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.95) {
+      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
+      return {
+        type: 'YELLOW_CARD',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.YELLOW_CARD[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.YELLOW_CARD.length)],
+        cardPlayerId: pid,
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.3,
+        requiresFreeKick: false,
+      }
+    }
+    return {
+      type: 'FOUL',
+      possession,
+      favoredPossession: opponent,
+      description: PENALTY_DESCRIPTIONS.FOUL[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.FOUL.length)],
+      requiresSubstitution: false,
+      requiresVAR: Math.random() < 0.2,
+      requiresFreeKick: true,
+    }
+  }
+
+  // Dice 2-5: less severe but still possible
+  // 35% foul, 20% offside, 15% ball out, 12% corner, 8% yellow, 5% injury, 3% penalty, 2% VAR direct
+  if (dice <= 5) {
+    if (roll < 0.35) {
+      return {
+        type: 'FOUL',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.FOUL[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.FOUL.length)],
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.2,
+        requiresFreeKick: true,
+      }
+    }
+    if (roll < 0.55) {
+      return {
+        type: 'OFFSIDE',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.OFFSIDE[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.OFFSIDE.length)],
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.6, // Offside commonly goes to VAR
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.70) {
+      return {
+        type: 'BALL_OUT',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.BALL_OUT[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.BALL_OUT.length)],
+        requiresSubstitution: false,
+        requiresVAR: false,
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.82) {
+      return {
+        type: 'CORNER',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.CORNER[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.CORNER.length)],
+        requiresSubstitution: false,
+        requiresVAR: false,
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.90) {
+      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
+      return {
+        type: 'YELLOW_CARD',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.YELLOW_CARD[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.YELLOW_CARD.length)],
+        cardPlayerId: pid,
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.3,
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.95) {
+      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
+      return {
+        type: 'INJURY',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.INJURY[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.INJURY.length)],
+        injuredPlayerId: pid,
+        requiresSubstitution: true,
+        requiresVAR: false,
+        requiresFreeKick: false,
+      }
+    }
+    if (roll < 0.98) {
+      return {
+        type: 'PENALTY_KICK',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.PENALTY_KICK[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.PENALTY_KICK.length)],
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.8,
+        requiresFreeKick: false,
+      }
+    }
+    return {
+      type: 'VAR_REVIEW',
+      possession,
+      favoredPossession: opponent,
+      description: PENALTY_DESCRIPTIONS.VAR_REVIEW[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.VAR_REVIEW.length)],
+      requiresSubstitution: false,
+      requiresVAR: true,
+      requiresFreeKick: false,
+    }
+  }
+
+  return null
+}
+
+// =====================================================================
+// VAR Decision — rolagem de dado para decidir
+// =====================================================================
+export function resolveVARDecision(): { decision: 'CONFIRMED' | 'OVERTURNED'; dice: number; description: string } {
+  const dice = rollD20()
+  // DC 12: se total >= 12, mantém a decisão original. Se < 12, inverte.
+  if (dice >= 12) {
+    return {
+      decision: 'CONFIRMED',
+      dice,
+      description: `📺 VAR CONFIRMA a decisão original! (d20=${dice} ≥ 12)`,
+    }
+  }
+  return {
+    decision: 'OVERTURNED',
+    dice,
+    description: `📺 VAR INVERTE a decisão! (d20=${dice} < 12)`,
+  }
+}
+
+// =====================================================================
 // Cria estado inicial da partida
 // =====================================================================
 export function createInitialMatchState(matchId: string, maxTurns = 24): MatchState {
@@ -141,6 +433,8 @@ export function createInitialMatchState(matchId: string, maxTurns = 24): MatchSt
     maxTurns,
     events: [],
     winner: null,
+    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
   }
 }
 
@@ -168,6 +462,8 @@ export function applyActionToState(
   const newState: MatchState = {
     ...state,
     events: [...state.events],
+    homeTeamState: { ...state.homeTeamState, injuredPlayers: [...state.homeTeamState.injuredPlayers], sentOffPlayers: [...state.homeTeamState.sentOffPlayers] },
+    awayTeamState: { ...state.awayTeamState, injuredPlayers: [...state.awayTeamState.injuredPlayers], sentOffPlayers: [...state.awayTeamState.sentOffPlayers] },
   }
   const possession = newState.currentPossession!
   const event: MatchEvent = {
@@ -189,6 +485,82 @@ export function applyActionToState(
   }
 
   newState.turnCount += 1
+
+  // ===== PENALTY EVENT GENERATION =====
+  // Generate penalty events on low dice rolls
+  if (!roll.success && roll.dice <= 5) {
+    const penaltyEvent = generatePenaltyEvent(roll.dice, possession)
+    if (penaltyEvent) {
+      event.penaltyEvent = penaltyEvent
+      
+      // Apply immediate effects
+      const teamState = possession === 'HOME' ? newState.homeTeamState : newState.awayTeamState
+      
+      if (penaltyEvent.type === 'YELLOW_CARD') {
+        teamState.yellowCards += 1
+      }
+      if (penaltyEvent.type === 'RED_CARD') {
+        teamState.redCards += 1
+        if (penaltyEvent.cardPlayerId) {
+          teamState.sentOffPlayers.push(penaltyEvent.cardPlayerId)
+        }
+      }
+      if (penaltyEvent.type === 'INJURY') {
+        if (penaltyEvent.injuredPlayerId) {
+          teamState.injuredPlayers.push(penaltyEvent.injuredPlayerId)
+        }
+      }
+      
+      // Offside always changes possession
+      if (penaltyEvent.type === 'OFFSIDE') {
+        newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
+        event.possessionChanged = true
+      }
+      
+      // Foul gives ball to favored team
+      if (penaltyEvent.type === 'FOUL' && penaltyEvent.requiresFreeKick) {
+        newState.currentPossession = penaltyEvent.favoredPossession
+        event.possessionChanged = true
+      }
+      
+      // Red card changes possession
+      if (penaltyEvent.type === 'RED_CARD') {
+        newState.currentPossession = penaltyEvent.favoredPossession
+        event.possessionChanged = true
+      }
+      
+      // Penalty kick gives ball to favored team with high progress
+      if (penaltyEvent.type === 'PENALTY_KICK') {
+        newState.currentPossession = penaltyEvent.favoredPossession
+        event.possessionChanged = true
+        // Set high progress for the favored team
+        if (penaltyEvent.favoredPossession === 'HOME') {
+          newState.homeProgress = Math.min(100, newState.homeProgress + 60)
+        } else {
+          newState.awayProgress = Math.min(100, newState.awayProgress + 60)
+        }
+      }
+    }
+  }
+  // Critical fail always generates a penalty
+  if (roll.critical === 'crit_fail') {
+    const penaltyEvent = generatePenaltyEvent(1, possession)
+    if (penaltyEvent && !event.penaltyEvent) {
+      event.penaltyEvent = penaltyEvent
+      
+      const teamState = possession === 'HOME' ? newState.homeTeamState : newState.awayTeamState
+      if (penaltyEvent.type === 'RED_CARD') {
+        teamState.redCards += 1
+        if (penaltyEvent.cardPlayerId) teamState.sentOffPlayers.push(penaltyEvent.cardPlayerId)
+      }
+      if (penaltyEvent.type === 'INJURY') {
+        if (penaltyEvent.injuredPlayerId) teamState.injuredPlayers.push(penaltyEvent.injuredPlayerId)
+      }
+      if (penaltyEvent.type === 'YELLOW_CARD') {
+        teamState.yellowCards += 1
+      }
+    }
+  }
 
   if (roll.success) {
     // ===== SUCESSO: ganha progresso =====

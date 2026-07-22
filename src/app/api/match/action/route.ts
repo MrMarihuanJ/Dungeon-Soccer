@@ -112,6 +112,8 @@ export async function POST(req: NextRequest) {
       maxTurns: 24,
       events: JSON.parse(match.eventsJson),
       winner: null,
+      homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+      awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
     }
 
     // Processa a jogada

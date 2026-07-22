@@ -11,12 +11,13 @@
 // =====================================================================
 
 export type ActionCategory =
-  | 'KICKOFF'   // saída de bola
-  | 'PASS'      // passe
-  | 'DRIBBLE'   // drible
-  | 'SHOOT'     // chute
-  | 'DEFEND'    // defesa
-  | 'SPECIAL'   // jogada especial
+  | 'KICKOFF'    // saída de bola
+  | 'PASS'       // passe
+  | 'DRIBBLE'    // drible
+  | 'SHOOT'      // chute
+  | 'DEFEND'     // defesa
+  | 'SPECIAL'    // jogada especial
+  | 'FREE_KICK'  // cobrança de falta
 
 export interface FootballAction {
   id: string
@@ -180,6 +181,47 @@ const SPECIAL_ACTIONS: FootballAction[] = [
 ]
 
 // =====================================================================
+// COBRANÇA DE FALTA (FREE_KICK) — 35 ações (só aparecem na cobrança)
+// =====================================================================
+const FREE_KICK_ACTIONS: FootballAction[] = [
+  { id: 'fk01', name: 'Chute Direto no Gol', emoji: '🚀', category: 'FREE_KICK', description: 'Bate direto, sem cerimônia. Força total!', dc: 16, skillBonus: 1, progress: 55, ballRetentionOnFail: 0, goalChance: 0.7 },
+  { id: 'fk02', name: 'Chute por Baixo da Barreira', emoji: '🐍', category: 'FREE_KICK', description: 'Rasteiro por baixo da barreira que pulou!', dc: 18, skillBonus: 0, progress: 60, ballRetentionOnFail: 0, goalChance: 0.65 },
+  { id: 'fk03', name: 'Efeito Juninho', emoji: '🌀', category: 'FREE_KICK', description: 'Bola com efeito mortal, estilo Juninho Pernambucano.', dc: 17, skillBonus: 1, progress: 65, ballRetentionOnFail: 0, goalChance: 0.75 },
+  { id: 'fk04', name: 'Cruzamento na Área', emoji: '✝️', category: 'FREE_KICK', description: 'Cruza na cabeça do atacante.', dc: 12, skillBonus: 3, progress: 30, ballRetentionOnFail: 0.2, goalChance: 0.3 },
+  { id: 'fk05', name: 'Passe Rasteiro Lateral', emoji: '➡️', category: 'FREE_KICK', description: 'Toque pro lateral correr e cruzar.', dc: 10, skillBonus: 4, progress: 15, ballRetentionOnFail: 0.3, goalChance: 0 },
+  { id: 'fk06', name: 'Bomba no Ângulo', emoji: '💥', category: 'FREE_KICK', description: 'Bomba no ângulo, goleiro nem voa.', dc: 19, skillBonus: -1, progress: 70, ballRetentionOnFail: 0, goalChance: 0.8 },
+  { id: 'fk07', name: 'Toca e Volta', emoji: '🔄', category: 'FREE_KICK', description: 'Toca pro companheiro, recebe de volta e chuta.', dc: 15, skillBonus: 2, progress: 40, ballRetentionOnFail: 0.15, goalChance: 0.5 },
+  { id: 'fk08', name: 'Chute Colocado Canto Esquerdo', emoji: '🎯', category: 'FREE_KICK', description: 'Colocado no canto esquerdo do goleiro.', dc: 16, skillBonus: 1, progress: 58, ballRetentionOnFail: 0, goalChance: 0.7 },
+  { id: 'fk09', name: 'Chute Colocado Canto Direito', emoji: '🎯', category: 'FREE_KICK', description: 'Colocado no canto direito do goleiro.', dc: 16, skillBonus: 1, progress: 58, ballRetentionOnFail: 0, goalChance: 0.7 },
+  { id: 'fk10', name: 'Barreira Pula, Rasteiro!', emoji: '🦎', category: 'FREE_KICK', description: 'Aproveita que a barreira pulou e bate rasteiro.', dc: 17, skillBonus: 0, progress: 62, ballRetentionOnFail: 0, goalChance: 0.65 },
+  { id: 'fk11', name: 'Cavadinha', emoji: '🎪', category: 'FREE_KICK', description: 'Cavadinha por cima da barreira, estilo Messi.', dc: 18, skillBonus: 0, progress: 60, ballRetentionOnFail: 0, goalChance: 0.7 },
+  { id: 'fk12', name: 'Cruzamento Fechado', emoji: '📐', category: 'FREE_KICK', description: 'Cruzamento fechado, bola venenosa na área.', dc: 13, skillBonus: 2, progress: 25, ballRetentionOnFail: 0.25, goalChance: 0.25 },
+  { id: 'fk13', name: 'Lançamento Longo', emoji: '📏', category: 'FREE_KICK', description: 'Lança pro atacante na ponta oposta.', dc: 14, skillBonus: 2, progress: 20, ballRetentionOnFail: 0.2, goalChance: 0 },
+  { id: 'fk14', name: 'Finta e Chute', emoji: '🎭', category: 'FREE_KICK', description: 'Finta que vai cruzar, mas chuta direto!', dc: 16, skillBonus: 1, progress: 55, ballRetentionOnFail: 0, goalChance: 0.6 },
+  { id: 'fk15', name: 'Passe na Área para Voleio', emoji: '⚡', category: 'FREE_KICK', description: 'Toca na área pro companheiro bater de voleio.', dc: 15, skillBonus: 2, progress: 45, ballRetentionOnFail: 0.1, goalChance: 0.55 },
+  { id: 'fk16', name: 'Bola Parada Treinada A', emoji: '📋', category: 'FREE_KICK', description: 'Jogada treinada: simula chute, passa pro lado.', dc: 13, skillBonus: 3, progress: 35, ballRetentionOnFail: 0.15, goalChance: 0.4 },
+  { id: 'fk17', name: 'Bola Parada Treinada B', emoji: '📋', category: 'FREE_KICK', description: 'Jogada treinada: um passa, outro chuta colocado.', dc: 14, skillBonus: 2, progress: 50, ballRetentionOnFail: 0.1, goalChance: 0.65 },
+  { id: 'fk18', name: 'Bola Parada Treinada C', emoji: '📋', category: 'FREE_KICK', description: 'Treinada: dois toques, chute cruzado.', dc: 14, skillBonus: 2, progress: 48, ballRetentionOnFail: 0.12, goalChance: 0.6 },
+  { id: 'fk19', name: 'Cabeceada após Cruzamento', emoji: '🧠', category: 'FREE_KICK', description: 'Cruza e o atacante cabeceia com força.', dc: 14, skillBonus: 2, progress: 42, ballRetentionOnFail: 0.15, goalChance: 0.5 },
+  { id: 'fk20', name: 'Chute Forte Meio Alto', emoji: '💥', category: 'FREE_KICK', description: 'Meio alto, força bruta, goleiro pra um lado.', dc: 17, skillBonus: 0, progress: 55, ballRetentionOnFail: 0, goalChance: 0.6 },
+  { id: 'fk21', name: 'Efeito Roberto Carlos', emoji: '🌪️', category: 'FREE_KICK', description: 'Efeito absurdo, bola curva 90 graus!', dc: 20, skillBonus: -2, progress: 75, ballRetentionOnFail: 0, goalChance: 0.85 },
+  { id: 'fk22', name: 'Passe Curto Inesperado', emoji: '🤫', category: 'FREE_KICK', description: 'Passe curto surpresa, a barreira espera chute.', dc: 11, skillBonus: 3, progress: 18, ballRetentionOnFail: 0.35, goalChance: 0 },
+  { id: 'fk23', name: 'Cruzamento com Desvio', emoji: '↗️', category: 'FREE_KICK', description: 'Cruza com desvio no zagueiro, bola morre na área.', dc: 13, skillBonus: 2, progress: 28, ballRetentionOnFail: 0.2, goalChance: 0.3 },
+  { id: 'fk24', name: 'Chute por Cima da Barreira', emoji: '⛰️', category: 'FREE_KICK', description: 'Por cima da barreira, cai morto no gol.', dc: 18, skillBonus: 0, progress: 62, ballRetentionOnFail: 0, goalChance: 0.7 },
+  { id: 'fk25', name: 'Tabela na Barreira', emoji: '🔗', category: 'FREE_KICK', description: 'Toca pro lado da barreira, recebe e chuta.', dc: 15, skillBonus: 2, progress: 42, ballRetentionOnFail: 0.1, goalChance: 0.55 },
+  { id: 'fk26', name: 'Pênalti Indireto', emoji: '⚠️', category: 'FREE_KICK', description: 'Falta indireta: toca e chuta sem tocar 2x.', dc: 15, skillBonus: 2, progress: 45, ballRetentionOnFail: 0.1, goalChance: 0.5 },
+  { id: 'fk27', name: 'Chute no Cantinho', emoji: '📐', category: 'FREE_KICK', description: 'No cantinho, cirurgia precisa.', dc: 19, skillBonus: -1, progress: 65, ballRetentionOnFail: 0, goalChance: 0.8 },
+  { id: 'fk28', name: 'Muralha Humana X', emoji: '🧱', category: 'FREE_KICK', description: 'Jogada ousada: esconde atrás da barreira e aparece!', dc: 16, skillBonus: 1, progress: 50, ballRetentionOnFail: 0.05, goalChance: 0.6 },
+  { id: 'fk29', name: 'Chute de Canivete', emoji: '🦶', category: 'FREE_KICK', description: 'De canivete, efeito inesperado na falta.', dc: 17, skillBonus: 0, progress: 55, ballRetentionOnFail: 0, goalChance: 0.6 },
+  { id: 'fk30', name: 'Lançamento para Contra-Ataque', emoji: '⚡', category: 'FREE_KICK', description: 'Em vez de chutar, lança pro veloz que parte pro gol.', dc: 14, skillBonus: 2, progress: 35, ballRetentionOnFail: 0.15, goalChance: 0.35 },
+  { id: 'fk31', name: 'Bicuda sem Querer', emoji: '😅', category: 'FREE_KICK', description: 'Escorrega e bate sem querer... mas vai com perigo!', dc: 15, skillBonus: 1, progress: 40, ballRetentionOnFail: 0.1, goalChance: 0.45 },
+  { id: 'fk32', name: 'Falta de Calcanhar', emoji: '👠', category: 'FREE_KICK', description: 'Bate de calcanhar pra surpreender!', dc: 19, skillBonus: -1, progress: 55, ballRetentionOnFail: 0.05, goalChance: 0.55 },
+  { id: 'fk33', name: 'Gol Olímpico na Falta', emoji: '🏆', category: 'FREE_KICK', description: 'Cobra direto, bola entra sem ninguém tocar!', dc: 20, skillBonus: -2, progress: 80, ballRetentionOnFail: 0, goalChance: 0.85 },
+  { id: 'fk34', name: 'Esconde e Chuta', emoji: '🤫', category: 'FREE_KICK', description: 'Simula que vai passar, chuta de surpresa!', dc: 16, skillBonus: 1, progress: 52, ballRetentionOnFail: 0.05, goalChance: 0.65 },
+  { id: 'fk35', name: 'Chute Trivela', emoji: '🦶', category: 'FREE_KICK', description: 'Trivela, efeito absurdo pra fora pra dentro.', dc: 17, skillBonus: 0, progress: 58, ballRetentionOnFail: 0, goalChance: 0.7 },
+]
+
+// =====================================================================
 // TODAS AS AÇÕES
 // =====================================================================
 export const ALL_ACTIONS: FootballAction[] = [
@@ -189,9 +231,10 @@ export const ALL_ACTIONS: FootballAction[] = [
   ...SHOOT_ACTIONS,
   ...DEFEND_ACTIONS,
   ...SPECIAL_ACTIONS,
+  ...FREE_KICK_ACTIONS,
 ]
 
-// Total: 16 + 20 + 20 + 16 + 16 + 16 = 104 ações
+// Total: 16 + 20 + 20 + 16 + 16 + 16 + 35 = 139 ações
 
 // =====================================================================
 // Helpers
@@ -216,6 +259,13 @@ export function sampleMixedActions(count: number): FootballAction[] {
   return shuffled.slice(0, Math.min(count, pool.length))
 }
 
+// Sorteia N jogadas de cobrança de falta (só aparecem na cobrança)
+export function sampleFreeKickActions(count: number): FootballAction[] {
+  const pool = getActionsByCategory('FREE_KICK')
+  const shuffled = [...pool].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, Math.min(count, pool.length))
+}
+
 export const CATEGORY_META: Record<ActionCategory, { label: string; color: string; emoji: string }> = {
   KICKOFF:  { label: 'Saída de Bola',    color: 'from-blue-500 to-blue-700',        emoji: '🥅' },
   PASS:     { label: 'Passe',            color: 'from-emerald-500 to-emerald-700',  emoji: '⚽' },
@@ -223,4 +273,5 @@ export const CATEGORY_META: Record<ActionCategory, { label: string; color: strin
   SHOOT:    { label: 'Chute ao Gol',     color: 'from-rose-500 to-rose-700',        emoji: '🎯' },
   DEFEND:   { label: 'Defesa',           color: 'from-amber-500 to-amber-700',      emoji: '🛡️' },
   SPECIAL:  { label: 'Especial',         color: 'from-yellow-400 to-orange-600',    emoji: '✨' },
+  FREE_KICK: { label: 'Cobrança de Falta', color: 'from-teal-500 to-teal-700',         emoji: '🎯' },
 }
