@@ -54,15 +54,33 @@ export async function POST(req: NextRequest) {
   }
 
   // ===== Validação de turno: só o jogador com posse pode submeter PLAY_ACTION =====
-  if (type === 'PLAY_ACTION' && match.currentPossession) {
-    const expectedUserId = match.currentPossession === 'HOME' ? match.homeUserId : (match.awayUserId ?? '')
-    if (session.userId !== expectedUserId) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Não é seu turno. Espere o oponente jogar.',
-        currentPossession: match.currentPossession,
-      }, { status: 400 })
+  // BUG FIX: Always validate turn, even when currentPossession is null.
+  // Previously, the condition `match.currentPossession` (truthy check) skipped
+  // validation when currentPossession was null, allowing any player to submit
+  // actions. Now we default to HOME if null, and always validate.
+  //
+  // EXCEPTION: For offline matches (vs bot), the home user submits actions
+  // for BOTH sides. The bot doesn't have a real session, so we allow the
+  // home user to submit when it's the bot's turn.
+  if (type === 'PLAY_ACTION') {
+    const currentPossession = match.currentPossession || 'HOME'
+    const expectedUserId = currentPossession === 'HOME' ? match.homeUserId : (match.awayUserId ?? '')
+
+    // For offline matches: home user can submit bot's actions too
+    const isOfflineMatch = match.isOffline || false
+    const BOT_USER_ID = 'BOT_PLAYER_DUNGEON_SOCER_001'
+
+    if (!isOfflineMatch || session.userId !== match.homeUserId) {
+      // Normal validation: only the player with possession can submit
+      if (session.userId !== expectedUserId) {
+        return NextResponse.json({
+          ok: false,
+          error: 'Não é seu turno. Espere o oponente jogar.',
+          currentPossession: match.currentPossession,
+        }, { status: 400 })
+      }
     }
+    // Offline + home user: always allowed (they control the bot too)
   }
 
   const gameMode = (match.gameMode || 'QUICK_MATCH') as GameMode

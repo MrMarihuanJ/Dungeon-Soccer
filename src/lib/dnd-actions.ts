@@ -252,9 +252,18 @@ export function sampleActions(category: ActionCategory, count: number): Football
 }
 
 // Sorteia N ações aleatórias de TODAS as categorias (para turnos subsequentes)
-export function sampleMixedActions(count: number): FootballAction[] {
+// BUG FIX: Exclude DEFEND actions when the team has possession of the ball.
+// In real football, the team WITH the ball doesn't "defend" — they attack.
+// A successful DEFEND action steals the ball from yourself, which is backwards.
+// Now accepts optional parameters to filter based on possession context.
+export function sampleMixedActions(count: number, excludeDefend = false): FootballAction[] {
   // Prioriza ações que fazem sentido no meio do jogo (não KICKOFF)
-  const pool = ALL_ACTIONS.filter((a) => a.category !== 'KICKOFF')
+  // If the team has the ball, also exclude DEFEND (they're attacking, not defending)
+  const pool = ALL_ACTIONS.filter((a) => {
+    if (a.category === 'KICKOFF') return false
+    if (excludeDefend && a.category === 'DEFEND') return false
+    return true
+  })
   const shuffled = [...pool].sort(() => Math.random() - 0.5)
   return shuffled.slice(0, Math.min(count, pool.length))
 }

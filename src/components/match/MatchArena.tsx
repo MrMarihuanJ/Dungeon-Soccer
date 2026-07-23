@@ -63,13 +63,14 @@ interface Props {
   gameMode?: GameMode
   inviteCode?: string
   initialState?: MatchState
+  isOffline?: boolean  // Offline mode: bot auto-plays on OPPONENT_TURN
   onExit: () => void
 }
 
 type Phase = 'WAITING' | 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION' | 'PAUSED' | 'HALFTIME'
 
 export function MatchArena({
-  matchId, homeUser, awayUser, currentUserId, gameMode = 'QUICK_MATCH', inviteCode, initialState, onExit,
+  matchId, homeUser, awayUser, currentUserId, gameMode = 'QUICK_MATCH', inviteCode, initialState, isOffline = false, onExit,
 }: Props) {
   const modeConfig = GAME_MODE_CONFIG[gameMode]
 
@@ -364,7 +365,8 @@ export function MatchArena({
 
   const handleAutoPlay = () => {
     if (processing || diceRolling) return
-    const actions = sampleMixedActions(1)
+    // BUG FIX: Auto-play also excludes DEFEND (same logic as drawMixedActions)
+    const actions = sampleMixedActions(1, true)
     const action = actions[0]
     if (action) {
       // Seleciona jogador automaticamente
@@ -458,8 +460,12 @@ export function MatchArena({
   }, [])
 
   // Sorteia 5 ações mistas para turnos subsequentes
+  // BUG FIX: When it's MY turn (I have possession), exclude DEFEND actions.
+  // In real football, the attacking team shouldn't have "defend" options —
+  // a successful DEFEND action would steal the ball from yourself.
   const drawMixedActions = useCallback(() => {
-    setAvailableActions(sampleMixedActions(5))
+    // When drawing actions for the team WITH possession, exclude DEFEND
+    setAvailableActions(sampleMixedActions(5, true))
   }, [])
 
   // ===== COIN FLIP =====
@@ -641,9 +647,15 @@ export function MatchArena({
           return
         }
 
+        // BUG FIX: Clear action cards immediately to prevent double-click during
+        // the 2.2s result display window. Previously, availableActions remained
+        // visible for ~2.2s after processing, allowing the player to submit
+        // another action in the same turn.
+        setAvailableActions([])
         // No penalty: normal flow
         proceedToNextTurn(data)
-        setProcessing(false)
+        // Keep processing=true until phase transition completes (inside proceedToNextTurn)
+        // Previously setProcessing(false) here allowed re-clicking during the 2.2s delay
       } catch (err) {
         console.error('[MatchArena] action error:', err)
         toast.error('Erro de conexão.')
@@ -681,35 +693,55 @@ export function MatchArena({
       setSubOpen(true)
       return
     }
+    // BUG FIX: Only show FreeKickDialog if the free kick favors MY team.
+    // If the opponent is favored (e.g., I committed a foul), transition to their turn instead.
     if (pe.requiresFreeKick || pe.type === 'FOUL') {
-      setFreeKickPossession(pe.favoredPossession)
-      setFreeKickOpen(true)
+      if (pe.favoredPossession === mySide) {
+        setFreeKickPossession(pe.favoredPossession)
+        setFreeKickOpen(true)
+        return
+      }
+      // Free kick favors opponent — skip dialog and transition to their turn
+      finishPenaltyAndContinue()
       return
     }
     if (pe.type === 'PENALTY_KICK') {
-      setFreeKickPossession(pe.favoredPossession)
-      setFreeKickOpen(true)
+      if (pe.favoredPossession === mySide) {
+        setFreeKickPossession(pe.favoredPossession)
+        setFreeKickOpen(true)
+        return
+      }
+      // Penalty favors opponent — skip dialog and transition to their turn
+      finishPenaltyAndContinue()
       return
     }
     finishPenaltyAndContinue()
   }
 
+  // BUG FIX: Use setState updater to get fresh state (avoids stale closure).
+  // Previously, `state.currentPossession` was read from a stale closure captured
+  // inside setTimeout callbacks (e.g. 2500ms penalty delay). This caused wrong
+  // phase assignment — PLAYER_TURN when it should be OPPONENT_TURN.
   const finishPenaltyAndContinue = () => {
     setCurrentPenalty(null)
     setPendingPenalty(null)
-    if (state.status === 'FINISHED') {
-      setPhase('FINISHED')
-    } else {
-      const stillMyTurn = state.currentPossession === mySide
-      setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-      if (stillMyTurn) {
-        drawMixedActions()
-        setTurn((t) => t + 1)
+    // Use setState updater to read fresh state instead of stale closure
+    setState((freshState) => {
+      if (freshState.status === 'FINISHED') {
+        setPhase('FINISHED')
       } else {
-        setAvailableActions([])
+        const stillMyTurn = freshState.currentPossession === mySide
+        setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+        if (stillMyTurn) {
+          drawMixedActions()
+          setTurn((t) => t + 1)
+        } else {
+          setAvailableActions([])
+        }
       }
-    }
-    setProcessing(false)
+      setProcessing(false)
+      return freshState // Return same state — we only used it to read currentPossession
+    })
   }
 
   // VAR decision callback
@@ -729,17 +761,29 @@ export function MatchArena({
     }
   }
 
-  // Free kick play callback
+  // BUG FIX: Free kick play callback — now validates turn ownership before proceeding.
+  // Previously, this bypassed the processing/diceRolling guards blindly, allowing
+  // actions to be submitted even when it was the opponent's turn.
   const handleFreeKickPlay = async (kickerId: string, action: FootballAction) => {
     setFreeKickOpen(false)
-    // IMPORTANTE: reset processing/diceRolling antes de chamar handleSelectAction
-    // pois as flags ficaram presas do turno anterior que gerou a falta
-    setProcessing(false)
-    setDiceRolling(false)
-    // Encontra o nome do batedor para a narrativa
-    const kicker = myStarters.find(p => p.id === kickerId)
-    const kickerName = kicker?.name
-    await handleSelectAction(action, kickerName)
+    // Validate: only proceed if it's actually my team's turn (possession)
+    // This prevents submitting a free kick when the opponent should be playing
+    setState((freshState) => {
+      if (freshState.currentPossession !== mySide) {
+        toast.error('Não é seu turno para cobrar a falta.')
+        finishPenaltyAndContinue()
+        return freshState
+      }
+      // Reset flags only after confirming it's my turn
+      setProcessing(false)
+      setDiceRolling(false)
+      // Find kicker name for narrative
+      const kicker = myStarters.find(p => p.id === kickerId)
+      const kickerName = kicker?.name
+      // Fire-and-forget — handleSelectAction manages its own state
+      handleSelectAction(action, kickerName)
+      return freshState
+    })
   }
 
   // Substitution callback
@@ -760,7 +804,9 @@ export function MatchArena({
     finishPenaltyAndContinue()
   }
 
-  // Continue after penalty flow
+  // BUG FIX: Set processing=false AFTER phase transition (inside the timeout),
+  // not before. This eliminates the 2.2s window where processing=false but
+  // phase hasn't changed yet, which allowed players to click action cards twice.
   const proceedToNextTurn = (data: any) => {
     setTimeout(() => {
       if (data.newState.status === 'FINISHED') {
@@ -775,6 +821,8 @@ export function MatchArena({
           setAvailableActions([])
         }
       }
+      // Move processing=false here — after phase transition is complete
+      setProcessing(false)
     }, 2200)
   }
 
@@ -833,12 +881,55 @@ export function MatchArena({
     }
   }
 
-  // ===== POLL FOR OPPONENT ACTIONS (real multiplayer) =====
+  // ===== BOT AUTO-PLAY (offline mode) =====
+  // In offline mode, when it's OPPONENT_TURN, the bot plays automatically
+  // after a short delay to simulate "thinking".
+  const botAutoPlayRef = useRef<NodeJS.Timeout | null>(null)
+
+  useEffect(() => {
+    // Only auto-play bot when offline and it's the bot's turn
+    if (!isOffline || phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS' || processing || diceRolling) {
+      if (botAutoPlayRef.current) {
+        clearTimeout(botAutoPlayRef.current)
+        botAutoPlayRef.current = null
+      }
+      return
+    }
+
+    // Bot "thinks" for 1.5-2.5 seconds before playing
+    const thinkDelay = 1500 + Math.random() * 1000
+    botAutoPlayRef.current = setTimeout(() => {
+      const actions = sampleMixedActions(1, true)
+      const action = actions[0]
+      if (action) {
+        // Use generic bot player name for narrative
+        handleSelectAction(action, 'Bot')
+      }
+    }, thinkDelay)
+
+    return () => {
+      if (botAutoPlayRef.current) {
+        clearTimeout(botAutoPlayRef.current)
+        botAutoPlayRef.current = null
+      }
+    }
+  }, [isOffline, phase, state.status, processing, diceRolling])
+
+  // ===== POLL FOR OPPONENT ACTIONS (online multiplayer only) =====
   const opponentPollRef = useRef<NodeJS.Timeout | null>(null)
   const lastEventCountRef = useRef(state.events.length)
 
   useEffect(() => {
-    // Only poll when it's the opponent's turn and the game is in progress
+    // In offline mode, we don't poll — the bot auto-plays instead
+    if (isOffline) {
+      if (opponentPollRef.current) {
+        clearInterval(opponentPollRef.current)
+        opponentPollRef.current = null
+      }
+      return
+    }
+
+    // Only poll when it's the opponent's turn and the game is in progress (online mode)
     if (phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS') {
       if (opponentPollRef.current) {
         clearInterval(opponentPollRef.current)
@@ -1563,6 +1654,10 @@ export function MatchArena({
         isForced={subIsForced}
       />
 
+      {/* BUG FIX: Only render FreeKickDialog if it's my team's free kick.
+          Previously, this dialog was always rendered using myStarters regardless
+          of who was favored, causing the fouling player to select a kicker for
+          the opponent's free kick. */}
       <FreeKickDialog
         open={freeKickOpen}
         onClose={() => { setFreeKickOpen(false); finishPenaltyAndContinue() }}

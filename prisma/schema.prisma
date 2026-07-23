@@ -139,6 +139,8 @@ model Match {
   gameMode     String   @default("QUICK_MATCH")
   // Código de convite para o oponente entrar (shareable link)
   inviteCode   String   @unique
+  // Partida offline (vs bot) — o bot joga automaticamente no turno do oponente
+  isOffline    Boolean  @default(false)
   // "heads" (cara) ou "coroa" (tails)
   coinResult   String?
   // ID do usuário que começa com a bola

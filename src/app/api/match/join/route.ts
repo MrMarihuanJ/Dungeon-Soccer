@@ -45,10 +45,10 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     // Se a coluna inviteCode ainda não existe, tenta criar
     if (err?.message?.includes('inviteCode') || err?.message?.includes('does not exist')) {
-      await db.$executeRawUnsafe(`
-        ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT;
-        CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode");
-      `)
+      // FIX: Neon PostgreSQL doesn't allow multiple statements in prepared statements.
+      // Split into two separate calls.
+      await db.$executeRawUnsafe(`ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT`)
+      await db.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode")`)
       match = await db.match.findFirst({
         where: { inviteCode },
         include: {

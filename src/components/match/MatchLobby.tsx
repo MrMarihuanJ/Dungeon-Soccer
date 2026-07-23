@@ -1,18 +1,18 @@
 'use client'
 
 // =====================================================================
-// MatchLobby - Tela inicial do modo RPG: escolhe modo e cria partida
+// MatchLobby - Tela inicial do modo RPG: escolhe modalidade e modo
 // =====================================================================
-// New flow: User selects game mode → clicks "Create Match" → creates match
-// with invite code → sees MatchInviteDialog → waits for opponent →
-// when opponent joins, MatchArena starts.
+// Two modalities:
+//   - OFFLINE (vs Bot): Play immediately against an AI bot. No invite needed.
+//   - ONLINE (with Invite): Create match with invite code, share with friend.
 // =====================================================================
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { ArrowLeft, Swords, BookOpen, Trophy, Dice5, AlertTriangle, Clock, Zap, Medal, Users } from 'lucide-react'
+import { ArrowLeft, Swords, BookOpen, Trophy, Dice5, AlertTriangle, Clock, Zap, Medal, Users, Bot, Wifi, WifiOff } from 'lucide-react'
 import { MatchArena } from './MatchArena'
 import { MatchInviteDialog } from './MatchInviteDialog'
 import { toast } from 'sonner'
@@ -40,18 +40,23 @@ interface Props {
   onExit: () => void
 }
 
-type LobbyState = 'friends' | 'waiting' | 'match'
+type LobbyState = 'selection' | 'waiting' | 'match'
+type Modality = 'offline' | 'online'
+
+const BOT_USER_ID = 'BOT_PLAYER_DUNGEON_SOCER_001'
 
 export function MatchLobby({ currentUser, onExit }: Props) {
-  const [state, setState] = useState<LobbyState>('friends')
+  const [state, setState] = useState<LobbyState>('selection')
   const [matchId, setMatchId] = useState<string | null>(null)
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [opponent, setOpponent] = useState<Friend | null>(null)
   const [creating, setCreating] = useState(false)
   const [lastError, setLastError] = useState<{ error: string; detail?: string } | null>(null)
   const [selectedGameMode, setSelectedGameMode] = useState<GameMode>('QUICK_MATCH')
+  const [selectedModality, setSelectedModality] = useState<Modality>('offline')
+  const [isOffline, setIsOffline] = useState(false)
 
-  // ===== Create Match (new flow — no opponent needed) =====
+  // ===== Create Match =====
   const handleCreateMatch = async () => {
     setCreating(true)
     setLastError(null)
@@ -59,7 +64,10 @@ export function MatchLobby({ currentUser, onExit }: Props) {
       const res = await fetch('/api/match/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gameMode: selectedGameMode }),
+        body: JSON.stringify({
+          gameMode: selectedGameMode,
+          offline: selectedModality === 'offline',
+        }),
       })
       let data: any
       try {
@@ -79,10 +87,31 @@ export function MatchLobby({ currentUser, onExit }: Props) {
         toast.error(errorMsg)
         return
       }
-      setMatchId(data.match.id)
-      setInviteCode(data.match.inviteCode)
-      setState('waiting')
-      toast.success('Partida criada! Compartilhe o convite com um amigo.')
+
+      const match = data.match
+      setMatchId(match.id)
+      setInviteCode(match.inviteCode)
+      setIsOffline(match.isOffline || false)
+
+      if (selectedModality === 'offline') {
+        // Offline: go directly to match (no waiting needed)
+        setOpponent({
+          id: BOT_USER_ID,
+          username: 'Bot Dungeon Soccer',
+          displayName: 'Bot',
+          wins: 0,
+          losses: 0,
+          draws: 0,
+          xp: 0,
+          friendshipId: '',
+        })
+        setState('match')
+        toast.success('Partida offline criada! Você vs Bot.')
+      } else {
+        // Online: show invite dialog and wait for opponent
+        setState('waiting')
+        toast.success('Partida criada! Compartilhe o convite com um amigo.')
+      }
     } catch (err) {
       console.error('[MatchLobby] create error:', err)
       toast.error('Erro de conexão. Verifique sua internet e tente novamente.')
@@ -112,6 +141,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
               friendshipId: '',
             })
           }
+          setIsOffline(data.match.isOffline || false)
           setState('match')
         }
       }
@@ -134,11 +164,13 @@ export function MatchLobby({ currentUser, onExit }: Props) {
         currentUserId={currentUser.id}
         gameMode={selectedGameMode}
         inviteCode={inviteCode || ''}
+        isOffline={isOffline}
         onExit={() => {
-          setState('friends')
+          setState('selection')
           setMatchId(null)
           setInviteCode(null)
           setOpponent(null)
+          setIsOffline(false)
         }}
       />
     )
@@ -150,7 +182,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
       <div className="min-h-screen bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 text-white">
         <header className="sticky top-0 z-30 border-b border-emerald-900/50 bg-gray-900/80 backdrop-blur">
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
-            <Button variant="ghost" size="sm" onClick={() => { setState('friends'); setMatchId(null); setInviteCode(null); }} className="text-gray-300 hover:bg-gray-800 hover:text-white">
+            <Button variant="ghost" size="sm" onClick={() => { setState('selection'); setMatchId(null); setInviteCode(null); }} className="text-gray-300 hover:bg-gray-800 hover:text-white">
               <ArrowLeft className="h-4 w-4" />
               Cancelar
             </Button>
@@ -194,7 +226,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
     )
   }
 
-  // ===== Friends state — select game mode + create match =====
+  // ===== Selection state — choose modality + game mode =====
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 text-white">
       <header className="sticky top-0 z-30 border-b border-emerald-900/50 bg-gray-900/80 backdrop-blur">
@@ -225,7 +257,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
             ⚔️ Modo RPG: Batalha de Times
           </h1>
           <p className="mx-auto mt-2 max-w-2xl text-sm text-gray-400">
-            Crie uma partida com código de convite e desafie seus amigos com regras de <strong className="text-amber-300">Dungeons & Dragons</strong>:
+            Regras de <strong className="text-amber-300">Dungeons & Dragons</strong>:
             lance a moeda, role o d20 e execute mais de 100 ações estratégicas!
           </p>
         </motion.div>
@@ -256,6 +288,94 @@ export function MatchLobby({ currentUser, onExit }: Props) {
             </div>
           </motion.div>
         )}
+
+        {/* ===== Seleção de Modalidade ===== */}
+        <motion.div
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-6"
+        >
+          <h2 className="mb-3 text-center text-lg font-bold text-gray-200">
+            Escolha a Modalidade
+          </h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {/* Offline vs Bot */}
+            <motion.button
+              onClick={() => setSelectedModality('offline')}
+              className={`relative overflow-hidden rounded-xl border-2 p-5 text-left transition-all ${
+                selectedModality === 'offline'
+                  ? 'border-emerald-400 bg-emerald-950/30 shadow-lg shadow-emerald-500/10'
+                  : 'border-gray-700 bg-gray-900/40 hover:border-gray-500 hover:bg-gray-900/60'
+              }`}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              {selectedModality === 'offline' && (
+                <motion.div
+                  layoutId="modalityIndicator"
+                  className="absolute inset-0 bg-emerald-400/5"
+                  transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                />
+              )}
+              <div className="relative z-10">
+                <div className="mb-3 flex items-center gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-emerald-500/20">
+                    <WifiOff className="h-6 w-6 text-emerald-400" />
+                  </div>
+                  <div>
+                    <span className={`font-bold text-lg ${selectedModality === 'offline' ? 'text-emerald-300' : 'text-gray-300'}`}>
+                      Offline vs Bot
+                    </span>
+                    <p className="text-xs text-gray-500">Jogue agora, sem esperar</p>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-400 leading-relaxed">
+                  Jogue <strong className="text-emerald-300">imediatamente</strong> contra o Bot Dungeon Soccer.
+                  Não precisa de convite, não precisa esperar — comece a partida agora!
+                  Ideal para treinar estratégias e testar ações.
+                </p>
+              </div>
+            </motion.button>
+
+            {/* Online com Convite */}
+            <motion.button
+              onClick={() => setSelectedModality('online')}
+              className={`relative overflow-hidden rounded-xl border-2 p-5 text-left transition-all ${
+                selectedModality === 'online'
+                  ? 'border-amber-400 bg-amber-950/30 shadow-lg shadow-amber-500/10'
+                  : 'border-gray-700 bg-gray-900/40 hover:border-gray-500 hover:bg-gray-900/60'
+              }`}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              {selectedModality === 'online' && (
+                <motion.div
+                  layoutId="modalityIndicator"
+                  className="absolute inset-0 bg-amber-400/5"
+                  transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                />
+              )}
+              <div className="relative z-10">
+                <div className="mb-3 flex items-center gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-amber-500/20">
+                    <Wifi className="h-6 w-6 text-amber-400" />
+                  </div>
+                  <div>
+                    <span className={`font-bold text-lg ${selectedModality === 'online' ? 'text-amber-300' : 'text-gray-300'}`}>
+                      Online com Convite
+                    </span>
+                    <p className="text-xs text-gray-500">Desafie um amigo ao vivo</p>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-400 leading-relaxed">
+                  Crie uma partida e <strong className="text-amber-300">envie o convite</strong> via WhatsApp,
+                  Telegram ou copie o link. Quando seu amigo entrar, a partida começa ao vivo!
+                  Ambos jogam com seus times montados.
+                </p>
+              </div>
+            </motion.button>
+          </div>
+        </motion.div>
 
         {/* ===== Seleção de Modo de Jogo ===== */}
         <motion.div
@@ -375,7 +495,11 @@ export function MatchLobby({ currentUser, onExit }: Props) {
           <Button
             onClick={handleCreateMatch}
             disabled={creating}
-            className="gap-2 bg-amber-500 text-black hover:bg-amber-400 px-8 py-3 text-lg font-bold shadow-lg shadow-amber-500/20"
+            className={`gap-2 px-8 py-3 text-lg font-bold shadow-lg ${
+              selectedModality === 'offline'
+                ? 'bg-emerald-500 text-black hover:bg-emerald-400 shadow-emerald-500/20'
+                : 'bg-amber-500 text-black hover:bg-amber-400 shadow-amber-500/20'
+            }`}
             size="lg"
           >
             {creating ? (
@@ -390,14 +514,23 @@ export function MatchLobby({ currentUser, onExit }: Props) {
               </>
             ) : (
               <>
-                <Swords className="h-5 w-5" />
-                Criar Partida com Convite
+                {selectedModality === 'offline' ? (
+                  <>
+                    <Bot className="h-5 w-5" />
+                    Jogar Offline vs Bot
+                  </>
+                ) : (
+                  <>
+                    <Users className="h-5 w-5" />
+                    Criar Partida com Convite
+                  </>
+                )}
               </>
             )}
           </Button>
         </motion.div>
 
-        {/* Loading overlay quando estiver criando partida */}
+        {/* Loading overlay */}
         {creating && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur">
             <div className="flex flex-col items-center gap-3">
@@ -407,7 +540,12 @@ export function MatchLobby({ currentUser, onExit }: Props) {
               >
                 <Swords className="h-10 w-10 text-amber-400" />
               </motion.div>
-              <p className="text-sm text-gray-300">Criando partida ({GAME_MODE_CONFIG[selectedGameMode].label})...</p>
+              <p className="text-sm text-gray-300">
+                {selectedModality === 'offline'
+                  ? `Criando partida offline (${GAME_MODE_CONFIG[selectedGameMode].label})...`
+                  : `Criando partida com convite (${GAME_MODE_CONFIG[selectedGameMode].label})...`
+                }
+              </p>
             </div>
           </div>
         )}

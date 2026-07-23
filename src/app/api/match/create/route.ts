@@ -1,10 +1,14 @@
 // =====================================================================
-// POST /api/match/create - cria nova partida com convite shareable
+// POST /api/match/create - cria nova partida
 // --------------------------------------------------------------------
-// Body: { gameMode?: 'QUICK_MATCH' | 'TIMED_10' | 'FULL_90' }
-// O criador (home) cria a partida em status WAITING.
+// Body: { gameMode?: 'QUICK_MATCH' | 'TIMED_10' | 'FULL_90', offline?: boolean }
+//
+// OFFLINE MODE: Cria partida contra bot. awayUserId é um usuário bot
+// pré-existente, e o status começa em COIN_FLIP (sem espera).
+// O bot joga automaticamente no turno do oponente.
+//
+// ONLINE MODE (default): O criador (home) cria a partida em status WAITING.
 // O oponente entra via link de convite (inviteCode).
-// Não exige amizade — qualquer jogador com o link pode entrar.
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -44,10 +48,76 @@ export async function POST(req: NextRequest) {
   // Validar gameMode
   const gameMode: GameMode = VALID_GAME_MODES.includes(body.gameMode) ? body.gameMode : 'QUICK_MATCH'
   const modeConfig = GAME_MODE_CONFIG[gameMode]
+  const isOffline = Boolean(body.offline) // Offline = vs bot
 
   // Garante que as tabelas existem antes de qualquer operação
   await ensureDbSync()
 
+  // ===== OFFLINE MODE: Create match vs bot =====
+  if (isOffline) {
+    // Ensure the bot user exists
+    const BOT_USER_ID = 'BOT_PLAYER_DUNGEON_SOCER_001'
+    const BOT_USERNAME = 'Bot Dungeon Soccer'
+    try {
+      await db.user.upsert({
+        where: { id: BOT_USER_ID },
+        update: {},
+        create: {
+          id: BOT_USER_ID,
+          email: `bot@dungeon-soccer.local`,
+          username: BOT_USERNAME,
+          passwordHash: '$2b$10$BOT_PLACEHOLDER_HASH_NOT_FOR_LOGIN',
+          displayName: 'Bot',
+          wins: 0,
+          losses: 0,
+          draws: 0,
+          xp: 0,
+        },
+      })
+    } catch {
+      // Bot user may already exist — ignore
+    }
+
+    const match = await db.match.create({
+      data: {
+        homeUserId: session.userId,
+        awayUserId: BOT_USER_ID,
+        status: 'COIN_FLIP',
+        mode: 'DREAM_TEAM',
+        gameMode,
+        inviteCode: generateInviteCode(),
+        isOffline: true,
+        homeScore: 0,
+        awayScore: 0,
+        turnCount: 0,
+        homeProgress: 0,
+        awayProgress: 0,
+        eventsJson: '[]',
+        homeTeamStateJson: '{}',
+        awayTeamStateJson: '{}',
+        xpReward: modeConfig.xpWin,
+        totalPausedMs: 0,
+        halftimeTaken: false,
+      },
+    })
+
+    return NextResponse.json({
+      ok: true,
+      match: {
+        id: match.id,
+        status: match.status,
+        homeUserId: match.homeUserId,
+        awayUserId: match.awayUserId,
+        awayUser: { id: BOT_USER_ID, username: BOT_USERNAME, displayName: 'Bot', xp: 0, wins: 0, losses: 0, draws: 0 },
+        gameMode: match.gameMode,
+        inviteCode: match.inviteCode,
+        isOffline: match.isOffline,
+        xpReward: match.xpReward,
+      },
+    })
+  }
+
+  // ===== ONLINE MODE: Create match with invite =====
   // Gera inviteCode único
   let inviteCode = generateInviteCode()
   // Verifica se o código já existe (muito raro, mas seguro)
@@ -71,6 +141,7 @@ export async function POST(req: NextRequest) {
     mode: 'DREAM_TEAM' as const,
     gameMode,
     inviteCode,
+    isOffline: false,
     homeScore: 0,
     awayScore: 0,
     turnCount: 0,
@@ -110,10 +181,10 @@ export async function POST(req: NextRequest) {
     if (message.includes('does not exist') || message.includes('column') || message.includes('relation')) {
       console.log('[match/create] Retrying db sync after error...')
       try {
-        await db.$executeRawUnsafe(`
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT;
-          CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode");
-        `)
+        // FIX: Neon PostgreSQL doesn't allow multiple statements in prepared statements.
+        // Split into two separate calls.
+        await db.$executeRawUnsafe(`ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT`)
+        await db.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode")`)
         // Retry
         const match = await db.match.create({ data: matchData })
         return NextResponse.json({
