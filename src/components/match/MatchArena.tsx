@@ -4,15 +4,16 @@
 // MatchArena - Componente principal que orquestra a partida RPG
 // --------------------------------------------------------------------
 // Fases:
+//   0. WAITING — esperando oponente entrar (multiplayer)
 //   1. COIN_FLIP — mostra moeda girando + resultado
 //   2. PLAYER_TURN — jogador atual escolhe ação, vê dado, vê resultado
-//   3. OPPONENT_TURN — IA do adversário joga automaticamente
+//   3. OPPONENT_TURN — esperando jogada do oponente (polling)
 //   4. PAUSED — partida pausada, timer congelado
 //   5. HALFTIME — intervalo (apenas FULL_90)
 //   6. FINISHED — placar final + vencedor
 // =====================================================================
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -21,7 +22,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Swords, Trophy, ArrowLeft, Coins, Play, Loader2, History, ChevronRight,
-  AlertTriangle, Users, Pause, RotateCcw, Clock, Coffee, Zap, Shield,
+  AlertTriangle, Users, Pause, RotateCcw, Clock, Coffee, Zap, Share2,
 } from 'lucide-react'
 import { CoinFlip } from './CoinFlip'
 import { DiceRoll } from './DiceRoll'
@@ -29,6 +30,7 @@ import { ActionCard } from './ActionCard'
 import { SubstitutionModal } from './SubstitutionModal'
 import { VARReview } from './VARReview'
 import { FreeKickDialog } from './FreeKickDialog'
+import { MatchInviteDialog } from './MatchInviteDialog'
 import {
   sampleActions, sampleMixedActions, CATEGORY_META,
   type FootballAction,
@@ -36,12 +38,10 @@ import {
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
   type PenaltyEvent, type TeamMatchState, type GameMode,
-  type PlayerPenaltyMultiplier,
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
-  pickPlayerForAction, generatePenaltyMultipliers,
+  pickPlayerForAction,
 } from '@/lib/match-engine'
-import { playWhistleSound, playGoalSound } from '@/lib/sound'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
 
@@ -61,20 +61,21 @@ interface Props {
   awayUser: Player
   currentUserId: string
   gameMode?: GameMode
+  inviteCode?: string
   initialState?: MatchState
   onExit: () => void
 }
 
-type Phase = 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION' | 'PAUSED' | 'HALFTIME' | 'DEFEND_OPPORTUNITY'
+type Phase = 'WAITING' | 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION' | 'PAUSED' | 'HALFTIME'
 
 export function MatchArena({
-  matchId, homeUser, awayUser, currentUserId, gameMode = 'QUICK_MATCH', initialState, onExit,
+  matchId, homeUser, awayUser, currentUserId, gameMode = 'QUICK_MATCH', inviteCode, initialState, onExit,
 }: Props) {
   const modeConfig = GAME_MODE_CONFIG[gameMode]
 
   const [state, setState] = useState<MatchState>(initialState || {
     matchId,
-    status: 'COIN_FLIP',
+    status: 'WAITING',
     coinResult: null,
     startingSide: null,
     currentPossession: null,
@@ -97,7 +98,6 @@ export function MatchArena({
     xpReward: modeConfig.xpWin,
     turnStartedAt: null,
     matchEndReason: '',
-    penaltyMultipliers: [],
   })
 
   const [phase, setPhase] = useState<Phase>(
@@ -107,9 +107,11 @@ export function MatchArena({
         ? 'PAUSED'
         : initialState?.status === 'HALFTIME'
           ? 'HALFTIME'
-          : initialState?.status === 'IN_PROGRESS'
-            ? (initialState.currentPossession === (currentUserId === homeUser.id ? 'HOME' : 'AWAY') ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-            : 'COIN_FLIP'
+          : initialState?.status === 'WAITING'
+            ? 'WAITING'
+            : initialState?.status === 'IN_PROGRESS'
+              ? (initialState.currentPossession === (currentUserId === homeUser.id ? 'HOME' : 'AWAY') ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+              : 'COIN_FLIP'
   )
 
   const [coinFlipping, setCoinFlipping] = useState(false)
@@ -141,30 +143,82 @@ export function MatchArena({
   const [myReserves, setMyReserves] = useState<SelectedPlayer[]>([])
   const [myStarters, setMyStarters] = useState<SelectedPlayer[]>([])
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
-  const [penaltyMultipliers, setPenaltyMultipliers] = useState<PlayerPenaltyMultiplier[]>([])
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
 
   // Refs for timers
   const matchTimerRef = useRef<NodeJS.Timeout | null>(null)
   const turnTimerRef = useRef<NodeJS.Timeout | null>(null)
   const autoPlayRef = useRef(false)
 
-  // Populate starters/reserves from the Zustand store
+  // Populate starters/reserves from the Zustand store (use useMemo to avoid setState in effect)
   const { starters: storeStarters, reserves: storeReserves } = useTeamStore()
+  const startersList = useMemo(() => Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null), [storeStarters])
+  const reservesList = useMemo(() => storeReserves, [storeReserves])
   useEffect(() => {
-    const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
     setMyStarters(startersList)
-    setMyReserves(storeReserves)
-    // Generate penalty multipliers from starter IDs (once per match, when starters change)
-    if (penaltyMultipliers.length === 0 && startersList.length > 0) {
-      const starterIds = startersList.map(p => p.id)
-      setPenaltyMultipliers(generatePenaltyMultipliers(starterIds))
-    }
-  }, [storeStarters, storeReserves])
+    setMyReserves(reservesList)
+  }, [startersList, reservesList])
 
   const isHome = currentUserId === homeUser.id
   const mySide: Possession = isHome ? 'HOME' : 'AWAY'
   const myUser = isHome ? homeUser : awayUser
   const oppUser = isHome ? awayUser : homeUser
+
+  // ===== Initial state fetch on mount (sync with server) =====
+  useEffect(() => {
+    const doInitialFetch = async () => {
+      try {
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!data.ok) return
+
+        const serverState = data.match
+
+        setState((s) => ({
+          ...s,
+          status: serverState.status,
+          currentPossession: serverState.currentPossession,
+          homeScore: serverState.homeScore,
+          awayScore: serverState.awayScore,
+          homeProgress: serverState.homeProgress,
+          awayProgress: serverState.awayProgress,
+          turnCount: serverState.turnCount,
+          winner: serverState.winner,
+          homeTeamState: serverState.homeTeamState || s.homeTeamState,
+          awayTeamState: serverState.awayTeamState || s.awayTeamState,
+          events: serverState.events || s.events,
+          coinResult: serverState.coinResult || s.coinResult,
+          matchEndReason: serverState.matchEndReason || '',
+          matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : null,
+          pausedAt: serverState.pausedAt ? new Date(serverState.pausedAt) : null,
+          secondHalfStartedAt: serverState.secondHalfStartedAt ? new Date(serverState.secondHalfStartedAt) : null,
+          turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : null,
+          totalPausedMs: serverState.totalPausedMs || 0,
+          halftimeTaken: serverState.halftimeTaken || false,
+        }))
+
+        // Update phase based on server status
+        if (serverState.status === 'WAITING') {
+          setPhase('WAITING')
+        } else if (serverState.status === 'COIN_FLIP') {
+          setPhase('COIN_FLIP')
+        } else if (serverState.status === 'IN_PROGRESS') {
+          const myTurnNow = serverState.currentPossession === mySide
+          setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+        } else if (serverState.status === 'FINISHED') {
+          setPhase('FINISHED')
+        } else if (serverState.status === 'HALFTIME') {
+          setPhase('HALFTIME')
+        } else if (serverState.status === 'PAUSED') {
+          setPhase('PAUSED')
+        }
+      } catch {
+        // Silently fail — polling will retry
+      }
+    }
+    doInitialFetch()
+  }, [matchId])
 
   // ===== MATCH TIMER (real-time countdown) =====
   useEffect(() => {
@@ -385,7 +439,7 @@ export function MatchArena({
         if (myTurn) {
           drawMixedActions()
         } else {
-          setTimeout(() => simulateOpponent(), 1500)
+          setAvailableActions([])
         }
         toast('▶️ Partida retomada!')
       } else {
@@ -439,8 +493,6 @@ export function MatchArena({
         setPhase(myTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
         if (myTurn) {
           drawKickoffActions()
-        } else {
-          setTimeout(() => simulateOpponent(), 1500)
         }
         setTurn(1)
       }, 2600)
@@ -548,7 +600,6 @@ export function MatchArena({
         if (data.event.isGoal) {
           const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
           const goalPlayerName = data.event.playerName || scorer
-          playGoalSound()
           toast.success(`⚽ GOOOOL! ${goalPlayerName} marca para ${scorer}!`, { duration: 4000 })
 
           // Check for QUICK_MATCH win condition
@@ -579,13 +630,9 @@ export function MatchArena({
             YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
             PENALTY_KICK: '⚪', VAR_REVIEW: '📺',
           }
-          // Play whistle sound for penalty kicks
-          if (pe.type === 'PENALTY_KICK') {
-            playWhistleSound()
-          }
           toast(`${penaltyEmojis[pe.type] ?? '⚠️'} ${pe.description}`, {
             duration: 4000,
-            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : pe.type === 'PENALTY_KICK' ? '#1c1917' : '#1e293b' },
+            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
           })
 
           setTimeout(() => {
@@ -660,7 +707,6 @@ export function MatchArena({
         setTurn((t) => t + 1)
       } else {
         setAvailableActions([])
-        setTimeout(() => simulateOpponent(), 1500)
       }
     }
     setProcessing(false)
@@ -727,7 +773,6 @@ export function MatchArena({
           setTurn((t) => t + 1)
         } else {
           setAvailableActions([])
-          setTimeout(() => simulateOpponent(), 1500)
         }
       }
     }, 2200)
@@ -745,286 +790,190 @@ export function MatchArena({
     setSubOpen(true)
   }
 
-  // ===== Simula jogada do adversário (IA simples) =====
-  // Before the opponent plays, check for a defensive opportunity (30% chance)
-  const simulateOpponent = async () => {
-    // Check for defensive opportunity: if the player doesn't have possession,
-    // there's a 30% chance the player gets offered DEFEND actions
-    if (!state.currentPossession) return
-    const opponentHasPossession = state.currentPossession !== mySide
-    if (opponentHasPossession) {
-      const defendChance = Math.random()
-      if (defendChance < 0.30) {
-        // Defensive opportunity! Show DEFEND actions to the player
-        setPhase('DEFEND_OPPORTUNITY')
-        setAvailableActions(sampleActions('DEFEND', 3))
-        toast('🛡️ Oportunidade de Defesa! Tente roubar a bola!', {
-          duration: 4000,
-          style: { background: '#78350f', color: '#fbbf24', border: '2px solid #92400e' },
-        })
-        return
+  // ===== fetchMatchState (atualiza estado local com dados do servidor) =====
+  const fetchMatchState = async () => {
+    try {
+      const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      if (!data.ok) return
+
+      const serverState = data.match
+      
+      setState((s) => ({
+        ...s,
+        status: serverState.status,
+        currentPossession: serverState.currentPossession,
+        homeScore: serverState.homeScore,
+        awayScore: serverState.awayScore,
+        homeProgress: serverState.homeProgress,
+        awayProgress: serverState.awayProgress,
+        turnCount: serverState.turnCount,
+        winner: serverState.winner,
+        homeTeamState: serverState.homeTeamState || s.homeTeamState,
+        awayTeamState: serverState.awayTeamState || s.awayTeamState,
+        events: serverState.events || s.events,
+        coinResult: serverState.coinResult || s.coinResult,
+        matchEndReason: serverState.matchEndReason || '',
+      }))
+
+      // Update phase based on new status
+      if (serverState.status === 'COIN_FLIP' && !serverState.coinResult) {
+        setPhase('COIN_FLIP')
+      } else if (serverState.status === 'IN_PROGRESS') {
+        const myTurnNow = serverState.currentPossession === mySide
+        setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+        if (myTurnNow) drawMixedActions()
+        lastEventCountRef.current = (serverState.events || []).length
+      } else if (serverState.status === 'FINISHED') {
+        setPhase('FINISHED')
       }
+    } catch (err) {
+      console.error('[MatchArena] fetch state error:', err)
     }
-    // No defensive opportunity, opponent plays normally
-    executeOpponentPlay()
   }
 
-  // The actual opponent simulation (separated from defensive opportunity check)
-  const executeOpponentPlay = async () => {
-    setDiceRolling(true)
-    setLastRoll(null)
-    setLastEvent(null)
-    const actions = sampleMixedActions(1)
-    const action = actions[0]
-    if (!action) return
+  // ===== POLL FOR OPPONENT ACTIONS (real multiplayer) =====
+  const opponentPollRef = useRef<NodeJS.Timeout | null>(null)
+  const lastEventCountRef = useRef(state.events.length)
 
-    // Gera nome de jogador para o adversário (usa os mesmos titulares como "time adversário")
-    const oppStarters = myStarters.length > 0 ? myStarters : []
-    let oppPlayerName: string | undefined
-    let oppTargetName: string | undefined
-    if (oppStarters.length > 0) {
-      const { player, target } = pickPlayerForAction(
-        oppStarters.map(p => ({ name: p.name, position: p.position })),
-        action.category,
-      )
-      oppPlayerName = player
-      oppTargetName = target
+  useEffect(() => {
+    // Only poll when it's the opponent's turn and the game is in progress
+    if (phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS') {
+      if (opponentPollRef.current) {
+        clearInterval(opponentPollRef.current)
+        opponentPollRef.current = null
+      }
+      return
     }
 
-    setTimeout(async () => {
+    // Poll every 2 seconds for state updates
+    opponentPollRef.current = setInterval(async () => {
       try {
-        const res = await fetch('/api/match/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            matchId,
-            type: 'PLAY_ACTION',
-            action,
-            playerName: oppPlayerName,
-            targetPlayerName: oppTargetName,
-          }),
-        })
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
         const data = await res.json()
+        if (!data.ok) return
 
-        // Check for time expiry or halftime
-        if (data.timeExpired) {
+        const serverState = data.match
+        const serverEvents = serverState.events || []
+        
+        // Check if there are new events (opponent played)
+        if (serverEvents.length > lastEventCountRef.current) {
+          const newEvents = serverEvents.slice(lastEventCountRef.current)
+          const latestEvent = newEvents[newEvents.length - 1]
+
+          // Update state with server data
           setState((s) => ({
             ...s,
-            status: 'FINISHED',
-            winner: data.newState.winner,
-            matchEndReason: 'Tempo esgotado!',
+            currentPossession: serverState.currentPossession,
+            homeScore: serverState.homeScore,
+            awayScore: serverState.awayScore,
+            homeProgress: serverState.homeProgress,
+            awayProgress: serverState.awayProgress,
+            turnCount: serverState.turnCount,
+            status: serverState.status,
+            winner: serverState.winner,
+            homeTeamState: serverState.homeTeamState || s.homeTeamState,
+            awayTeamState: serverState.awayTeamState || s.awayTeamState,
+            events: [...s.events, ...newEvents],
+            matchEndReason: serverState.matchEndReason || '',
           }))
-          setDiceRolling(false)
-          setPhase('FINISHED')
-          return
-        }
+          
+          lastEventCountRef.current = serverEvents.length
 
-        if (data.halftimeReached) {
-          setState((s) => ({ ...s, status: 'HALFTIME', pausedAt: new Date() }))
-          setDiceRolling(false)
-          setPhase('HALFTIME')
-          setIsHalftime(true)
-          toast('⚽ Fim do primeiro tempo! Intervalo.', { duration: 5000 })
-          return
-        }
+          // Show last event
+          if (latestEvent) {
+            setLastEvent(latestEvent)
+            if (latestEvent.roll) setLastRoll(latestEvent.roll)
 
-        if (!data.ok) {
-          setDiceRolling(false)
-          return
-        }
-        setLastRoll(data.event.roll)
-        setLastEvent(data.event)
-        setState((s) => ({
-          ...s,
-          currentPossession: data.newState.currentPossession,
-          homeScore: data.newState.homeScore,
-          awayScore: data.newState.awayScore,
-          homeProgress: data.newState.homeProgress,
-          awayProgress: data.newState.awayProgress,
-          turnCount: data.newState.turnCount,
-          status: data.newState.status,
-          winner: data.newState.winner,
-          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
-          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
-          events: [...s.events, data.event],
-          matchEndReason: data.newState.matchEndReason || '',
-          turnStartedAt: new Date(),
-        }))
-        setDiceRolling(false)
-
-        if (data.event.isGoal) {
-          const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
-          const goalPlayerName = data.event.playerName || scorer
-          playGoalSound()
-          toast.success(`⚽ GOOOOL! ${goalPlayerName} marca para ${scorer}!`, { duration: 4000 })
-
-          // Check for QUICK_MATCH win
-          if (gameMode === 'QUICK_MATCH') {
-            const newHomeScore = data.newState.homeScore
-            const newAwayScore = data.newState.awayScore
-            if (newHomeScore >= modeConfig.goalsToWin || newAwayScore >= modeConfig.goalsToWin) {
-              setTimeout(() => setPhase('FINISHED'), 2000)
-              return
+            if (latestEvent.isGoal) {
+              const scorer = latestEvent.possession === 'HOME' ? homeUser.username : awayUser.username
+              toast.success(`⚽ GOOOOL! ${latestEvent.playerName || scorer} marca!`, { duration: 4000 })
+              
+              if (gameMode === 'QUICK_MATCH') {
+                if (serverState.homeScore >= modeConfig.goalsToWin || serverState.awayScore >= modeConfig.goalsToWin) {
+                  setTimeout(() => setPhase('FINISHED'), 2000)
+                  return
+                }
+              }
             }
           }
-        }
 
-        // Handle penalty for opponent
-        if (data.event.penaltyEvent) {
-          const pe = data.event.penaltyEvent
-          const penaltyEmojis: Record<string, string> = {
-            FOUL: '🟨', OFFSIDE: '🚫', CORNER: '🚩', BALL_OUT: '📤',
-            YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
-            PENALTY_KICK: '⚪', VAR_REVIEW: '📺',
+          // Check for penalty events
+          if (latestEvent?.penaltyEvent) {
+            const pe = latestEvent.penaltyEvent
+            setCurrentPenalty(pe)
+            toast(`${pe.description}`, { duration: 4000 })
+            setTimeout(() => handlePenaltyFlow(pe), 2500)
+            return
           }
-          // Play whistle sound for penalty kicks
-          if (pe.type === 'PENALTY_KICK') {
-            playWhistleSound()
-          }
-          toast(`${penaltyEmojis[pe.type] ?? '⚠️'} ${pe.description}`, {
-            duration: 4000,
-            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : pe.type === 'PENALTY_KICK' ? '#1c1917' : '#1e293b' },
-          })
-          if (pe.type === 'RED_CARD') {
-            setState((s) => ({
-              ...s,
-              awayTeamState: { ...s.awayTeamState, redCards: s.awayTeamState.redCards + 1 },
-            }))
-          }
-        }
 
-        setTimeout(() => {
-          if (data.newState.status === 'FINISHED') {
+          // Determine whose turn it is now
+          if (serverState.status === 'FINISHED') {
             setPhase('FINISHED')
+            setProcessing(false)
           } else {
-            const myTurnNow = data.newState.currentPossession === mySide
+            const myTurnNow = serverState.currentPossession === mySide
             setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
             if (myTurnNow) {
               drawMixedActions()
               setTurn((t) => t + 1)
-            } else {
-              setTimeout(() => simulateOpponent(), 1500)
             }
+            setProcessing(false)
           }
-          setProcessing(false)
-        }, 2200)
+        }
       } catch (err) {
-        console.error('[MatchArena] opponent action error:', err)
-        setDiceRolling(false)
+        console.error('[MatchArena] opponent poll error:', err)
       }
-    }, 1800)
-  }
+    }, 2000)
 
-  // ===== Handle defensive action (DEFEND_OPPORTUNITY phase) =====
-  // When the player selects a DEFEND action during the defensive opportunity phase,
-  // it goes through the normal dice roll + API flow, and the result determines what happens next.
-  const handleDefendAction = async (action: FootballAction, forcedPlayerName?: string) => {
-    if (processing || diceRolling) return
-    setProcessing(true)
-    setDiceRolling(true)
-    setLastRoll(null)
-    setLastEvent(null)
-
-    // Pick a player name for narrative
-    let playerName = forcedPlayerName
-    if (!playerName) {
-      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
-      const { player } = pickPlayerForAction(
-        startersList.map(p => ({ name: p.name, position: p.position })),
-        action.category,
-      )
-      playerName = player
+    return () => {
+      if (opponentPollRef.current) {
+        clearInterval(opponentPollRef.current)
+        opponentPollRef.current = null
+      }
     }
+  }, [phase, state.status, matchId, mySide, gameMode, modeConfig.goalsToWin])
 
-    // Wait for dice animation (1.8s)
-    setTimeout(async () => {
+  // ===== Poll for opponent joining (WAITING phase) =====
+  useEffect(() => {
+    if (phase !== 'WAITING') return
+
+    const pollInterval = setInterval(async () => {
       try {
-        const res = await fetch('/api/match/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            matchId,
-            type: 'PLAY_ACTION',
-            action,
-            playerName: playerName || undefined,
-          }),
-        })
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
         const data = await res.json()
+        if (!data.ok) return
 
-        if (data.timeExpired) {
+        const serverState = data.match
+        if (serverState.status === 'COIN_FLIP' || serverState.status === 'IN_PROGRESS') {
+          // Opponent has joined! Update state
           setState((s) => ({
             ...s,
-            status: 'FINISHED',
-            winner: data.newState.winner,
-            matchEndReason: 'Tempo esgotado!',
-            homeScore: data.newState.homeScore,
-            awayScore: data.newState.awayScore,
+            status: serverState.status,
+            currentPossession: serverState.currentPossession,
+            coinResult: serverState.coinResult,
           }))
-          setDiceRolling(false)
-          setPhase('FINISHED')
-          setProcessing(false)
-          return
-        }
-
-        if (!data.ok) {
-          toast.error(data.error || 'Erro ao processar jogada.')
-          setDiceRolling(false)
-          setProcessing(false)
-          return
-        }
-
-        setLastRoll(data.event.roll)
-        setLastEvent(data.event)
-        setState((s) => ({
-          ...s,
-          currentPossession: data.newState.currentPossession,
-          homeScore: data.newState.homeScore,
-          awayScore: data.newState.awayScore,
-          homeProgress: data.newState.homeProgress,
-          awayProgress: data.newState.awayProgress,
-          turnCount: data.newState.turnCount,
-          status: data.newState.status,
-          winner: data.newState.winner,
-          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
-          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
-          events: [...s.events, data.event],
-          matchEndReason: data.newState.matchEndReason || '',
-          turnStartedAt: new Date(),
-        }))
-        setDiceRolling(false)
-
-        // Handle the defensive action result:
-        // - If success (possession changed to player): Go to PLAYER_TURN, draw mixed actions
-        // - If fail (possession stays with opponent): Go to OPPONENT_TURN, simulate opponent play
-        setTimeout(() => {
-          if (data.newState.status === 'FINISHED') {
-            setPhase('FINISHED')
-          } else {
-            const possessionChangedToMe = data.newState.currentPossession === mySide
-            if (possessionChangedToMe) {
-              // Defensive action succeeded! Player steals the ball
-              toast.success('🛡️ Defesa sucesso! Você roubou a bola!', { duration: 3000 })
-              setPhase('PLAYER_TURN')
-              drawMixedActions()
-              setTurn((t) => t + 1)
-            } else {
-              // Defensive action failed, opponent retains possession
-              toast('❌ Defesa falhou! O adversário continua com a bola.', { duration: 3000 })
-              setPhase('OPPONENT_TURN')
-              setAvailableActions([])
-              setTimeout(() => executeOpponentPlay(), 1500)
-            }
+          
+          if (serverState.status === 'COIN_FLIP') {
+            setPhase('COIN_FLIP')
+            toast.success('🎉 Oponente entrou! A partida vai começar!')
+          } else if (serverState.status === 'IN_PROGRESS') {
+            // Game already started (coin was flipped)
+            const myTurnNow = serverState.currentPossession === mySide
+            setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+            if (myTurnNow) drawKickoffActions()
           }
-          setProcessing(false)
-        }, 2200)
-      } catch (err) {
-        console.error('[MatchArena] defend action error:', err)
-        toast.error('Erro de conexão.')
-        setDiceRolling(false)
-        setProcessing(false)
+        }
+      } catch {
+        // Silently retry
       }
-    }, 1800)
-  }
+    }, 3000)
+
+    return () => clearInterval(pollInterval)
+  }, [phase, matchId, mySide])
 
   // ===== Renderização =====
   const myScore = isHome ? state.homeScore : state.awayScore
@@ -1160,7 +1109,7 @@ export function MatchArena({
           </div>
 
           {/* Barra de progresso do campo */}
-          {phase !== 'COIN_FLIP' && phase !== 'FINISHED' && phase !== 'PAUSED' && phase !== 'HALFTIME' && (
+          {phase !== 'COIN_FLIP' && phase !== 'FINISHED' && phase !== 'PAUSED' && phase !== 'HALFTIME' && phase !== 'WAITING' && (
             <div className="mt-4 flex items-center gap-2 text-xs">
               <span className="text-emerald-400">⚽ {homeUser.username}</span>
               <div className="relative flex-1">
@@ -1221,6 +1170,51 @@ export function MatchArena({
                   flipping={coinFlipping}
                   homeUser={homeUser}
                   awayUser={awayUser}
+                />
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ===== FASE: WAITING (esperando oponente) ===== */}
+        {phase === 'WAITING' && (
+          <Card className="border-amber-500/30 bg-gray-900/60">
+            <CardContent className="flex flex-col items-center gap-6 p-8">
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring' }}
+              >
+                <Users className="h-20 w-20 text-amber-400" />
+              </motion.div>
+              <div className="text-center">
+                <h2 className="text-3xl font-bold text-amber-400">⏳ Esperando oponente</h2>
+                <p className="mt-2 text-sm text-gray-400">
+                  Compartilhe o link com um amigo para jogar ao vivo!
+                </p>
+              </div>
+              <Button
+                onClick={() => setInviteDialogOpen(true)}
+                className="gap-2 bg-amber-500 text-black hover:bg-amber-400"
+                size="lg"
+              >
+                <Share2 className="h-5 w-5" />
+                Convide um jogador
+              </Button>
+              
+              {/* MatchInviteDialog */}
+              {inviteCode && (
+                <MatchInviteDialog
+                  inviteCode={inviteCode}
+                  matchId={matchId}
+                  gameMode={modeConfig.label}
+                  open={inviteDialogOpen}
+                  onClose={() => setInviteDialogOpen(false)}
+                  onOpponentJoined={() => {
+                    setInviteDialogOpen(false)
+                    // Refresh match state from server
+                    fetchMatchState()
+                  }}
                 />
               )}
             </CardContent>
@@ -1301,7 +1295,7 @@ export function MatchArena({
         )}
 
         {/* ===== FASE: PLAYER TURN ou OPPONENT TURN ===== */}
-        {(phase === 'PLAYER_TURN' || phase === 'OPPONENT_TURN' || phase === 'DEFEND_OPPORTUNITY') && (
+        {(phase === 'PLAYER_TURN' || phase === 'OPPONENT_TURN') && (
           <div className="space-y-4">
             {/* Indicador de quem joga + turn timer */}
             <div className="flex items-center justify-center gap-3">
@@ -1312,16 +1306,12 @@ export function MatchArena({
                 className={`rounded-full px-4 py-1 text-sm font-bold ${
                   phase === 'PLAYER_TURN'
                     ? 'bg-emerald-500/20 text-emerald-300'
-                    : phase === 'DEFEND_OPPORTUNITY'
-                      ? 'bg-amber-500/20 text-amber-300'
-                      : 'bg-sky-500/20 text-sky-300'
+                    : 'bg-sky-500/20 text-sky-300'
                 }`}
               >
                 {phase === 'PLAYER_TURN'
                   ? `🎯 Sua vez, ${myUser.username}!`
-                  : phase === 'DEFEND_OPPORTUNITY'
-                    ? `🛡️ Oportunidade de Defesa!`
-                    : `⏳ ${oppUser.username} está jogando...`}
+                  : `⏳ ${oppUser.username} está jogando...`}
               </motion.div>
               {phase === 'PLAYER_TURN' && !isPaused && (
                 <div className={`rounded-full px-3 py-1 text-xs font-mono ${
@@ -1418,42 +1408,30 @@ export function MatchArena({
               </Card>
             )}
 
-            {/* Defensive Opportunity cards */}
-            {phase === 'DEFEND_OPPORTUNITY' && !processing && availableActions.length > 0 && (
-              <Card className="border-amber-500/30 bg-gray-900/60">
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2 text-amber-400">
-                      <Shield className="h-5 w-5" />
-                      🛡️ Oportunidade de Defesa
-                    </CardTitle>
-                  </div>
-                  <p className="text-xs text-amber-300/80">
-                    Se a defesa for sucesso, você rouba a bola! Se falhar, o adversário continua jogando.
-                  </p>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {availableActions.map((action, idx) => (
-                      <ActionCard
-                        key={`${action.id}-${idx}`}
-                        action={action}
-                        index={idx}
-                        onSelect={handleDefendAction}
-                        disabled={processing}
-                      />
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Loading do oponente */}
+            {/* ===== OPPONENT_TURN (esperando jogada do oponente) ===== */}
             {phase === 'OPPONENT_TURN' && (
               <Card className="border-sky-500/30 bg-gray-900/60">
-                <CardContent className="flex items-center justify-center gap-3 p-8">
-                  <Loader2 className="h-5 w-5 animate-spin text-sky-400" />
-                  <span className="text-sky-300">{oppUser.username} está pensando...</span>
+                <CardContent className="flex flex-col items-center gap-6 p-8">
+                  <motion.div
+                    animate={{ rotate: [0, 10, -10, 0] }}
+                    transition={{ duration: 2, repeat: Infinity }}
+                  >
+                    <Loader2 className="h-16 w-16 text-sky-400" />
+                  </motion.div>
+                  <div className="text-center">
+                    <h2 className="text-xl font-bold text-sky-400">
+                      🎲 {oppUser.username} está jogando...
+                    </h2>
+                    <p className="mt-1 text-sm text-gray-400">
+                      Esperando a jogada do oponente. A partida será atualizada automaticamente.
+                    </p>
+                    {lastEvent && (
+                      <div className="mt-3 rounded-lg bg-gray-800/50 p-3 text-xs text-gray-300">
+                        Última jogada: {lastEvent.action?.emoji} {lastEvent.action?.name} — 
+                        {lastEvent.roll?.success ? 'Sucesso!' : 'Falha!'}
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             )}
@@ -1591,8 +1569,6 @@ export function MatchArena({
         onPlayFreeKick={handleFreeKickPlay}
         fieldPlayers={myStarters}
         possession={freeKickPossession}
-        isPenaltyKick={currentPenalty?.type === 'PENALTY_KICK'}
-        penaltyMultipliers={penaltyMultipliers}
       />
     </div>
   )

@@ -16,7 +16,6 @@ import {
   createInitialMatchState, GAME_MODE_CONFIG,
   checkMatchEndCondition, isHalftimeReached, isTimeExpired,
   type MatchState, type CoinResult, type TeamMatchState, type GameMode,
-  type PlayerPenaltyMultiplier,
 } from '@/lib/match-engine'
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
@@ -40,11 +39,30 @@ export async function POST(req: NextRequest) {
 
   const match = await db.match.findUnique({ where: { id: matchId } })
   if (!match) return NextResponse.json({ ok: false, error: 'Partida não encontrada.' }, { status: 404 })
-  if (match.homeUserId !== session.userId && match.awayUserId !== session.userId) {
+  if (match.homeUserId !== session.userId && (match.awayUserId !== null && match.awayUserId !== session.userId)) {
     return NextResponse.json({ ok: false, error: 'Sem acesso.' }, { status: 403 })
+  }
+  // During WAITING phase (awayUserId null), only homeUser can perform COIN_FLIP
+  if (match.awayUserId === null && type !== 'COIN_FLIP') {
+    return NextResponse.json({ ok: false, error: 'Oponente ainda não entrou na partida.' }, { status: 400 })
   }
   if (match.status === 'FINISHED') {
     return NextResponse.json({ ok: false, error: 'Partida já encerrada.' }, { status: 400 })
+  }
+  if (match.status === 'WAITING') {
+    return NextResponse.json({ ok: false, error: 'A partida ainda está esperando o oponente entrar.' }, { status: 400 })
+  }
+
+  // ===== Validação de turno: só o jogador com posse pode submeter PLAY_ACTION =====
+  if (type === 'PLAY_ACTION' && match.currentPossession) {
+    const expectedUserId = match.currentPossession === 'HOME' ? match.homeUserId : (match.awayUserId ?? '')
+    if (session.userId !== expectedUserId) {
+      return NextResponse.json({
+        ok: false,
+        error: 'Não é seu turno. Espere o oponente jogar.',
+        currentPossession: match.currentPossession,
+      }, { status: 400 })
+    }
   }
 
   const gameMode = (match.gameMode || 'QUICK_MATCH') as GameMode
@@ -72,7 +90,7 @@ export async function POST(req: NextRequest) {
       })
 
       // Atualiza W/L/D e XP
-      await updateUserStats(match.homeUserId, match.awayUserId, winner, modeConfig)
+      await updateUserStats(match.homeUserId, match.awayUserId ?? '', winner, modeConfig)
 
       return NextResponse.json({
         ok: true,
@@ -202,7 +220,7 @@ export async function POST(req: NextRequest) {
       matchId: match.id,
       status: match.status as MatchState['status'],
       coinResult: match.coinResult as CoinResult | null,
-      startingSide: match.startingUserId === match.homeUserId ? 'HOME' : match.awayUserId === match.startingUserId ? 'AWAY' : null,
+      startingSide: match.startingUserId === match.homeUserId ? 'HOME' : (match.awayUserId === match.startingUserId ? 'AWAY' : null),
       currentPossession: (match.currentPossession as 'HOME' | 'AWAY') || 'HOME',
       homeScore: match.homeScore,
       awayScore: match.awayScore,
@@ -223,7 +241,6 @@ export async function POST(req: NextRequest) {
       xpReward: match.xpReward || modeConfig.xpWin,
       turnStartedAt: match.turnStartedAt,
       matchEndReason: '',
-      penaltyMultipliers: [],  // penalty multipliers are managed client-side
     }
 
     // Player names para narrativa (enviados pelo cliente)
@@ -253,7 +270,7 @@ export async function POST(req: NextRequest) {
       updateData.status = 'FINISHED'
       updateData.winner = newState.winner
       // Atualiza W/L/D dos usuários com XP baseado no modo
-      await updateUserStats(match.homeUserId, match.awayUserId, newState.winner, modeConfig)
+      await updateUserStats(match.homeUserId, match.awayUserId ?? '', newState.winner, modeConfig)
     }
 
     try {

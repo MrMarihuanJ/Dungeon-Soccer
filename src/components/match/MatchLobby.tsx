@@ -1,16 +1,20 @@
 'use client'
 
 // =====================================================================
-// MatchLobby - Tela inicial do modo RPG: escolhe modo e amigo
+// MatchLobby - Tela inicial do modo RPG: escolhe modo e cria partida
+// =====================================================================
+// New flow: User selects game mode → clicks "Create Match" → creates match
+// with invite code → sees MatchInviteDialog → waits for opponent →
+// when opponent joins, MatchArena starts.
 // =====================================================================
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { ArrowLeft, Swords, BookOpen, Trophy, Dice5, AlertTriangle, Clock, Zap, Medal } from 'lucide-react'
-import { FriendsPanel } from './FriendsPanel'
+import { ArrowLeft, Swords, BookOpen, Trophy, Dice5, AlertTriangle, Clock, Zap, Medal, Users } from 'lucide-react'
 import { MatchArena } from './MatchArena'
+import { MatchInviteDialog } from './MatchInviteDialog'
 import { toast } from 'sonner'
 import { GAME_MODE_CONFIG, type GameMode } from '@/lib/match-engine'
 
@@ -36,24 +40,26 @@ interface Props {
   onExit: () => void
 }
 
-type LobbyState = 'friends' | 'match'
+type LobbyState = 'friends' | 'waiting' | 'match'
 
 export function MatchLobby({ currentUser, onExit }: Props) {
   const [state, setState] = useState<LobbyState>('friends')
   const [matchId, setMatchId] = useState<string | null>(null)
+  const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [opponent, setOpponent] = useState<Friend | null>(null)
   const [creating, setCreating] = useState(false)
   const [lastError, setLastError] = useState<{ error: string; detail?: string } | null>(null)
   const [selectedGameMode, setSelectedGameMode] = useState<GameMode>('QUICK_MATCH')
 
-  const handleChallenge = async (friend: Friend) => {
+  // ===== Create Match (new flow — no opponent needed) =====
+  const handleCreateMatch = async () => {
     setCreating(true)
     setLastError(null)
     try {
       const res = await fetch('/api/match/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opponentId: friend.id, gameMode: selectedGameMode }),
+        body: JSON.stringify({ gameMode: selectedGameMode }),
       })
       let data: any
       try {
@@ -74,18 +80,48 @@ export function MatchLobby({ currentUser, onExit }: Props) {
         return
       }
       setMatchId(data.match.id)
-      setOpponent(friend)
-      setState('match')
-      toast.success(`Partida contra ${friend.username} iniciada!`)
+      setInviteCode(data.match.inviteCode)
+      setState('waiting')
+      toast.success('Partida criada! Compartilhe o convite com um amigo.')
     } catch (err) {
-      console.error('[MatchLobby] challenge error:', err)
+      console.error('[MatchLobby] create error:', err)
       toast.error('Erro de conexão. Verifique sua internet e tente novamente.')
     } finally {
       setCreating(false)
     }
   }
 
-  if (state === 'match' && matchId && opponent) {
+  // ===== Waiting state — opponent joined callback =====
+  const handleOpponentJoined = async () => {
+    if (!matchId) return
+    try {
+      const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.ok) {
+          const away = data.match.awayUser
+          if (away) {
+            setOpponent({
+              id: away.id,
+              username: away.username,
+              displayName: away.displayName,
+              wins: away.wins,
+              losses: away.losses,
+              draws: away.draws,
+              xp: away.xp,
+              friendshipId: '',
+            })
+          }
+          setState('match')
+        }
+      }
+    } catch {
+      toast.error('Erro ao carregar dados do oponente.')
+    }
+  }
+
+  // ===== Match state — render MatchArena =====
+  if (state === 'match' && matchId) {
     return (
       <MatchArena
         matchId={matchId}
@@ -94,22 +130,71 @@ export function MatchLobby({ currentUser, onExit }: Props) {
           username: currentUser.username,
           displayName: currentUser.displayName,
         }}
-        awayUser={{
-          id: opponent.id,
-          username: opponent.username,
-          displayName: opponent.displayName,
-        }}
+        awayUser={opponent || { id: 'PENDING', username: 'Oponente', displayName: 'Oponente' }}
         currentUserId={currentUser.id}
         gameMode={selectedGameMode}
+        inviteCode={inviteCode || ''}
         onExit={() => {
           setState('friends')
           setMatchId(null)
+          setInviteCode(null)
           setOpponent(null)
         }}
       />
     )
   }
 
+  // ===== Waiting state — show invite dialog =====
+  if (state === 'waiting' && matchId && inviteCode) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 text-white">
+        <header className="sticky top-0 z-30 border-b border-emerald-900/50 bg-gray-900/80 backdrop-blur">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
+            <Button variant="ghost" size="sm" onClick={() => { setState('friends'); setMatchId(null); setInviteCode(null); }} className="text-gray-300 hover:bg-gray-800 hover:text-white">
+              <ArrowLeft className="h-4 w-4" />
+              Cancelar
+            </Button>
+            <div className="flex items-center gap-2">
+              <motion.div
+                animate={{ rotate: [0, 15, -15, 0] }}
+                transition={{ duration: 2, repeat: Infinity, repeatDelay: 3 }}
+              >
+                <Swords className="h-5 w-5 text-amber-400" />
+              </motion.div>
+              <span className="font-bold">Modo RPG</span>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto max-w-5xl px-4 py-6">
+          <Card className="border-amber-500/30 bg-gray-900/60">
+            <CardContent className="flex flex-col items-center gap-6 p-8">
+              <motion.div
+                animate={{ rotate: [0, 10, -10, 0] }}
+                transition={{ duration: 2, repeat: Infinity }}
+              >
+                <Users className="h-20 w-20 text-amber-400" />
+              </motion.div>
+              <h2 className="text-3xl font-bold text-amber-400">⏳ Esperando oponente</h2>
+              <p className="text-sm text-gray-400">
+                Compartilhe o convite com um amigo para jogar ao vivo!
+              </p>
+              <MatchInviteDialog
+                inviteCode={inviteCode}
+                matchId={matchId}
+                gameMode={GAME_MODE_CONFIG[selectedGameMode].label}
+                open={true}
+                onClose={() => {}}
+                onOpponentJoined={handleOpponentJoined}
+              />
+            </CardContent>
+          </Card>
+        </main>
+      </div>
+    )
+  }
+
+  // ===== Friends state — select game mode + create match =====
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 text-white">
       <header className="sticky top-0 z-30 border-b border-emerald-900/50 bg-gray-900/80 backdrop-blur">
@@ -140,7 +225,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
             ⚔️ Modo RPG: Batalha de Times
           </h1>
           <p className="mx-auto mt-2 max-w-2xl text-sm text-gray-400">
-            Desafie seus amigos para partidas com regras de <strong className="text-amber-300">Dungeons & Dragons</strong>:
+            Crie uma partida com código de convite e desafie seus amigos com regras de <strong className="text-amber-300">Dungeons & Dragons</strong>:
             lance a moeda, role o d20 e execute mais de 100 ações estratégicas!
           </p>
         </motion.div>
@@ -281,8 +366,36 @@ export function MatchLobby({ currentUser, onExit }: Props) {
           </Card>
         </div>
 
-        {/* Friends Panel */}
-        <FriendsPanel onChallenge={handleChallenge} />
+        {/* Create Match Button */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-6 flex justify-center"
+        >
+          <Button
+            onClick={handleCreateMatch}
+            disabled={creating}
+            className="gap-2 bg-amber-500 text-black hover:bg-amber-400 px-8 py-3 text-lg font-bold shadow-lg shadow-amber-500/20"
+            size="lg"
+          >
+            {creating ? (
+              <>
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+                >
+                  <Swords className="h-5 w-5" />
+                </motion.div>
+                Criando partida...
+              </>
+            ) : (
+              <>
+                <Swords className="h-5 w-5" />
+                Criar Partida com Convite
+              </>
+            )}
+          </Button>
+        </motion.div>
 
         {/* Loading overlay quando estiver criando partida */}
         {creating && (

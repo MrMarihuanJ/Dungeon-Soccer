@@ -27,6 +27,7 @@ export async function GET(req: NextRequest) {
   if (!match) return NextResponse.json({ ok: false, error: 'Partida não encontrada.' }, { status: 404 })
 
   // Verifica permissão
+  // awayUserId can be null during WAITING phase — homeUser can always access
   if (match.homeUserId !== session.userId && match.awayUserId !== session.userId) {
     return NextResponse.json({ ok: false, error: 'Sem acesso a esta partida.' }, { status: 403 })
   }

@@ -131,21 +131,23 @@ model FriendRequest {
 // ===== Partidas RPG =====
 model Match {
   id           String   @id @default(cuid())
-  // Estado: COIN_FLIP | IN_PROGRESS | PAUSED | HALFTIME | FINISHED
-  status       String   @default("COIN_FLIP")
+  // Estado: WAITING | COIN_FLIP | IN_PROGRESS | PAUSED | HALFTIME | FINISHED
+  status       String   @default("WAITING")
   // Modo de time: DREAM_TEAM | WORLD_CUP
   mode         String   @default("DREAM_TEAM")
   // Modo de jogo: QUICK_MATCH | TIMED_10 | FULL_90
   gameMode     String   @default("QUICK_MATCH")
+  // Código de convite para o oponente entrar (shareable link)
+  inviteCode   String   @unique
   // "heads" (cara) ou "coroa" (tails)
   coinResult   String?
   // ID do usuário que começa com a bola
   startingUserId String?
-  // IDs dos 2 jogadores
+  // IDs dos 2 jogadores (awayUserId é null enquanto ninguém entrou via convite)
   homeUserId   String
-  awayUserId   String
+  awayUserId   String?
   homeUser     User     @relation("MatchHome", fields: [homeUserId], references: [id], onDelete: Cascade)
-  awayUser     User     @relation("MatchAway", fields: [awayUserId], references: [id], onDelete: Cascade)
+  awayUser     User?    @relation("MatchAway", fields: [awayUserId], references: [id], onDelete: Cascade)
   // Posse atual: HOME | AWAY
   currentPossession String?
   // Placar
@@ -188,4 +190,5 @@ model Match {
 
   @@index([homeUserId])
   @@index([awayUserId])
+  @@index([inviteCode])
 }

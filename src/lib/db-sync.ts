@@ -123,13 +123,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS "FriendRequest_fromUserId_toUserId_key" ON "Fr
 -- ===== Tabela Match =====
 CREATE TABLE IF NOT EXISTS "Match" (
   "id" TEXT NOT NULL,
-  "status" TEXT NOT NULL DEFAULT 'COIN_FLIP',
+  "status" TEXT NOT NULL DEFAULT 'WAITING',
   "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM',
   "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH',
+  "inviteCode" TEXT,
   "coinResult" TEXT,
   "startingUserId" TEXT,
   "homeUserId" TEXT NOT NULL,
-  "awayUserId" TEXT NOT NULL,
+  "awayUserId" TEXT,
   "currentPossession" TEXT,
   "homeScore" INTEGER NOT NULL DEFAULT 0,
   "awayScore" INTEGER NOT NULL DEFAULT 0,
@@ -176,10 +177,14 @@ ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3);
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "totalPausedMs" INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "halftimeTaken" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "secondHalfStartedAt" TIMESTAMP(3);
+ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT;
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "xpReward" INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnStartedAt" TIMESTAMP(3);
+-- Make awayUserId nullable (was NOT NULL with placeholder 'PENDING', now null during WAITING)
+ALTER TABLE "Match" ALTER COLUMN "awayUserId" DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS "Match_homeUserId_idx" ON "Match"("homeUserId");
 CREATE INDEX IF NOT EXISTS "Match_awayUserId_idx" ON "Match"("awayUserId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode");
 
 -- ===== Corrige colunas fantasmas (NOT NULL sem default, que não estão no schema Prisma) =====
 -- A coluna "matchNum" existe no banco mas NÃO está no schema Prisma.
@@ -196,7 +201,7 @@ BEGIN
     ALTER TABLE "Match" ADD CONSTRAINT "Match_homeUserId_fkey" FOREIGN KEY ("homeUserId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'Match_awayUserId_fkey' AND table_name = 'Match') THEN
-    ALTER TABLE "Match" ADD CONSTRAINT "Match_awayUserId_fkey" FOREIGN KEY ("awayUserId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    ALTER TABLE "Match" ADD CONSTRAINT "Match_awayUserId_fkey" FOREIGN KEY ("awayUserId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'Friendship_userAId_fkey' AND table_name = 'Friendship') THEN
     ALTER TABLE "Friendship" ADD CONSTRAINT "Friendship_userAId_fkey" FOREIGN KEY ("userAId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

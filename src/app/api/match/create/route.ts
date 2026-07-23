@@ -1,8 +1,10 @@
 // =====================================================================
-// POST /api/match/create - cria nova partida contra amigo
+// POST /api/match/create - cria nova partida com convite shareable
 // --------------------------------------------------------------------
-// Body: { opponentId: string, gameMode?: 'QUICK_MATCH' | 'TIMED_10' | 'FULL_90' }
-// Auto-sync: garante que a tabela Match existe antes de criar.
+// Body: { gameMode?: 'QUICK_MATCH' | 'TIMED_10' | 'FULL_90' }
+// O criador (home) cria a partida em status WAITING.
+// O oponente entra via link de convite (inviteCode).
+// Não exige amizade — qualquer jogador com o link pode entrar.
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -10,10 +12,21 @@ import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import { ensureDbSync } from '@/lib/db-sync'
 import { GAME_MODE_CONFIG, type GameMode } from '@/lib/match-engine'
+import { randomUUID } from 'crypto'
 
 export const dynamic = 'force-dynamic'
 
 const VALID_GAME_MODES: GameMode[] = ['QUICK_MATCH', 'TIMED_10', 'FULL_90']
+
+// Gera código de convite único (6 caracteres, fácil de compartilhar)
+function generateInviteCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // sem I, O, 0, 1 para evitar confusão
+  let code = ''
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return code
+}
 
 export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
@@ -25,63 +38,39 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ ok: false, error: 'Requisição inválida.' }, { status: 400 })
-  }
-
-  const opponentId = String(body.opponentId ?? '')
-  if (!opponentId) {
-    return NextResponse.json({ ok: false, error: 'opponentId obrigatório.' }, { status: 400 })
+    body = {}
   }
 
   // Validar gameMode
   const gameMode: GameMode = VALID_GAME_MODES.includes(body.gameMode) ? body.gameMode : 'QUICK_MATCH'
   const modeConfig = GAME_MODE_CONFIG[gameMode]
 
-  // Não pode jogar contra si mesmo
-  if (opponentId === session.userId) {
-    return NextResponse.json({ ok: false, error: 'Você não pode jogar contra si mesmo.' }, { status: 400 })
-  }
-
   // Garante que as tabelas existem antes de qualquer operação
   await ensureDbSync()
 
-  // Verifica se são amigos
-  try {
-    const friendship = await db.friendship.findFirst({
-      where: {
-        OR: [
-          { userAId: session.userId, userBId: opponentId },
-          { userAId: opponentId, userBId: session.userId },
-        ],
-      },
-    })
-    if (!friendship) {
-      return NextResponse.json({ ok: false, error: 'Você só pode jogar com amigos.' }, { status: 403 })
+  // Gera inviteCode único
+  let inviteCode = generateInviteCode()
+  // Verifica se o código já existe (muito raro, mas seguro)
+  for (let attempts = 0; attempts < 10; attempts++) {
+    try {
+      const existing = await db.match.findFirst({ where: { inviteCode } })
+      if (!existing) break
+      inviteCode = generateInviteCode()
+    } catch {
+      // Se a coluna inviteCode ainda não existe, break — será criada pelo db-sync
+      break
     }
-  } catch (err: any) {
-    console.error('[match/create] friendship check error:', err)
-    const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes('does not exist') || msg.includes('relation')) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Tabelas do banco ainda não foram criadas. Aguarde alguns segundos e tente novamente.',
-        detail: msg.slice(0, 300),
-      }, { status: 500 })
-    }
-    return NextResponse.json({
-      ok: false,
-      error: 'Erro ao verificar amizade.',
-      detail: msg.slice(0, 300),
-    }, { status: 500 })
   }
 
-  // Cria a partida com gameMode e xpReward
+  // Cria a partida em status WAITING — oponente ainda não definido
+  // awayUserId é null até que alguém entre via invite
   const matchData = {
     homeUserId: session.userId,
-    awayUserId: opponentId,
-    status: 'COIN_FLIP' as const,
+    // awayUserId omitted — will be null until opponent joins via invite
+    status: 'WAITING' as const,
     mode: 'DREAM_TEAM' as const,
     gameMode,
+    inviteCode,
     homeScore: 0,
     awayScore: 0,
     turnCount: 0,
@@ -106,6 +95,7 @@ export async function POST(req: NextRequest) {
         homeUserId: match.homeUserId,
         awayUserId: match.awayUserId,
         gameMode: match.gameMode,
+        inviteCode: match.inviteCode,
         xpReward: match.xpReward,
       },
     })
@@ -121,48 +111,8 @@ export async function POST(req: NextRequest) {
       console.log('[match/create] Retrying db sync after error...')
       try {
         await db.$executeRawUnsafe(`
-          CREATE TABLE IF NOT EXISTS "Match" (
-            "id" TEXT NOT NULL,
-            "status" TEXT NOT NULL DEFAULT 'COIN_FLIP',
-            "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM',
-            "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH',
-            "coinResult" TEXT,
-            "startingUserId" TEXT,
-            "homeUserId" TEXT NOT NULL,
-            "awayUserId" TEXT NOT NULL,
-            "currentPossession" TEXT,
-            "homeScore" INTEGER NOT NULL DEFAULT 0,
-            "awayScore" INTEGER NOT NULL DEFAULT 0,
-            "winner" TEXT,
-            "turnCount" INTEGER NOT NULL DEFAULT 0,
-            "homeProgress" INTEGER NOT NULL DEFAULT 0,
-            "awayProgress" INTEGER NOT NULL DEFAULT 0,
-            "eventsJson" TEXT NOT NULL DEFAULT '[]',
-            "homeTeamStateJson" TEXT NOT NULL DEFAULT '{}',
-            "awayTeamStateJson" TEXT NOT NULL DEFAULT '{}',
-            "homeTeamRating" INTEGER,
-            "awayTeamRating" INTEGER,
-            "matchStartedAt" TIMESTAMP(3),
-            "pausedAt" TIMESTAMP(3),
-            "totalPausedMs" INTEGER NOT NULL DEFAULT 0,
-            "halftimeTaken" BOOLEAN NOT NULL DEFAULT false,
-            "secondHalfStartedAt" TIMESTAMP(3),
-            "xpReward" INTEGER NOT NULL DEFAULT 0,
-            "turnStartedAt" TIMESTAMP(3),
-            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            CONSTRAINT "Match_pkey" PRIMARY KEY ("id")
-          );
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH';
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "matchStartedAt" TIMESTAMP(3);
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3);
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "totalPausedMs" INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "halftimeTaken" BOOLEAN NOT NULL DEFAULT false;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "secondHalfStartedAt" TIMESTAMP(3);
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "xpReward" INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnStartedAt" TIMESTAMP(3);
-          CREATE INDEX IF NOT EXISTS "Match_homeUserId_idx" ON "Match"("homeUserId");
-          CREATE INDEX IF NOT EXISTS "Match_awayUserId_idx" ON "Match"("awayUserId");
+          ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT;
+          CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode");
         `)
         // Retry
         const match = await db.match.create({ data: matchData })
@@ -174,6 +124,7 @@ export async function POST(req: NextRequest) {
             homeUserId: match.homeUserId,
             awayUserId: match.awayUserId,
             gameMode: match.gameMode,
+            inviteCode: match.inviteCode,
             xpReward: match.xpReward,
           },
         })

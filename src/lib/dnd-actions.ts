@@ -253,9 +253,8 @@ export function sampleActions(category: ActionCategory, count: number): Football
 
 // Sorteia N ações aleatórias de TODAS as categorias (para turnos subsequentes)
 export function sampleMixedActions(count: number): FootballAction[] {
-  // Prioriza ações que fazem sentido no meio do jogo (não KICKOFF ou DEFEND)
-  // DEFEND actions are reserved for the "Defensive Opportunity" phase only
-  const pool = ALL_ACTIONS.filter((a) => a.category !== 'KICKOFF' && a.category !== 'DEFEND')
+  // Prioriza ações que fazem sentido no meio do jogo (não KICKOFF)
+  const pool = ALL_ACTIONS.filter((a) => a.category !== 'KICKOFF')
   const shuffled = [...pool].sort(() => Math.random() - 0.5)
   return shuffled.slice(0, Math.min(count, pool.length))
 }
