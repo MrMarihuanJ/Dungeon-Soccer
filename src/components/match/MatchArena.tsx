@@ -21,7 +21,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Swords, Trophy, ArrowLeft, Coins, Play, Loader2, History, ChevronRight,
-  AlertTriangle, Users, Pause, RotateCcw, Clock, Coffee, Zap,
+  AlertTriangle, Users, Pause, RotateCcw, Clock, Coffee, Zap, Shield,
 } from 'lucide-react'
 import { CoinFlip } from './CoinFlip'
 import { DiceRoll } from './DiceRoll'
@@ -36,10 +36,12 @@ import {
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
   type PenaltyEvent, type TeamMatchState, type GameMode,
+  type PlayerPenaltyMultiplier,
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
-  pickPlayerForAction,
+  pickPlayerForAction, generatePenaltyMultipliers,
 } from '@/lib/match-engine'
+import { playWhistleSound, playGoalSound } from '@/lib/sound'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
 
@@ -63,7 +65,7 @@ interface Props {
   onExit: () => void
 }
 
-type Phase = 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION' | 'PAUSED' | 'HALFTIME'
+type Phase = 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION' | 'PAUSED' | 'HALFTIME' | 'DEFEND_OPPORTUNITY'
 
 export function MatchArena({
   matchId, homeUser, awayUser, currentUserId, gameMode = 'QUICK_MATCH', initialState, onExit,
@@ -95,6 +97,7 @@ export function MatchArena({
     xpReward: modeConfig.xpWin,
     turnStartedAt: null,
     matchEndReason: '',
+    penaltyMultipliers: [],
   })
 
   const [phase, setPhase] = useState<Phase>(
@@ -138,6 +141,7 @@ export function MatchArena({
   const [myReserves, setMyReserves] = useState<SelectedPlayer[]>([])
   const [myStarters, setMyStarters] = useState<SelectedPlayer[]>([])
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
+  const [penaltyMultipliers, setPenaltyMultipliers] = useState<PlayerPenaltyMultiplier[]>([])
 
   // Refs for timers
   const matchTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -150,6 +154,11 @@ export function MatchArena({
     const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
     setMyStarters(startersList)
     setMyReserves(storeReserves)
+    // Generate penalty multipliers from starter IDs (once per match, when starters change)
+    if (penaltyMultipliers.length === 0 && startersList.length > 0) {
+      const starterIds = startersList.map(p => p.id)
+      setPenaltyMultipliers(generatePenaltyMultipliers(starterIds))
+    }
   }, [storeStarters, storeReserves])
 
   const isHome = currentUserId === homeUser.id
@@ -539,6 +548,7 @@ export function MatchArena({
         if (data.event.isGoal) {
           const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
           const goalPlayerName = data.event.playerName || scorer
+          playGoalSound()
           toast.success(`⚽ GOOOOL! ${goalPlayerName} marca para ${scorer}!`, { duration: 4000 })
 
           // Check for QUICK_MATCH win condition
@@ -569,9 +579,13 @@ export function MatchArena({
             YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
             PENALTY_KICK: '⚪', VAR_REVIEW: '📺',
           }
+          // Play whistle sound for penalty kicks
+          if (pe.type === 'PENALTY_KICK') {
+            playWhistleSound()
+          }
           toast(`${penaltyEmojis[pe.type] ?? '⚠️'} ${pe.description}`, {
             duration: 4000,
-            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
+            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : pe.type === 'PENALTY_KICK' ? '#1c1917' : '#1e293b' },
           })
 
           setTimeout(() => {
@@ -732,7 +746,31 @@ export function MatchArena({
   }
 
   // ===== Simula jogada do adversário (IA simples) =====
+  // Before the opponent plays, check for a defensive opportunity (30% chance)
   const simulateOpponent = async () => {
+    // Check for defensive opportunity: if the player doesn't have possession,
+    // there's a 30% chance the player gets offered DEFEND actions
+    if (!state.currentPossession) return
+    const opponentHasPossession = state.currentPossession !== mySide
+    if (opponentHasPossession) {
+      const defendChance = Math.random()
+      if (defendChance < 0.30) {
+        // Defensive opportunity! Show DEFEND actions to the player
+        setPhase('DEFEND_OPPORTUNITY')
+        setAvailableActions(sampleActions('DEFEND', 3))
+        toast('🛡️ Oportunidade de Defesa! Tente roubar a bola!', {
+          duration: 4000,
+          style: { background: '#78350f', color: '#fbbf24', border: '2px solid #92400e' },
+        })
+        return
+      }
+    }
+    // No defensive opportunity, opponent plays normally
+    executeOpponentPlay()
+  }
+
+  // The actual opponent simulation (separated from defensive opportunity check)
+  const executeOpponentPlay = async () => {
     setDiceRolling(true)
     setLastRoll(null)
     setLastEvent(null)
@@ -817,6 +855,7 @@ export function MatchArena({
         if (data.event.isGoal) {
           const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
           const goalPlayerName = data.event.playerName || scorer
+          playGoalSound()
           toast.success(`⚽ GOOOOL! ${goalPlayerName} marca para ${scorer}!`, { duration: 4000 })
 
           // Check for QUICK_MATCH win
@@ -838,9 +877,13 @@ export function MatchArena({
             YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
             PENALTY_KICK: '⚪', VAR_REVIEW: '📺',
           }
+          // Play whistle sound for penalty kicks
+          if (pe.type === 'PENALTY_KICK') {
+            playWhistleSound()
+          }
           toast(`${penaltyEmojis[pe.type] ?? '⚠️'} ${pe.description}`, {
             duration: 4000,
-            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
+            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : pe.type === 'PENALTY_KICK' ? '#1c1917' : '#1e293b' },
           })
           if (pe.type === 'RED_CARD') {
             setState((s) => ({
@@ -868,6 +911,117 @@ export function MatchArena({
       } catch (err) {
         console.error('[MatchArena] opponent action error:', err)
         setDiceRolling(false)
+      }
+    }, 1800)
+  }
+
+  // ===== Handle defensive action (DEFEND_OPPORTUNITY phase) =====
+  // When the player selects a DEFEND action during the defensive opportunity phase,
+  // it goes through the normal dice roll + API flow, and the result determines what happens next.
+  const handleDefendAction = async (action: FootballAction, forcedPlayerName?: string) => {
+    if (processing || diceRolling) return
+    setProcessing(true)
+    setDiceRolling(true)
+    setLastRoll(null)
+    setLastEvent(null)
+
+    // Pick a player name for narrative
+    let playerName = forcedPlayerName
+    if (!playerName) {
+      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
+      const { player } = pickPlayerForAction(
+        startersList.map(p => ({ name: p.name, position: p.position })),
+        action.category,
+      )
+      playerName = player
+    }
+
+    // Wait for dice animation (1.8s)
+    setTimeout(async () => {
+      try {
+        const res = await fetch('/api/match/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            matchId,
+            type: 'PLAY_ACTION',
+            action,
+            playerName: playerName || undefined,
+          }),
+        })
+        const data = await res.json()
+
+        if (data.timeExpired) {
+          setState((s) => ({
+            ...s,
+            status: 'FINISHED',
+            winner: data.newState.winner,
+            matchEndReason: 'Tempo esgotado!',
+            homeScore: data.newState.homeScore,
+            awayScore: data.newState.awayScore,
+          }))
+          setDiceRolling(false)
+          setPhase('FINISHED')
+          setProcessing(false)
+          return
+        }
+
+        if (!data.ok) {
+          toast.error(data.error || 'Erro ao processar jogada.')
+          setDiceRolling(false)
+          setProcessing(false)
+          return
+        }
+
+        setLastRoll(data.event.roll)
+        setLastEvent(data.event)
+        setState((s) => ({
+          ...s,
+          currentPossession: data.newState.currentPossession,
+          homeScore: data.newState.homeScore,
+          awayScore: data.newState.awayScore,
+          homeProgress: data.newState.homeProgress,
+          awayProgress: data.newState.awayProgress,
+          turnCount: data.newState.turnCount,
+          status: data.newState.status,
+          winner: data.newState.winner,
+          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
+          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
+          events: [...s.events, data.event],
+          matchEndReason: data.newState.matchEndReason || '',
+          turnStartedAt: new Date(),
+        }))
+        setDiceRolling(false)
+
+        // Handle the defensive action result:
+        // - If success (possession changed to player): Go to PLAYER_TURN, draw mixed actions
+        // - If fail (possession stays with opponent): Go to OPPONENT_TURN, simulate opponent play
+        setTimeout(() => {
+          if (data.newState.status === 'FINISHED') {
+            setPhase('FINISHED')
+          } else {
+            const possessionChangedToMe = data.newState.currentPossession === mySide
+            if (possessionChangedToMe) {
+              // Defensive action succeeded! Player steals the ball
+              toast.success('🛡️ Defesa sucesso! Você roubou a bola!', { duration: 3000 })
+              setPhase('PLAYER_TURN')
+              drawMixedActions()
+              setTurn((t) => t + 1)
+            } else {
+              // Defensive action failed, opponent retains possession
+              toast('❌ Defesa falhou! O adversário continua com a bola.', { duration: 3000 })
+              setPhase('OPPONENT_TURN')
+              setAvailableActions([])
+              setTimeout(() => executeOpponentPlay(), 1500)
+            }
+          }
+          setProcessing(false)
+        }, 2200)
+      } catch (err) {
+        console.error('[MatchArena] defend action error:', err)
+        toast.error('Erro de conexão.')
+        setDiceRolling(false)
+        setProcessing(false)
       }
     }, 1800)
   }
@@ -1147,7 +1301,7 @@ export function MatchArena({
         )}
 
         {/* ===== FASE: PLAYER TURN ou OPPONENT TURN ===== */}
-        {(phase === 'PLAYER_TURN' || phase === 'OPPONENT_TURN') && (
+        {(phase === 'PLAYER_TURN' || phase === 'OPPONENT_TURN' || phase === 'DEFEND_OPPORTUNITY') && (
           <div className="space-y-4">
             {/* Indicador de quem joga + turn timer */}
             <div className="flex items-center justify-center gap-3">
@@ -1158,12 +1312,16 @@ export function MatchArena({
                 className={`rounded-full px-4 py-1 text-sm font-bold ${
                   phase === 'PLAYER_TURN'
                     ? 'bg-emerald-500/20 text-emerald-300'
-                    : 'bg-sky-500/20 text-sky-300'
+                    : phase === 'DEFEND_OPPORTUNITY'
+                      ? 'bg-amber-500/20 text-amber-300'
+                      : 'bg-sky-500/20 text-sky-300'
                 }`}
               >
                 {phase === 'PLAYER_TURN'
                   ? `🎯 Sua vez, ${myUser.username}!`
-                  : `⏳ ${oppUser.username} está jogando...`}
+                  : phase === 'DEFEND_OPPORTUNITY'
+                    ? `🛡️ Oportunidade de Defesa!`
+                    : `⏳ ${oppUser.username} está jogando...`}
               </motion.div>
               {phase === 'PLAYER_TURN' && !isPaused && (
                 <div className={`rounded-full px-3 py-1 text-xs font-mono ${
@@ -1252,6 +1410,36 @@ export function MatchArena({
                         action={action}
                         index={idx}
                         onSelect={handleSelectAction}
+                        disabled={processing}
+                      />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Defensive Opportunity cards */}
+            {phase === 'DEFEND_OPPORTUNITY' && !processing && availableActions.length > 0 && (
+              <Card className="border-amber-500/30 bg-gray-900/60">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2 text-amber-400">
+                      <Shield className="h-5 w-5" />
+                      🛡️ Oportunidade de Defesa
+                    </CardTitle>
+                  </div>
+                  <p className="text-xs text-amber-300/80">
+                    Se a defesa for sucesso, você rouba a bola! Se falhar, o adversário continua jogando.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {availableActions.map((action, idx) => (
+                      <ActionCard
+                        key={`${action.id}-${idx}`}
+                        action={action}
+                        index={idx}
+                        onSelect={handleDefendAction}
                         disabled={processing}
                       />
                     ))}
@@ -1403,6 +1591,8 @@ export function MatchArena({
         onPlayFreeKick={handleFreeKickPlay}
         fieldPlayers={myStarters}
         possession={freeKickPossession}
+        isPenaltyKick={currentPenalty?.type === 'PENALTY_KICK'}
+        penaltyMultipliers={penaltyMultipliers}
       />
     </div>
   )

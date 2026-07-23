@@ -330,6 +330,11 @@ export interface MatchEvent {
   narrative?: string
 }
 
+export interface PlayerPenaltyMultiplier {
+  playerId: string
+  multiplier: number  // random value between 0.5 and 1.5
+}
+
 export interface MatchState {
   matchId: string
   status: 'COIN_FLIP' | 'IN_PROGRESS' | 'PAUSED' | 'HALFTIME' | 'FINISHED'
@@ -356,6 +361,8 @@ export interface MatchState {
   xpReward: number
   turnStartedAt: Date | null
   matchEndReason: string
+  // ===== Penalty Multipliers =====
+  penaltyMultipliers: PlayerPenaltyMultiplier[]  // generated once per match
 }
 
 // =====================================================================
@@ -467,6 +474,7 @@ export function generatePenaltyEvent(
   dice: number,
   possession: Possession,
   playerIds: string[] = [],
+  currentProgress: number = 0,  // progress of the ATTACKING team (favoredPossession)
 ): PenaltyEvent | null {
   // Only trigger penalties on low dice rolls (1-5) or critical fails
   if (dice > 5 && dice !== 1) return null
@@ -476,22 +484,28 @@ export function generatePenaltyEvent(
   // Weight-based random selection depending on dice value
   const roll = Math.random()
   
-  // Dice 1 (critical fail) = much more likely to get severe penalties
-  if (dice === 1) {
-    // Critical fail: 40% red card, 25% penalty, 20% injury, 10% yellow, 5% foul
-    if (roll < 0.25) {
-      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
+  // Helper: check if foul should be upgraded to PENALTY_KICK (inside the area)
+  const upgradeFoulToPenalty = (foulEvent: PenaltyEvent): PenaltyEvent => {
+    // If the attacking team (favoredPossession) has progress >= 75, it's inside the area
+    const isInArea = currentProgress >= 75
+    if (isInArea && foulEvent.type === 'FOUL') {
+      // Upgrade FOUL to PENALTY_KICK
       return {
+        ...foulEvent,
         type: 'PENALTY_KICK',
-        possession,
-        favoredPossession: opponent,
         description: PENALTY_DESCRIPTIONS.PENALTY_KICK[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.PENALTY_KICK.length)],
         requiresSubstitution: false,
-        requiresVAR: Math.random() < 0.7, // Penalty often goes to VAR
+        requiresVAR: Math.random() < 0.7,
         requiresFreeKick: false,
       }
     }
-    if (roll < 0.65) {
+    return foulEvent
+  }
+  
+  // Dice 1 (critical fail) = much more likely to get severe penalties
+  // 40% red card, 35% foul (can upgrade to penalty if in area), 20% injury, 5% yellow
+  if (dice === 1) {
+    if (roll < 0.40) {
       const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
       return {
         type: 'RED_CARD',
@@ -504,7 +518,19 @@ export function generatePenaltyEvent(
         requiresFreeKick: false,
       }
     }
-    if (roll < 0.85) {
+    if (roll < 0.75) {
+      // FOUL — can upgrade to PENALTY_KICK if in the area
+      return upgradeFoulToPenalty({
+        type: 'FOUL',
+        possession,
+        favoredPossession: opponent,
+        description: PENALTY_DESCRIPTIONS.FOUL[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.FOUL.length)],
+        requiresSubstitution: false,
+        requiresVAR: Math.random() < 0.2,
+        requiresFreeKick: true,
+      })
+    }
+    if (roll < 0.95) {
       const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
       return {
         type: 'INJURY',
@@ -517,35 +543,25 @@ export function generatePenaltyEvent(
         requiresFreeKick: false,
       }
     }
-    if (roll < 0.95) {
-      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
-      return {
-        type: 'YELLOW_CARD',
-        possession,
-        favoredPossession: opponent,
-        description: PENALTY_DESCRIPTIONS.YELLOW_CARD[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.YELLOW_CARD.length)],
-        cardPlayerId: pid,
-        requiresSubstitution: false,
-        requiresVAR: Math.random() < 0.3,
-        requiresFreeKick: false,
-      }
-    }
+    const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
     return {
-      type: 'FOUL',
+      type: 'YELLOW_CARD',
       possession,
       favoredPossession: opponent,
-      description: PENALTY_DESCRIPTIONS.FOUL[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.FOUL.length)],
+      description: PENALTY_DESCRIPTIONS.YELLOW_CARD[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.YELLOW_CARD.length)],
+      cardPlayerId: pid,
       requiresSubstitution: false,
-      requiresVAR: Math.random() < 0.2,
-      requiresFreeKick: true,
+      requiresVAR: Math.random() < 0.3,
+      requiresFreeKick: false,
     }
   }
 
   // Dice 2-5: less severe but still possible
-  // 35% foul, 20% offside, 15% ball out, 12% corner, 8% yellow, 5% injury, 3% penalty, 2% VAR direct
+  // 38% foul (can upgrade), 20% offside, 15% ball out, 12% corner, 8% yellow, 5% injury, 2% VAR
   if (dice <= 5) {
-    if (roll < 0.35) {
-      return {
+    if (roll < 0.38) {
+      // FOUL — can upgrade to PENALTY_KICK if in the area
+      return upgradeFoulToPenalty({
         type: 'FOUL',
         possession,
         favoredPossession: opponent,
@@ -553,9 +569,9 @@ export function generatePenaltyEvent(
         requiresSubstitution: false,
         requiresVAR: Math.random() < 0.2,
         requiresFreeKick: true,
-      }
+      })
     }
-    if (roll < 0.55) {
+    if (roll < 0.58) {
       return {
         type: 'OFFSIDE',
         possession,
@@ -566,7 +582,7 @@ export function generatePenaltyEvent(
         requiresFreeKick: false,
       }
     }
-    if (roll < 0.70) {
+    if (roll < 0.73) {
       return {
         type: 'BALL_OUT',
         possession,
@@ -577,7 +593,7 @@ export function generatePenaltyEvent(
         requiresFreeKick: false,
       }
     }
-    if (roll < 0.82) {
+    if (roll < 0.85) {
       return {
         type: 'CORNER',
         possession,
@@ -588,7 +604,7 @@ export function generatePenaltyEvent(
         requiresFreeKick: false,
       }
     }
-    if (roll < 0.90) {
+    if (roll < 0.93) {
       const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
       return {
         type: 'YELLOW_CARD',
@@ -601,7 +617,7 @@ export function generatePenaltyEvent(
         requiresFreeKick: false,
       }
     }
-    if (roll < 0.95) {
+    if (roll < 0.98) {
       const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
       return {
         type: 'INJURY',
@@ -611,17 +627,6 @@ export function generatePenaltyEvent(
         injuredPlayerId: pid,
         requiresSubstitution: true,
         requiresVAR: false,
-        requiresFreeKick: false,
-      }
-    }
-    if (roll < 0.98) {
-      return {
-        type: 'PENALTY_KICK',
-        possession,
-        favoredPossession: opponent,
-        description: PENALTY_DESCRIPTIONS.PENALTY_KICK[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.PENALTY_KICK.length)],
-        requiresSubstitution: false,
-        requiresVAR: Math.random() < 0.8,
         requiresFreeKick: false,
       }
     }
@@ -689,7 +694,18 @@ export function createInitialMatchState(matchId: string, gameMode: GameMode = 'Q
     xpReward: config.xpWin,
     turnStartedAt: null,
     matchEndReason: '',
+    penaltyMultipliers: [],
   }
+}
+
+// =====================================================================
+// Generate penalty multipliers for each player (once per match)
+// =====================================================================
+export function generatePenaltyMultipliers(playerIds: string[]): PlayerPenaltyMultiplier[] {
+  return playerIds.map(id => ({
+    playerId: id,
+    multiplier: 0.5 + Math.random() * 1.0  // 0.5 to 1.5
+  }))
 }
 
 // =====================================================================
@@ -911,8 +927,10 @@ export function applyActionToState(
 
   // ===== PENALTY EVENT GENERATION =====
   // Generate penalty events on low dice rolls
+  // Pass current progress to enable area-foul → penalty upgrade
   if (!roll.success && roll.dice <= 5) {
-    const penaltyEvent = generatePenaltyEvent(roll.dice, possession)
+    const currentProgress = possession === 'HOME' ? newState.homeProgress : newState.awayProgress
+    const penaltyEvent = generatePenaltyEvent(roll.dice, possession, [], currentProgress)
     if (penaltyEvent) {
       event.penaltyEvent = penaltyEvent
       
@@ -967,7 +985,8 @@ export function applyActionToState(
   }
   // Critical fail always generates a penalty
   if (roll.critical === 'crit_fail') {
-    const penaltyEvent = generatePenaltyEvent(1, possession)
+    const currentProgressCritFail = possession === 'HOME' ? newState.homeProgress : newState.awayProgress
+    const penaltyEvent = generatePenaltyEvent(1, possession, [], currentProgressCritFail)
     if (penaltyEvent && !event.penaltyEvent) {
       event.penaltyEvent = penaltyEvent
       
@@ -1040,6 +1059,39 @@ export function applyActionToState(
           // Perdeu a bola (goleiro pegou)
           newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
           event.possessionChanged = true
+        }
+      } else if (action.category === 'FREE_KICK' && action.goalChance > 0) {
+        // Free kick goal chance — only possible after midfield (progress > 50)
+        const currentProgress = possession === 'HOME' ? newState.homeProgress : newState.awayProgress
+        const isPastMidfield = currentProgress > 50
+        // Apply kicker's penalty multiplier if available
+        const kickerMultiplier = state.penaltyMultipliers?.find(m => m.playerId === playerName)?.multiplier || 1.0
+        const effectiveGoalChance = Math.min(1.0, action.goalChance * kickerMultiplier)
+        if (isPastMidfield) {
+          const goalRoll = Math.random()
+          if (goalRoll < effectiveGoalChance) {
+            // Goal from free kick!
+            event.isGoal = true
+            if (possession === 'HOME') {
+              newState.homeScore += 1
+              newState.homeProgress = 0
+            } else {
+              newState.awayScore += 1
+              newState.awayProgress = 0
+            }
+            newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
+            event.possessionChanged = true
+          } else if (action.ballRetentionOnFail > 0 && Math.random() < action.ballRetentionOnFail) {
+            // Free kick defended, but ball stays with attacking team (rebound)
+            // continues with possession
+          } else {
+            // Goleiro pegou, possession changes
+            newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
+            event.possessionChanged = true
+          }
+        } else {
+          // Before midfield: free kick doesn't result in goal, just adds progress
+          // (progress was already added above in the isAttackAction block)
         }
       } else if (action.category === 'SPECIAL' && action.goalChance > 0 && Math.random() < action.goalChance) {
         // Ação especial com chance de gol

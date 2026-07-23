@@ -16,6 +16,7 @@ import {
   createInitialMatchState, GAME_MODE_CONFIG,
   checkMatchEndCondition, isHalftimeReached, isTimeExpired,
   type MatchState, type CoinResult, type TeamMatchState, type GameMode,
+  type PlayerPenaltyMultiplier,
 } from '@/lib/match-engine'
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
@@ -222,6 +223,7 @@ export async function POST(req: NextRequest) {
       xpReward: match.xpReward || modeConfig.xpWin,
       turnStartedAt: match.turnStartedAt,
       matchEndReason: '',
+      penaltyMultipliers: [],  // penalty multipliers are managed client-side
     }
 
     // Player names para narrativa (enviados pelo cliente)
