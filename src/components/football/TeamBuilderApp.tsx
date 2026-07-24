@@ -29,6 +29,7 @@ import {
 } from '@/components/effects/EasterEggs'
 import { MatchLobby } from '@/components/match/MatchLobby'
 import { MatchArena } from '@/components/match/MatchArena'
+import { InviteCodeEntryDialog } from '@/components/match/InviteCodeEntryDialog'
 import { TeamRatingCard } from '@/components/football/TeamRatingCard'
 import { GameModeSelector } from '@/components/football/GameModeSelector'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
@@ -72,6 +73,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
   const [substOpen, setSubstOpen] = useState(false)
   const [reserveToEnter, setReserveToEnter] = useState<SelectedPlayer | null>(null)
   const [matchMode, setMatchMode] = useState(false)
+  const [inviteEntryOpen, setInviteEntryOpen] = useState(false)
   const [currentUser, setCurrentUser] = useState<{ id: string; username: string; displayName?: string | null } | null>(null)
 
   // New: share & stats dialogs
@@ -444,6 +446,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
         onTeamSave={handleTeamSave}
         onTeamLoad={handleTeamLoad}
         onOpenMatch={() => setMatchMode(true)}
+        onOpenInviteEntry={() => setInviteEntryOpen(true)}
       />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
@@ -639,6 +642,14 @@ export function TeamBuilderApp({ inviteCode }: Props) {
         open={statsOpen}
         onOpenChange={setStatsOpen}
         player={statsPlayer}
+      />
+
+      {/* Invite Code Entry Dialog — para digitar código manualmente */}
+      <InviteCodeEntryDialog
+        open={inviteEntryOpen}
+        onOpenChange={setInviteEntryOpen}
+        onSubmitCode={handleJoinMatch}
+        currentUser={currentUser}
       />
     </div>
   )

@@ -10,7 +10,7 @@
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Trophy, RotateCcw, BookOpen, ShieldCheck, Swords } from 'lucide-react'
+import { Trophy, RotateCcw, BookOpen, ShieldCheck, Swords, KeyRound } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme/ThemeToggle'
 import { UserMenu } from '@/components/user/UserMenu'
 import { toast } from 'sonner'
@@ -23,9 +23,10 @@ interface Props {
   onTeamSave?: () => Promise<boolean>
   onTeamLoad?: (team: { formation: string; starters: any; reserves: any }) => void
   onOpenMatch?: () => void
+  onOpenInviteEntry?: () => void
 }
 
-export function Header({ onClear, onOpenInstructions, totalPlayers, onTeamSave, onTeamLoad, onOpenMatch }: Props) {
+export function Header({ onClear, onOpenInstructions, totalPlayers, onTeamSave, onTeamLoad, onOpenMatch, onOpenInviteEntry }: Props) {
   const logoClickCount = useRef(0)
   const lastLogoClick = useRef(0)
 
@@ -110,6 +111,18 @@ export function Header({ onClear, onOpenInstructions, totalPlayers, onTeamSave, 
             <BookOpen className="h-4 w-4" />
             <span className="hidden md:inline">Como usar</span>
           </Button>
+          {onOpenInviteEntry && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onOpenInviteEntry}
+              className="gap-1.5 border-amber-500/50 text-amber-600 hover:bg-amber-500/10 dark:text-amber-400 dark:hover:bg-amber-500/20"
+              title="Entrar em uma partida com código de convite"
+            >
+              <KeyRound className="h-4 w-4" />
+              <span className="hidden sm:inline">Convite</span>
+            </Button>
+          )}
           {onOpenMatch && (
             <Button
               size="sm"

@@ -22,6 +22,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -56,18 +57,77 @@ interface UnifiedPlayer {
   ogolUrl?: string | null
 }
 
-// -------- SDK helper (funciona local e no Vercel via .z-ai-config) --------
+// -------- SDK helper (funciona local e no Vercel) --------
+// On Vercel serverless, the .z-ai-config file might not be accessible.
+// We read config from env vars as fallback, and also try explicit create().
 async function createZAI(): Promise<any> {
   try {
     const ZAI = (await import('z-ai-web-dev-sdk')).default
-    // ZAI.create() lê config de:
-    //   1. process.cwd()/.z-ai-config  (projeto — funciona no Vercel se o arquivo estiver deployado)
-    //   2. $HOME/.z-ai-config
-    //   3. /etc/.z-ai-config
-    const zai = await ZAI.create()
-    return zai
+
+    // Try default create() first (reads .z-ai-config file)
+    try {
+      const zai = await ZAI.create()
+      console.log('[ZAI] SDK initialized via .z-ai-config')
+      return zai
+    } catch {
+      // .z-ai-config not found — try environment variables
+    }
+
+    // Fallback: use environment variables (set on Vercel dashboard)
+    const baseUrl = process.env.ZAI_BASE_URL
+    const apiKey = process.env.ZAI_API_KEY
+    const token = process.env.ZAI_TOKEN
+    const chatId = process.env.ZAI_CHAT_ID
+    const userId = process.env.ZAI_USER_ID
+
+    if (baseUrl && apiKey && token) {
+      try {
+        const zai = await ZAI.create({
+          baseUrl,
+          apiKey,
+          token,
+          chatId: chatId || '',
+          userId: userId || '',
+        })
+        console.log('[ZAI] SDK initialized via environment variables')
+        return zai
+      } catch {
+        // Explicit config failed too
+      }
+    }
+
+    // Last resort: try reading .z-ai-config from various paths
+    const fs = await import('fs')
+    const path = await import('path')
+    const configPaths = [
+      path.join(process.cwd(), '.z-ai-config'),
+      path.join(process.cwd(), '..', '.z-ai-config'),
+      '/etc/.z-ai-config',
+    ]
+    for (const configPath of configPaths) {
+      try {
+        if (fs.existsSync(configPath)) {
+          const configContent = fs.readFileSync(configPath, 'utf8')
+          const config = JSON.parse(configContent)
+          const zai = await ZAI.create({
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            token: config.token,
+            chatId: config.chatId || '',
+            userId: config.userId || '',
+          })
+          console.log(`[ZAI] SDK initialized via config file: ${configPath}`)
+          return zai
+        }
+      } catch {
+        // Continue trying other paths
+      }
+    }
+
+    console.warn('[ZAI] SDK não disponível — busca web desabilitada. Configure .z-ai-config ou env vars ZAI_BASE_URL/ZAI_API_KEY/ZAI_TOKEN.')
+    return null
   } catch (err) {
-    console.warn('[ZAI] SDK não disponível — busca web desabilitada. Erro:', err instanceof Error ? err.message : err)
+    console.warn('[ZAI] SDK import falhou — busca web desabilitada. Erro:', err instanceof Error ? err.message : err)
     return null
   }
 }
@@ -307,6 +367,14 @@ async function searchLocal(query: string, limit: number, pos?: string | null, mo
 // -------- Endpoint --------
 export async function GET(req: NextRequest) {
   try {
+    // Garante que o banco está disponível antes de buscar local
+    try {
+      await ensureDbSync()
+    } catch (err: any) {
+      console.error('[search] DB sync failed:', err?.message?.slice(0, 200))
+      // Don't abort — local search will just return empty if tables don't exist
+    }
+
     const { searchParams } = new URL(req.url)
     const q = (searchParams.get('q') ?? '').trim().toLowerCase()
     const limit = Math.min(Number(searchParams.get('limit') ?? 15), 30)

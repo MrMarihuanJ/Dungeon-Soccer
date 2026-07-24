@@ -5,7 +5,7 @@
   "description": "Monte seu time dos sonhos no estilo Cartola FC - Next.js + Prisma + Neon",
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
+    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && cp .z-ai-config .next/standalone/ && cp prisma/schema.prisma .next/standalone/prisma/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "postinstall": "prisma generate",

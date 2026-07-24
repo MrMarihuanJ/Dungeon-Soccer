@@ -72,6 +72,7 @@ export function PlayerSearchModal({
   const [results, setResults] = useState<ApiPlayer[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sourcesInfo, setSourcesInfo] = useState<{ thesportsdb: number; transfermarkt: number; sofascore: number; local: number } | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Posição-alvo no banco (GK/DF/MF/FW) baseada no role tático do slot
@@ -97,6 +98,7 @@ export function PlayerSearchModal({
         if (!res.ok) throw new Error('Falha na busca')
         const data = await res.json()
         setResults(data.players ?? [])
+        setSourcesInfo(data.sources ?? null)
       } catch (e) {
         console.error(e)
         setError('Não foi possível buscar jogadores. Tente novamente.')
@@ -194,7 +196,7 @@ export function PlayerSearchModal({
             )}
           </div>
 
-          {/* Filtro de posição ativo */}
+          {/* Filtro de posição ativo + indicadores de fontes */}
           {targetPos && (
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <Badge variant="secondary" className="bg-emerald-100 text-emerald-700">
@@ -202,6 +204,32 @@ export function PlayerSearchModal({
               </Badge>
               <span>·</span>
               <span>{results.length} resultado(s)</span>
+            </div>
+          )}
+          {!targetPos && results.length > 0 && (
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <span>{results.length} resultado(s)</span>
+            </div>
+          )}
+          {/* Source indicators */}
+          {sourcesInfo && !loading && (
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <span>Fontes:</span>
+              {sourcesInfo.thesportsdb > 0 && (
+                <Badge variant="outline" className="text-[9px] border-sky-500/30 text-sky-600 dark:text-sky-400">SportsDB ({sourcesInfo.thesportsdb})</Badge>
+              )}
+              {sourcesInfo.transfermarkt > 0 && (
+                <Badge variant="outline" className="text-[9px] border-indigo-500/30 text-indigo-600 dark:text-indigo-400">Transfermarkt ({sourcesInfo.transfermarkt})</Badge>
+              )}
+              {sourcesInfo.sofascore > 0 && (
+                <Badge variant="outline" className="text-[9px] border-orange-500/30 text-orange-600 dark:text-orange-400">Sofascore ({sourcesInfo.sofascore})</Badge>
+              )}
+              {sourcesInfo.local > 0 && (
+                <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">Local ({sourcesInfo.local})</Badge>
+              )}
+              {sourcesInfo.thesportsdb + sourcesInfo.transfermarkt + sourcesInfo.sofascore + sourcesInfo.local === 0 && (
+                <span className="text-amber-500">Nenhuma fonte retornou resultados</span>
+              )}
             </div>
           )}
 

@@ -211,9 +211,10 @@ export function MatchInviteDialog({ inviteCode, matchId, gameMode, open, onClose
             {/* Info sobre como entrar */}
             <div className="rounded-lg bg-gray-800/50 border border-gray-700 p-3 text-xs text-gray-400 space-y-1">
               <p className="font-semibold text-gray-300">Como entrar na partida:</p>
-              <p>1. O outro jogador deve acessar o link ou digitar o código <strong className="text-amber-300">{inviteCode}</strong> no site</p>
-              <p>2. Ele deve estar logado com sua conta</p>
-              <p>3. Após entrar, a partida começa automaticamente!</p>
+              <p>1. O outro jogador pode <strong className="text-amber-300">clicar no link</strong> acima (aplica o código automaticamente)</p>
+              <p>2. Ou pode clicar no botão <strong className="text-amber-300">Convite</strong> no cabeçalho do site e <strong className="text-amber-300">digitar o código</strong> <span className="font-mono text-amber-400">{inviteCode}</span></p>
+              <p>3. Ele deve estar logado com sua conta</p>
+              <p>4. Após entrar, a partida começa automaticamente!</p>
             </div>
           </div>
         )}
