@@ -110,12 +110,17 @@ export function MatchArena({
           ? 'HALFTIME'
           : initialState?.status === 'WAITING'
             ? 'WAITING'
-            : initialState?.status === 'IN_PROGRESS'
-              ? (initialState.currentPossession === (currentUserId === homeUser.id ? 'HOME' : 'AWAY') ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-              : 'COIN_FLIP'
+            : initialState?.status === 'IN_PROGRESS' && initialState.coinResult
+              ? 'COIN_FLIP' // Show coin animation first before transitioning to game
+              : initialState?.status === 'IN_PROGRESS'
+                ? (initialState.currentPossession === (currentUserId === homeUser.id ? 'HOME' : 'AWAY') ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+                : 'COIN_FLIP'
   )
 
-  const [coinFlipping, setCoinFlipping] = useState(false)
+  const [coinFlipping, setCoinFlipping] = useState(
+    // If initialState has a coin result, start the animation immediately
+    !!initialState?.coinResult
+  )
   const [diceRolling, setDiceRolling] = useState(false)
   const [lastRoll, setLastRoll] = useState<DiceRollResult | null>(null)
   const [lastEvent, setLastEvent] = useState<MatchEvent | null>(null)
@@ -165,6 +170,58 @@ export function MatchArena({
   const myUser = isHome ? homeUser : awayUser
   const oppUser = isHome ? awayUser : homeUser
 
+  // ===== Transition after coin animation (unified mechanism) =====
+  // This SINGLE effect handles ALL coin flip transitions:
+  //   - Player B joining with initialState (coinFlipping=true from init)
+  //   - Player A detecting coin result via initial fetch (coinFlipping set to true)
+  //   - Player detecting coin result via COIN_FLIP polling (coinFlipping set to true)
+  // No separate mount effect or fetch timeout needed — this reacts to state changes.
+  const transitionScheduledRef = useRef(false)
+  useEffect(() => {
+    // Only transition when: animation is running, we have a result, and we're in COIN_FLIP phase
+    if (!coinFlipping || !state.coinResult || phase !== 'COIN_FLIP') {
+      transitionScheduledRef.current = false
+      return
+    }
+    // Don't schedule duplicate transitions
+    if (transitionScheduledRef.current) return
+    transitionScheduledRef.current = true
+    console.log('[MatchArena] Coin animation started — scheduling transition in 2600ms', {
+      coinResult: state.coinResult, currentPossession: state.currentPossession, mySide
+    })
+
+    const timer = setTimeout(() => {
+      transitionScheduledRef.current = false
+      setCoinFlipping(false)
+      // Use state updaters to read CURRENT values (avoids stale closure)
+      setState((s) => {
+        const derivedStartingSide = s.coinResult === 'heads' ? 'HOME' : 'AWAY'
+        const possession = s.currentPossession || derivedStartingSide
+        return {
+          ...s,
+          status: 'IN_PROGRESS',
+          startingSide: derivedStartingSide,
+          currentPossession: possession,
+        }
+      })
+      // Compute myTurn from CURRENT state (use functional setState to avoid stale closure)
+      // We need mySide which is stable (derived from props), and currentPossession which we just set
+      // Since setState is async, we compute from the coinResult we already know
+      const derivedStartingSide = state.coinResult === 'heads' ? 'HOME' : 'AWAY'
+      const possession = state.currentPossession || derivedStartingSide
+      const myTurn = possession === mySide
+      setPhase(myTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+      if (myTurn) drawKickoffActions()
+      setTurn(1)
+      toast.success('🪙 Moeda lançada! A partida começa!')
+    }, 2600) // Same duration as coin animation
+
+    return () => {
+      clearTimeout(timer)
+      transitionScheduledRef.current = false
+    }
+  }, [coinFlipping, state.coinResult, phase, state.currentPossession, mySide])
+
   // ===== Initial state fetch on mount (sync with server) =====
   useEffect(() => {
     const doInitialFetch = async () => {
@@ -205,8 +262,35 @@ export function MatchArena({
         } else if (serverState.status === 'COIN_FLIP') {
           setPhase('COIN_FLIP')
         } else if (serverState.status === 'IN_PROGRESS') {
-          const myTurnNow = serverState.currentPossession === mySide
-          setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+          // If the coin was already flipped (auto-flip on join or by opponent),
+          // set coinResult + coinFlipping so the unified transition effect handles it.
+          // NO separate setTimeout here — the transition effect handles the animation timing.
+          if (serverState.coinResult) {
+            console.log('[MatchArena] Initial fetch detected IN_PROGRESS with coinResult', {
+              coinResult: serverState.coinResult, currentPossession: serverState.currentPossession
+            })
+            // Set coinResult in state and start animation — transition effect will handle the rest
+            setState((s) => ({
+              ...s,
+              coinResult: serverState.coinResult,
+              currentPossession: serverState.currentPossession || s.currentPossession,
+              startingSide: serverState.coinResult === 'heads' ? 'HOME' : 'AWAY',
+              status: 'IN_PROGRESS',
+              matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : new Date(),
+              turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : new Date(),
+              homeScore: serverState.homeScore ?? s.homeScore,
+              awayScore: serverState.awayScore ?? s.awayScore,
+              homeProgress: serverState.homeProgress ?? s.homeProgress,
+              awayProgress: serverState.awayProgress ?? s.awayProgress,
+              turnCount: serverState.turnCount ?? s.turnCount,
+            }))
+            setPhase('COIN_FLIP')
+            setCoinFlipping(true)
+            // The unified transition effect (above) will schedule the 2600ms timeout
+          } else {
+            const myTurnNow = serverState.currentPossession === mySide
+            setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+          }
         } else if (serverState.status === 'FINISHED') {
           setPhase('FINISHED')
         } else if (serverState.status === 'HALFTIME') {
@@ -470,6 +554,8 @@ export function MatchArena({
 
   // ===== COIN FLIP =====
   const handleCoinFlip = async () => {
+    // Don't start if animation is already running (polling detected the result)
+    if (coinFlipping || state.coinResult) return
     setCoinFlipping(true)
     try {
       const res = await fetch('/api/match/action', {
@@ -479,29 +565,54 @@ export function MatchArena({
       })
       const data = await res.json()
       if (!data.ok) {
+        // If coin was already flipped by the other player, fetch the result and start animation
+        // The unified transition effect will handle the timeout
+        if (data.error === 'Moeda já foi lançada.') {
+          toast.info('🪙 O outro jogador já lançou a moeda!')
+          // Fetch current match state to get the coin result
+          try {
+            const stateRes = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+            const stateData = await stateRes.json()
+            if (stateData.ok && stateData.match?.coinResult) {
+              const serverState = stateData.match
+              // Set state + coinFlipping is already true — unified transition effect handles timeout
+              setState((s) => ({
+                ...s,
+                coinResult: serverState.coinResult,
+                currentPossession: serverState.currentPossession || s.currentPossession,
+                startingSide: serverState.coinResult === 'heads' ? 'HOME' : 'AWAY',
+                status: 'IN_PROGRESS',
+                matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : new Date(),
+                turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : new Date(),
+                homeScore: serverState.homeScore ?? s.homeScore,
+                awayScore: serverState.awayScore ?? s.awayScore,
+                homeProgress: serverState.homeProgress ?? s.homeProgress,
+                awayProgress: serverState.awayProgress ?? s.awayProgress,
+                turnCount: serverState.turnCount ?? s.turnCount,
+              }))
+              // coinFlipping is already true — unified transition effect handles the rest
+              return
+            }
+          } catch {
+            // If state fetch fails, fall through to error handler
+          }
+        }
         toast.error(data.error || 'Erro no lançamento da moeda.')
         setCoinFlipping(false)
         return
       }
-      // Aguarda animação da moeda (2.5s)
-      setTimeout(() => {
-        setCoinFlipping(false)
-        setState((s) => ({
-          ...s,
-          status: 'IN_PROGRESS',
-          coinResult: data.coinResult,
-          startingSide: data.startingSide,
-          currentPossession: data.currentPossession,
-          matchStartedAt: new Date(),
-          turnStartedAt: new Date(),
-        }))
-        const myTurn = data.currentPossession === mySide
-        setPhase(myTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-        if (myTurn) {
-          drawKickoffActions()
-        }
-        setTurn(1)
-      }, 2600)
+      // Coin flip succeeded — set result in state, coinFlipping is already true
+      // The unified transition effect will schedule the 2600ms timeout
+      setState((s) => ({
+        ...s,
+        coinResult: data.coinResult,
+        startingSide: data.startingSide,
+        currentPossession: data.currentPossession,
+        status: 'IN_PROGRESS',
+        matchStartedAt: new Date(),
+        turnStartedAt: new Date(),
+      }))
+      // No separate setTimeout — unified transition effect handles the animation + transition
     } catch (err) {
       console.error('[MatchArena] coin flip error:', err)
       toast.error('Erro de conexão ao lançar moeda.')
@@ -1040,22 +1151,36 @@ export function MatchArena({
 
         const serverState = data.match
         if (serverState.status === 'COIN_FLIP' || serverState.status === 'IN_PROGRESS') {
-          // Opponent has joined! Update state
+          // Opponent has joined! Set coin data and start animation.
+          // The unified transition effect will handle the 2600ms timeout.
+          console.log('[MatchArena] WAITING poll detected', serverState.status, {
+            coinResult: serverState.coinResult, currentPossession: serverState.currentPossession
+          })
           setState((s) => ({
             ...s,
             status: serverState.status,
-            currentPossession: serverState.currentPossession,
-            coinResult: serverState.coinResult,
+            currentPossession: serverState.currentPossession || s.currentPossession,
+            coinResult: serverState.coinResult || s.coinResult,
+            startingSide: serverState.coinResult === 'heads' ? 'HOME' : (serverState.coinResult === 'tails' ? 'AWAY' : s.startingSide),
+            matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : s.matchStartedAt,
+            turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : s.turnStartedAt,
+            homeScore: serverState.homeScore ?? s.homeScore,
+            awayScore: serverState.awayScore ?? s.awayScore,
+            homeProgress: serverState.homeProgress ?? s.homeProgress,
+            awayProgress: serverState.awayProgress ?? s.awayProgress,
+            turnCount: serverState.turnCount ?? s.turnCount,
           }))
           
           if (serverState.status === 'COIN_FLIP') {
             setPhase('COIN_FLIP')
             toast.success('🎉 Oponente entrou! A partida vai começar!')
           } else if (serverState.status === 'IN_PROGRESS') {
-            // Game already started (coin was flipped)
-            const myTurnNow = serverState.currentPossession === mySide
-            setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-            if (myTurnNow) drawKickoffActions()
+            // Game already started (coin auto-flipped on join)
+            // Set phase to COIN_FLIP and coinFlipping=true so the animation shows,
+            // then the unified transition effect handles the 2600ms timeout
+            setPhase('COIN_FLIP')
+            setCoinFlipping(true)
+            // No separate setTimeout here — unified transition effect handles it
           }
         }
       } catch {
@@ -1065,6 +1190,53 @@ export function MatchArena({
 
     return () => clearInterval(pollInterval)
   }, [phase, matchId, mySide])
+
+  // ===== Poll for coin flip result (COIN_FLIP phase, when other player already flipped) =====
+  useEffect(() => {
+    // Only poll during COIN_FLIP phase, in online mode, when we haven't started animation yet
+    if (phase !== 'COIN_FLIP' || isOffline || coinFlipping || state.coinResult) return
+
+    const coinPollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!data.ok) return
+
+        const serverState = data.match
+
+        // The other player has already flipped the coin — set state and start animation.
+        // The unified transition effect will handle the 2600ms timeout.
+        if (serverState.status === 'IN_PROGRESS' && serverState.coinResult) {
+          clearInterval(coinPollInterval)
+          console.log('[MatchArena] COIN_FLIP poll detected coin result', {
+            coinResult: serverState.coinResult, currentPossession: serverState.currentPossession
+          })
+          // Set state + start animation — unified transition effect handles the timeout
+          setState((s) => ({
+            ...s,
+            coinResult: serverState.coinResult,
+            currentPossession: serverState.currentPossession || s.currentPossession,
+            startingSide: serverState.coinResult === 'heads' ? 'HOME' : 'AWAY',
+            status: 'IN_PROGRESS',
+            matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : new Date(),
+            turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : new Date(),
+            homeScore: serverState.homeScore ?? s.homeScore,
+            awayScore: serverState.awayScore ?? s.awayScore,
+            homeProgress: serverState.homeProgress ?? s.homeProgress,
+            awayProgress: serverState.awayProgress ?? s.awayProgress,
+            turnCount: serverState.turnCount ?? s.turnCount,
+          }))
+          setCoinFlipping(true)
+          // No separate setTimeout — unified transition effect handles the animation + transition
+        }
+      } catch (err) {
+        console.error('[MatchArena] coin flip poll error:', err)
+      }
+    }, 2000) // Poll every 2 seconds
+
+    return () => clearInterval(coinPollInterval)
+  }, [phase, isOffline, coinFlipping, state.coinResult, matchId, mySide])
 
   // ===== Renderização =====
   const myScore = isHome ? state.homeScore : state.awayScore
@@ -1235,25 +1407,48 @@ export function MatchArena({
                     <Coins className="h-16 w-16 text-amber-400" />
                   </motion.div>
                   <div className="text-center">
-                    <h2 className="text-2xl font-bold text-amber-400">Pronto para começar?</h2>
-                    <p className="mt-1 text-sm text-gray-400">
-                      O juiz vai lançar a moeda para decidir quem sai com a bola.
-                    </p>
-                    <p className="mt-2 text-xs text-amber-300/80">
-                      {modeConfig.emoji} Modo: {modeConfig.label}
-                      {modeConfig.durationMs > 0 && ` — ${modeConfig.durationMs / 60000} minutos`}
-                      {gameMode === 'QUICK_MATCH' && ` — Primeiro a ${modeConfig.goalsToWin} gols`}
-                    </p>
+                    {isOffline ? (
+                      <>
+                        <h2 className="text-2xl font-bold text-amber-400">Pronto para começar?</h2>
+                        <p className="mt-1 text-sm text-gray-400">
+                          O juiz vai lançar a moeda para decidir quem sai com a bola.
+                        </p>
+                        <p className="mt-2 text-xs text-amber-300/80">
+                          {modeConfig.emoji} Modo: {modeConfig.label}
+                          {modeConfig.durationMs > 0 && ` — ${modeConfig.durationMs / 60000} minutos`}
+                          {gameMode === 'QUICK_MATCH' && ` — Primeiro a ${modeConfig.goalsToWin} gols`}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <h2 className="text-2xl font-bold text-amber-400">⏳ Aguardando início...</h2>
+                        <p className="mt-1 text-sm text-gray-400">
+                          A moeda será lançada automaticamente quando o oponente estiver conectado.
+                        </p>
+                        <p className="mt-2 text-xs text-amber-300/80">
+                          {modeConfig.emoji} Modo: {modeConfig.label}
+                        </p>
+                      </>
+                    )}
                   </div>
-                  <Button
-                    onClick={handleCoinFlip}
-                    disabled={coinFlipping}
-                    size="lg"
-                    className="gap-2 bg-amber-500 text-black hover:bg-amber-400"
-                  >
-                    {coinFlipping ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
-                    Lançar Moeda
-                  </Button>
+                  {/* Only show "Lançar Moeda" button in offline mode */}
+                  {isOffline && (
+                    <Button
+                      onClick={handleCoinFlip}
+                      disabled={coinFlipping}
+                      size="lg"
+                      className="gap-2 bg-amber-500 text-black hover:bg-amber-400"
+                    >
+                      {coinFlipping ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                      Lançar Moeda
+                    </Button>
+                  )}
+                  {!isOffline && (
+                    <div className="flex items-center gap-2 text-sm text-gray-400">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Verificando...
+                    </div>
+                  )}
                 </div>
               ) : (
                 <CoinFlip

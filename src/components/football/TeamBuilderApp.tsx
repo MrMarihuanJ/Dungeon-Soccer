@@ -88,6 +88,8 @@ export function TeamBuilderApp({ inviteCode }: Props) {
   const [joinAwayUser, setJoinAwayUser] = useState<{ id: string; username: string; displayName?: string | null } | null>(null)
   const [joinGameMode, setJoinGameMode] = useState<GameMode>('QUICK_MATCH')
   const [joinInviteCode, setJoinInviteCode] = useState<string | null>(inviteCode ?? null)
+  const [joinCoinResult, setJoinCoinResult] = useState<string | null>(null) // 'heads' | 'tails'
+  const [joinCurrentPossession, setJoinCurrentPossession] = useState<string | null>(null) // 'HOME' | 'AWAY'
 
   // Verifica usuário logado (para o modo de partida)
   useEffect(() => {
@@ -142,6 +144,11 @@ export function TeamBuilderApp({ inviteCode }: Props) {
       })
       setJoinGameMode(data.match.gameMode)
       setJoinInviteCode(code)
+      // Store coin result from auto-flip so MatchArena can show animation immediately
+      if (data.match.coinResult) {
+        setJoinCoinResult(data.match.coinResult)
+        setJoinCurrentPossession(data.match.currentPossession || data.match.startingSide)
+      }
 
       // Clear invite param from URL after successful join
       const url = new URL(window.location.href)
@@ -394,12 +401,40 @@ export function TeamBuilderApp({ inviteCode }: Props) {
         currentUserId={currentUser!.id}
         gameMode={joinGameMode}
         inviteCode={joinInviteCode || ''}
+        initialState={joinCoinResult ? {
+          matchId: joinMatchId,
+          status: 'IN_PROGRESS' as const,
+          coinResult: joinCoinResult as 'heads' | 'tails',
+          startingSide: joinCurrentPossession as 'HOME' | 'AWAY',
+          currentPossession: joinCurrentPossession as 'HOME' | 'AWAY',
+          homeScore: 0,
+          awayScore: 0,
+          homeProgress: 0,
+          awayProgress: 0,
+          turnCount: 0,
+          maxTurns: GAME_MODE_CONFIG[joinGameMode].maxTurns > 0 ? GAME_MODE_CONFIG[joinGameMode].maxTurns : 999,
+          events: [],
+          winner: null,
+          matchStartedAt: new Date(),
+          turnStartedAt: new Date(),
+          homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+          awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+          gameMode: joinGameMode,
+          xpReward: GAME_MODE_CONFIG[joinGameMode].xpWin,
+          pausedAt: null,
+          totalPausedMs: 0,
+          halftimeTaken: false,
+          secondHalfStartedAt: null,
+          matchEndReason: '',
+        } : undefined}
         onExit={() => {
           setMatchMode(false)
           setJoinMatchId(null)
           setJoinHomeUser(null)
           setJoinAwayUser(null)
           setJoinInviteCode(null)
+          setJoinCoinResult(null)
+          setJoinCurrentPossession(null)
           setJoinState('idle')
         }}
       />

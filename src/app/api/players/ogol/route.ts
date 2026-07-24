@@ -35,7 +35,7 @@ async function searchOgolProfile(playerName: string, team?: string | null): Prom
     try {
       zai = await ZAI.create()
     } catch {
-      // Try env vars
+      // Try env vars — use new ZAI(config) since ZAI.create() doesn't accept params
       const baseUrl = process.env.ZAI_BASE_URL
       const apiKey = process.env.ZAI_API_KEY
       const token = process.env.ZAI_TOKEN
@@ -43,7 +43,7 @@ async function searchOgolProfile(playerName: string, team?: string | null): Prom
       const userId = process.env.ZAI_USER_ID
       if (baseUrl && apiKey && token) {
         try {
-          zai = await ZAI.create({ baseUrl, apiKey, token, chatId: chatId || '', userId: userId || '' })
+          zai = new ZAI({ baseUrl, apiKey, token, chatId: chatId || '', userId: userId || '' })
         } catch { /* skip */ }
       }
     }

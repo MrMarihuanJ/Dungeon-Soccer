@@ -59,12 +59,12 @@ interface UnifiedPlayer {
 
 // -------- SDK helper (funciona local e no Vercel) --------
 // On Vercel serverless, the .z-ai-config file might not be accessible.
-// We read config from env vars as fallback, and also try explicit create().
+// We read config from env vars as fallback, and also try explicit new ZAI(config).
 async function createZAI(): Promise<any> {
   try {
     const ZAI = (await import('z-ai-web-dev-sdk')).default
 
-    // Try default create() first (reads .z-ai-config file)
+    // Try default create() first (reads .z-ai-config file) — works locally
     try {
       const zai = await ZAI.create()
       console.log('[ZAI] SDK initialized via .z-ai-config')
@@ -74,6 +74,7 @@ async function createZAI(): Promise<any> {
     }
 
     // Fallback: use environment variables (set on Vercel dashboard)
+    // IMPORTANT: ZAI.create() does NOT accept parameters — use new ZAI(config) instead
     const baseUrl = process.env.ZAI_BASE_URL
     const apiKey = process.env.ZAI_API_KEY
     const token = process.env.ZAI_TOKEN
@@ -82,17 +83,18 @@ async function createZAI(): Promise<any> {
 
     if (baseUrl && apiKey && token) {
       try {
-        const zai = await ZAI.create({
+        const config = {
           baseUrl,
           apiKey,
           token,
           chatId: chatId || '',
           userId: userId || '',
-        })
-        console.log('[ZAI] SDK initialized via environment variables')
+        }
+        const zai = new ZAI(config)
+        console.log('[ZAI] SDK initialized via environment variables (new ZAI)')
         return zai
-      } catch {
-        // Explicit config failed too
+      } catch (err) {
+        console.warn('[ZAI] new ZAI(env vars) falhou:', err instanceof Error ? err.message : err)
       }
     }
 
@@ -109,13 +111,7 @@ async function createZAI(): Promise<any> {
         if (fs.existsSync(configPath)) {
           const configContent = fs.readFileSync(configPath, 'utf8')
           const config = JSON.parse(configContent)
-          const zai = await ZAI.create({
-            baseUrl: config.baseUrl,
-            apiKey: config.apiKey,
-            token: config.token,
-            chatId: config.chatId || '',
-            userId: config.userId || '',
-          })
+          const zai = new ZAI(config)
           console.log(`[ZAI] SDK initialized via config file: ${configPath}`)
           return zai
         }

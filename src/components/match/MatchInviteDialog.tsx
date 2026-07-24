@@ -46,7 +46,9 @@ export function MatchInviteDialog({ inviteCode, matchId, gameMode, open, onClose
         const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
         if (res.ok) {
           const data = await res.json()
-          if (data.ok && data.match?.status === 'COIN_FLIP') {
+          if (data.ok && (data.match?.status === 'IN_PROGRESS' || data.match?.status === 'COIN_FLIP')) {
+            // Opponent has joined — the coin was flipped automatically when they joined
+            // (IN_PROGRESS means auto-flip happened; COIN_FLIP is legacy fallback)
             setOpponentJoined(true)
             onOpponentJoined?.()
             toast.success('🎉 Oponente entrou na partida! Vamos jogar!')

@@ -50,6 +50,7 @@ export function MatchLobby({ currentUser, onExit }: Props) {
   const [matchId, setMatchId] = useState<string | null>(null)
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [opponent, setOpponent] = useState<Friend | null>(null)
+  const [matchInitialState, setMatchInitialState] = useState<any | null>(null) // Store server state for MatchArena
   const [creating, setCreating] = useState(false)
   const [lastError, setLastError] = useState<{ error: string; detail?: string } | null>(null)
   const [selectedGameMode, setSelectedGameMode] = useState<GameMode>('QUICK_MATCH')
@@ -128,7 +129,8 @@ export function MatchLobby({ currentUser, onExit }: Props) {
       if (res.ok) {
         const data = await res.json()
         if (data.ok) {
-          const away = data.match.awayUser
+          const m = data.match
+          const away = m.awayUser
           if (away) {
             setOpponent({
               id: away.id,
@@ -141,7 +143,37 @@ export function MatchLobby({ currentUser, onExit }: Props) {
               friendshipId: '',
             })
           }
-          setIsOffline(data.match.isOffline || false)
+          setIsOffline(m.isOffline || false)
+          // Store full match state to pass as initialState to MatchArena
+          // This avoids a redundant fetch inside MatchArena and ensures Player A
+          // has the coin result immediately when entering the match
+          if (m.coinResult && m.status === 'IN_PROGRESS') {
+            setMatchInitialState({
+              status: m.status,
+              coinResult: m.coinResult,
+              startingSide: m.coinResult === 'heads' ? 'HOME' : 'AWAY',
+              currentPossession: m.currentPossession || (m.coinResult === 'heads' ? 'HOME' : 'AWAY'),
+              homeScore: m.homeScore ?? 0,
+              awayScore: m.awayScore ?? 0,
+              homeProgress: m.homeProgress ?? 0,
+              awayProgress: m.awayProgress ?? 0,
+              turnCount: m.turnCount ?? 0,
+              events: m.events || [],
+              winner: m.winner,
+              matchStartedAt: m.matchStartedAt ? new Date(m.matchStartedAt) : null,
+              turnStartedAt: m.turnStartedAt ? new Date(m.turnStartedAt) : null,
+              pausedAt: m.pausedAt ? new Date(m.pausedAt) : null,
+              totalPausedMs: m.totalPausedMs || 0,
+              halftimeTaken: m.halftimeTaken || false,
+              secondHalfStartedAt: m.secondHalfStartedAt ? new Date(m.secondHalfStartedAt) : null,
+              matchEndReason: m.matchEndReason || '',
+              homeTeamState: m.homeTeamState || { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+              awayTeamState: m.awayTeamState || { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+              gameMode: m.gameMode || selectedGameMode,
+              xpReward: m.xpReward || GAME_MODE_CONFIG[selectedGameMode].xpWin,
+              maxTurns: GAME_MODE_CONFIG[m.gameMode || selectedGameMode].maxTurns > 0 ? GAME_MODE_CONFIG[m.gameMode || selectedGameMode].maxTurns : 999,
+            })
+          }
           setState('match')
         }
       }
@@ -165,12 +197,14 @@ export function MatchLobby({ currentUser, onExit }: Props) {
         gameMode={selectedGameMode}
         inviteCode={inviteCode || ''}
         isOffline={isOffline}
+        initialState={matchInitialState}
         onExit={() => {
           setState('selection')
           setMatchId(null)
           setInviteCode(null)
           setOpponent(null)
           setIsOffline(false)
+          setMatchInitialState(null)
         }}
       />
     )

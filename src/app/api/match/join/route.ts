@@ -3,13 +3,16 @@
 // --------------------------------------------------------------------
 // Body: { inviteCode: string }
 // O oponente aceita o convite, sua awayUserId é registrada,
-// e o status muda de WAITING para COIN_FLIP.
+// e o coin flip é feito AUTOMATICAMENTE — a partida começa direto.
+// Isso resolve o problema de sincronização: ambos os jogadores
+// detectam o resultado via polling existente, sem precisar clicar.
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import { ensureDbSync } from '@/lib/db-sync'
+import { flipCoin, coinToPossession } from '@/lib/match-engine'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,8 +53,6 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     // Se a coluna inviteCode ainda não existe, tenta criar
     if (err?.message?.includes('inviteCode') || err?.message?.includes('does not exist')) {
-      // FIX: Neon PostgreSQL doesn't allow multiple statements in prepared statements.
-      // Split into two separate calls.
       await db.$executeRawUnsafe(`ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT`)
       await db.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode")`)
       match = await db.match.findFirst({
@@ -92,13 +93,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Outro jogador já entrou nesta partida.' }, { status: 400 })
   }
 
-  // Atualiza: registra o oponente e muda status para COIN_FLIP
+  // ===== COIN FLIP AUTOMÁTICO =====
+  // Quando o oponente entra, a moeda é lançada automaticamente.
+  // Isso elimina o problema de sincronização entre os dois jogadores.
+  const coin = flipCoin()
+  const startingSide = coinToPossession(coin)
+  const startingUserId = startingSide === 'HOME' ? match.homeUserId : session.userId
+
   try {
     const updatedMatch = await db.match.update({
       where: { id: match.id },
       data: {
         awayUserId: session.userId,
-        status: 'COIN_FLIP',
+        status: 'IN_PROGRESS',
+        coinResult: coin,
+        startingUserId,
+        currentPossession: startingSide,
+        matchStartedAt: new Date(),
+        turnStartedAt: new Date(),
       },
       include: {
         homeUser: { select: { id: true, username: true, displayName: true, wins: true, losses: true, draws: true, xp: true } },
@@ -117,6 +129,9 @@ export async function POST(req: NextRequest) {
         inviteCode: updatedMatch.inviteCode,
         homeUser: updatedMatch.homeUser,
         awayUser: updatedMatch.awayUser,
+        coinResult: coin,
+        startingSide,
+        currentPossession: startingSide,
       },
     })
   } catch (err: any) {
