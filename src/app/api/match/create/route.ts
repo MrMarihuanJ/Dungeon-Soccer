@@ -51,7 +51,12 @@ export async function POST(req: NextRequest) {
   const isOffline = Boolean(body.offline) // Offline = vs bot
 
   // Garante que as tabelas existem antes de qualquer operação
-  await ensureDbSync()
+  try {
+    await ensureDbSync()
+  } catch (err: any) {
+    console.error('[match/create] DB sync failed:', err?.message?.slice(0, 200))
+    // Don't abort — the tables might already exist, just try the operation
+  }
 
   // ===== OFFLINE MODE: Create match vs bot =====
   if (isOffline) {
@@ -78,43 +83,110 @@ export async function POST(req: NextRequest) {
       // Bot user may already exist — ignore
     }
 
-    const match = await db.match.create({
-      data: {
-        homeUserId: session.userId,
-        awayUserId: BOT_USER_ID,
-        status: 'COIN_FLIP',
-        mode: 'DREAM_TEAM',
-        gameMode,
-        inviteCode: generateInviteCode(),
-        isOffline: true,
-        homeScore: 0,
-        awayScore: 0,
-        turnCount: 0,
-        homeProgress: 0,
-        awayProgress: 0,
-        eventsJson: '[]',
-        homeTeamStateJson: '{}',
-        awayTeamStateJson: '{}',
-        xpReward: modeConfig.xpWin,
-        totalPausedMs: 0,
-        halftimeTaken: false,
-      },
-    })
+    try {
+      const match = await db.match.create({
+        data: {
+          homeUserId: session.userId,
+          awayUserId: BOT_USER_ID,
+          status: 'COIN_FLIP',
+          mode: 'DREAM_TEAM',
+          gameMode,
+          inviteCode: generateInviteCode(),
+          isOffline: true,
+          homeScore: 0,
+          awayScore: 0,
+          turnCount: 0,
+          homeProgress: 0,
+          awayProgress: 0,
+          eventsJson: '[]',
+          homeTeamStateJson: '{}',
+          awayTeamStateJson: '{}',
+          xpReward: modeConfig.xpWin,
+          totalPausedMs: 0,
+          halftimeTaken: false,
+        },
+      })
 
-    return NextResponse.json({
-      ok: true,
-      match: {
-        id: match.id,
-        status: match.status,
-        homeUserId: match.homeUserId,
-        awayUserId: match.awayUserId,
-        awayUser: { id: BOT_USER_ID, username: BOT_USERNAME, displayName: 'Bot', xp: 0, wins: 0, losses: 0, draws: 0 },
-        gameMode: match.gameMode,
-        inviteCode: match.inviteCode,
-        isOffline: match.isOffline,
-        xpReward: match.xpReward,
-      },
-    })
+      return NextResponse.json({
+        ok: true,
+        match: {
+          id: match.id,
+          status: match.status,
+          homeUserId: match.homeUserId,
+          awayUserId: match.awayUserId,
+          awayUser: { id: BOT_USER_ID, username: BOT_USERNAME, displayName: 'Bot', xp: 0, wins: 0, losses: 0, draws: 0 },
+          gameMode: match.gameMode,
+          inviteCode: match.inviteCode,
+          isOffline: match.isOffline,
+          xpReward: match.xpReward,
+        },
+      })
+    } catch (err: any) {
+      console.error('[match/create] offline create error:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      const prismaCode = err?.code || ''
+      const meta = err?.meta ? JSON.stringify(err.meta) : ''
+
+      // If the Match table might not have the inviteCode column yet, try adding it
+      if (message.includes('inviteCode') || message.includes('does not exist') || message.includes('column')) {
+        try {
+          await db.$executeRawUnsafe(`ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT`)
+          await db.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode")`)
+          // Retry create
+          const match = await db.match.create({
+            data: {
+              homeUserId: session.userId,
+              awayUserId: BOT_USER_ID,
+              status: 'COIN_FLIP',
+              mode: 'DREAM_TEAM',
+              gameMode,
+              inviteCode: generateInviteCode(),
+              isOffline: true,
+              homeScore: 0,
+              awayScore: 0,
+              turnCount: 0,
+              homeProgress: 0,
+              awayProgress: 0,
+              eventsJson: '[]',
+              homeTeamStateJson: '{}',
+              awayTeamStateJson: '{}',
+              xpReward: modeConfig.xpWin,
+              totalPausedMs: 0,
+              halftimeTaken: false,
+            },
+          })
+
+          return NextResponse.json({
+            ok: true,
+            match: {
+              id: match.id,
+              status: match.status,
+              homeUserId: match.homeUserId,
+              awayUserId: match.awayUserId,
+              awayUser: { id: BOT_USER_ID, username: BOT_USERNAME, displayName: 'Bot', xp: 0, wins: 0, losses: 0, draws: 0 },
+              gameMode: match.gameMode,
+              inviteCode: match.inviteCode,
+              isOffline: match.isOffline,
+              xpReward: match.xpReward,
+            },
+          })
+        } catch (retryErr: any) {
+          console.error('[match/create] offline retry also failed:', retryErr)
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr)
+          return NextResponse.json({
+            ok: false,
+            error: 'Não foi possível criar a partida offline. Verifique o banco Neon.',
+            detail: retryMsg.slice(0, 400),
+          }, { status: 500 })
+        }
+      }
+
+      return NextResponse.json({
+        ok: false,
+        error: 'Erro interno ao criar partida offline.',
+        detail: `${prismaCode ? `[${prismaCode}] ` : ''}${message.slice(0, 300)}${meta ? ` | meta: ${meta.slice(0, 200)}` : ''}`,
+      }, { status: 500 })
+    }
   }
 
   // ===== ONLINE MODE: Create match with invite =====
@@ -171,7 +243,7 @@ export async function POST(req: NextRequest) {
       },
     })
   } catch (err: any) {
-    console.error('[match/create] create error:', err)
+    console.error('[match/create] online create error:', err)
 
     const message = err instanceof Error ? err.message : String(err)
     const prismaCode = err?.code || ''

@@ -31,7 +31,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'inviteCode obrigatório (mínimo 4 caracteres).' }, { status: 400 })
   }
 
-  await ensureDbSync()
+  try {
+    await ensureDbSync()
+  } catch (err: any) {
+    console.error('[match/join] DB sync failed:', err?.message?.slice(0, 200))
+    // Don't abort — tables might already exist
+  }
 
   // Busca a partida pelo inviteCode
   let match: any

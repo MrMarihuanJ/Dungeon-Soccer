@@ -21,13 +21,22 @@
       "maxDuration": 10
     },
     "src/app/api/match/create/route.ts": {
-      "maxDuration": 15
+      "maxDuration": 30
     },
     "src/app/api/match/action/route.ts": {
       "maxDuration": 15
     },
+    "src/app/api/match/join/route.ts": {
+      "maxDuration": 30
+    },
     "src/app/api/match/state/route.ts": {
       "maxDuration": 10
+    },
+    "src/app/api/match/pause/route.ts": {
+      "maxDuration": 15
+    },
+    "src/app/api/match/resume/route.ts": {
+      "maxDuration": 15
     },
     "src/app/api/players/stats/route.ts": {
       "maxDuration": 30

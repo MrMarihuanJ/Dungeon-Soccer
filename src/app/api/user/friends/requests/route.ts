@@ -10,7 +10,12 @@ export async function GET(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
 
-  await ensureDbSync()
+  try {
+    await ensureDbSync()
+  } catch (err: any) {
+    console.error('[friends/requests] DB sync failed:', err?.message?.slice(0, 200))
+    // Don't abort — tables might already exist
+  }
 
   const requests = await db.friendRequest.findMany({
     where: { toUserId: session.userId, status: 'PENDING' },

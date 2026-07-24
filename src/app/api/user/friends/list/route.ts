@@ -11,7 +11,12 @@ export async function GET(req: NextRequest) {
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
 
   // Garante que as tabelas existem
-  await ensureDbSync()
+  try {
+    await ensureDbSync()
+  } catch (err: any) {
+    console.error('[friends/list] DB sync failed:', err?.message?.slice(0, 200))
+    // Don't abort — tables might already exist
+  }
 
   try {
     const [asA, asB] = await Promise.all([

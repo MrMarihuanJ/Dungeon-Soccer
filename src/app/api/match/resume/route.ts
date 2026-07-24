@@ -17,7 +17,12 @@ export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
 
-  await ensureDbSync()
+  try {
+    await ensureDbSync()
+  } catch (err: any) {
+    console.error('[match/resume] DB sync failed:', err?.message?.slice(0, 200))
+    // Don't abort — tables might already exist
+  }
 
   const body = await req.json().catch(() => ({}))
   const matchId = String(body.matchId ?? '')

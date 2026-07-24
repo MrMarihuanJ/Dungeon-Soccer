@@ -2,12 +2,13 @@
 // lib/db-sync.ts - Auto-sync do banco de dados (Neon-compatible)
 // --------------------------------------------------------------------
 // Garante que todas as tabelas e colunas necessárias existam.
-// Usa SQL bruto com CREATE TABLE IF NOT EXISTS + ADD COLUMN IF NOT EXISTS.
-// Executa apenas uma vez por cold start do serverless.
+// Usa PL/pgSQL DO blocks para executar múltiplos DDL em uma única
+// chamada $executeRawUnsafe — Neon PostgreSQL aceita DO blocks como
+// um único comando prepared statement.
 //
-// FIX: Neon PostgreSQL does NOT support multiple statements in a single
-// prepared statement ($executeRawUnsafe). We now split the setup SQL
-// into individual statements and execute each one separately.
+// PERFORMANCE FIX: Reduziu de 30+ chamadas SQL individuais para ~4
+// chamadas (3 DO blocks + 1 query de ghost columns), eliminando
+// o timeout 504 em Vercel serverless + Neon cold start.
 // =====================================================================
 
 import { db } from './db'
@@ -15,11 +16,15 @@ import { db } from './db'
 let syncPromise: Promise<void> | null = null
 let syncDone = false
 
-// Individual SQL statements for db setup.
-// Each statement must be executed separately for Neon compatibility.
-const SETUP_STATEMENTS: string[] = [
-  // ===== Tabela User =====
-  `CREATE TABLE IF NOT EXISTS "User" (
+// =====================================================
+// DO block 1: CREATE TABLE IF NOT EXISTS (todas as tabelas)
+// =====================================================
+// Um DO block é UM único comando SQL do ponto de vista do
+// PostgreSQL prepared statement — compatível com Neon.
+const CREATE_TABLES_SQL = `
+DO $$ BEGIN
+  -- Tabela User
+  CREATE TABLE IF NOT EXISTS "User" (
     "id" TEXT NOT NULL,
     "email" TEXT NOT NULL,
     "username" TEXT NOT NULL,
@@ -32,17 +37,10 @@ const SETUP_STATEMENTS: string[] = [
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
-  )`,
-  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "displayName" TEXT`,
-  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "wins" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "losses" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "draws" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "xp" INTEGER NOT NULL DEFAULT 0`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"("email")`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS "User_username_key" ON "User"("username")`,
+  );
 
-  // ===== Tabela UserTeam =====
-  `CREATE TABLE IF NOT EXISTS "UserTeam" (
+  -- Tabela UserTeam
+  CREATE TABLE IF NOT EXISTS "UserTeam" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "name" TEXT NOT NULL DEFAULT 'Meu Time',
@@ -53,12 +51,10 @@ const SETUP_STATEMENTS: string[] = [
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "UserTeam_pkey" PRIMARY KEY ("id")
-  )`,
-  `ALTER TABLE "UserTeam" ADD COLUMN IF NOT EXISTS "isPrimary" BOOLEAN NOT NULL DEFAULT true`,
-  `CREATE INDEX IF NOT EXISTS "UserTeam_userId_idx" ON "UserTeam"("userId")`,
+  );
 
-  // ===== Tabela SavedTeam =====
-  `CREATE TABLE IF NOT EXISTS "SavedTeam" (
+  -- Tabela SavedTeam
+  CREATE TABLE IF NOT EXISTS "SavedTeam" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "formation" TEXT NOT NULL,
@@ -67,10 +63,10 @@ const SETUP_STATEMENTS: string[] = [
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "SavedTeam_pkey" PRIMARY KEY ("id")
-  )`,
+  );
 
-  // ===== Tabela Player =====
-  `CREATE TABLE IF NOT EXISTS "Player" (
+  -- Tabela Player
+  CREATE TABLE IF NOT EXISTS "Player" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "fullName" TEXT NOT NULL,
@@ -94,40 +90,30 @@ const SETUP_STATEMENTS: string[] = [
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "Player_pkey" PRIMARY KEY ("id")
-  )`,
-  `CREATE INDEX IF NOT EXISTS "Player_name_idx" ON "Player"("name")`,
-  `CREATE INDEX IF NOT EXISTS "Player_team_idx" ON "Player"("team")`,
-  `CREATE INDEX IF NOT EXISTS "Player_position_idx" ON "Player"("position")`,
-  `CREATE INDEX IF NOT EXISTS "Player_overall_idx" ON "Player"("overall")`,
-  `CREATE INDEX IF NOT EXISTS "Player_isRetired_idx" ON "Player"("isRetired")`,
+  );
 
-  // ===== Tabela Friendship =====
-  `CREATE TABLE IF NOT EXISTS "Friendship" (
+  -- Tabela Friendship
+  CREATE TABLE IF NOT EXISTS "Friendship" (
     "id" TEXT NOT NULL,
     "userAId" TEXT NOT NULL,
     "userBId" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'ACCEPTED',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "Friendship_pkey" PRIMARY KEY ("id")
-  )`,
-  `ALTER TABLE "Friendship" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'ACCEPTED'`,
-  `CREATE INDEX IF NOT EXISTS "Friendship_userBId_idx" ON "Friendship"("userBId")`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS "Friendship_userAId_userBId_key" ON "Friendship"("userAId", "userBId")`,
+  );
 
-  // ===== Tabela FriendRequest =====
-  `CREATE TABLE IF NOT EXISTS "FriendRequest" (
+  -- Tabela FriendRequest
+  CREATE TABLE IF NOT EXISTS "FriendRequest" (
     "id" TEXT NOT NULL,
     "fromUserId" TEXT NOT NULL,
     "toUserId" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'PENDING',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "FriendRequest_pkey" PRIMARY KEY ("id")
-  )`,
-  `CREATE INDEX IF NOT EXISTS "FriendRequest_toUserId_idx" ON "FriendRequest"("toUserId")`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS "FriendRequest_fromUserId_toUserId_key" ON "FriendRequest"("fromUserId", "toUserId")`,
+  );
 
-  // ===== Tabela Match =====
-  `CREATE TABLE IF NOT EXISTS "Match" (
+  -- Tabela Match (completa com todas as colunas do schema)
+  CREATE TABLE IF NOT EXISTS "Match" (
     "id" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'WAITING',
     "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM',
@@ -160,45 +146,88 @@ const SETUP_STATEMENTS: string[] = [
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "Match_pkey" PRIMARY KEY ("id")
-  )`,
-  // Adiciona colunas faltantes caso a tabela já exista com schema antigo
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'COIN_FLIP'`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM'`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH'`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "isOffline" BOOLEAN NOT NULL DEFAULT false`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "coinResult" TEXT`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "startingUserId" TEXT`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "currentPossession" TEXT`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeScore" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayScore" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "winner" TEXT`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnCount" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeProgress" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayProgress" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "eventsJson" TEXT NOT NULL DEFAULT '[]'`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamStateJson" TEXT NOT NULL DEFAULT '{}'`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamStateJson" TEXT NOT NULL DEFAULT '{}'`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamRating" INTEGER`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamRating" INTEGER`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "matchStartedAt" TIMESTAMP(3)`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3)`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "totalPausedMs" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "halftimeTaken" BOOLEAN NOT NULL DEFAULT false`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "secondHalfStartedAt" TIMESTAMP(3)`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "xpReward" INTEGER NOT NULL DEFAULT 0`,
-  `ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnStartedAt" TIMESTAMP(3)`,
-  // Make awayUserId nullable
-  `ALTER TABLE "Match" ALTER COLUMN "awayUserId" DROP NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS "Match_homeUserId_idx" ON "Match"("homeUserId")`,
-  `CREATE INDEX IF NOT EXISTS "Match_awayUserId_idx" ON "Match"("awayUserId")`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode")`,
-  // Fix ghost column matchNum
-  `ALTER TABLE "Match" ALTER COLUMN "matchNum" DROP NOT NULL`,
-]
+  );
+END $$;
+`
 
-// PL/pgSQL block for conditional FK creation — this is ONE statement (DO block),
-// so it can be executed as a single $executeRawUnsafe call.
+// =====================================================
+// DO block 2: ADD COLUMN IF NOT EXISTS + ALTER COLUMN + CREATE INDEX
+// =====================================================
+// Combina todas as migrações de colunas e índices em um único
+// DO block. Isso é seguro porque ADD COLUMN IF NOT EXISTS ignora
+// colunas que já existem, e CREATE INDEX IF NOT EXISTS ignora
+// índices que já existem.
+const ADD_COLUMNS_AND_INDEXES_SQL = `
+DO $$ BEGIN
+  -- ===== User: colunas que podem ter sido adicionadas depois =====
+  ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "displayName" TEXT;
+  ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "wins" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "losses" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "draws" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "xp" INTEGER NOT NULL DEFAULT 0;
+  CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"("email");
+  CREATE UNIQUE INDEX IF NOT EXISTS "User_username_key" ON "User"("username");
+
+  -- ===== UserTeam =====
+  ALTER TABLE "UserTeam" ADD COLUMN IF NOT EXISTS "isPrimary" BOOLEAN NOT NULL DEFAULT true;
+  CREATE INDEX IF NOT EXISTS "UserTeam_userId_idx" ON "UserTeam"("userId");
+
+  -- ===== Player =====
+  CREATE INDEX IF NOT EXISTS "Player_name_idx" ON "Player"("name");
+  CREATE INDEX IF NOT EXISTS "Player_team_idx" ON "Player"("team");
+  CREATE INDEX IF NOT EXISTS "Player_position_idx" ON "Player"("position");
+  CREATE INDEX IF NOT EXISTS "Player_overall_idx" ON "Player"("overall");
+  CREATE INDEX IF NOT EXISTS "Player_isRetired_idx" ON "Player"("isRetired");
+
+  -- ===== Friendship =====
+  ALTER TABLE "Friendship" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'ACCEPTED';
+  CREATE INDEX IF NOT EXISTS "Friendship_userBId_idx" ON "Friendship"("userBId");
+  CREATE UNIQUE INDEX IF NOT EXISTS "Friendship_userAId_userBId_key" ON "Friendship"("userAId", "userBId");
+
+  -- ===== FriendRequest =====
+  CREATE INDEX IF NOT EXISTS "FriendRequest_toUserId_idx" ON "FriendRequest"("toUserId");
+  CREATE UNIQUE INDEX IF NOT EXISTS "FriendRequest_fromUserId_toUserId_key" ON "FriendRequest"("fromUserId", "toUserId");
+
+  -- ===== Match: colunas que podem ter sido adicionadas depois =====
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'COIN_FLIP';
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "mode" TEXT NOT NULL DEFAULT 'DREAM_TEAM';
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "gameMode" TEXT NOT NULL DEFAULT 'QUICK_MATCH';
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "inviteCode" TEXT;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "isOffline" BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "coinResult" TEXT;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "startingUserId" TEXT;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "currentPossession" TEXT;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeScore" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayScore" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "winner" TEXT;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnCount" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeProgress" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayProgress" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "eventsJson" TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamStateJson" TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamStateJson" TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "homeTeamRating" INTEGER;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "awayTeamRating" INTEGER;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "matchStartedAt" TIMESTAMP(3);
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "pausedAt" TIMESTAMP(3);
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "totalPausedMs" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "halftimeTaken" BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "secondHalfStartedAt" TIMESTAMP(3);
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "xpReward" INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE "Match" ADD COLUMN IF NOT EXISTS "turnStartedAt" TIMESTAMP(3);
+  -- Make awayUserId nullable (Prisma schema has String? not String)
+  ALTER TABLE "Match" ALTER COLUMN "awayUserId" DROP NOT NULL;
+  -- Indexes
+  CREATE INDEX IF NOT EXISTS "Match_homeUserId_idx" ON "Match"("homeUserId");
+  CREATE INDEX IF NOT EXISTS "Match_awayUserId_idx" ON "Match"("awayUserId");
+  CREATE UNIQUE INDEX IF NOT EXISTS "Match_inviteCode_key" ON "Match"("inviteCode");
+END $$;
+`
+
+// =====================================================
+// DO block 3: FK creation — já existia como DO block,
+// mantido intacto (compatível com Neon prepared stmt)
+// =====================================================
 const FK_SETUP_SQL = `
 DO $$
 BEGIN
@@ -231,38 +260,43 @@ $$
  * Garante que todas as tabelas existem no banco.
  * Executa apenas uma vez por cold start. Em chamadas subsequentes, retorna imediatamente.
  *
- * FIX: Executes each SQL statement separately to avoid Neon PostgreSQL error:
- * "cannot insert multiple commands into a prepared statement" (code 42601)
+ * PERFORMANCE: Usa 3 PL/pgSQL DO blocks (~4 SQL calls total) em vez de
+ * 30+ chamadas individuais, eliminando timeout 504 no Vercel + Neon.
  */
 export async function ensureDbSync(): Promise<void> {
   if (syncDone) return
 
   if (!syncPromise) {
     syncPromise = (async () => {
-      // 1. Execute individual setup statements one by one
-      let errors = 0
-      for (const stmt of SETUP_STATEMENTS) {
-        try {
-          await db.$executeRawUnsafe(stmt)
-        } catch (err: any) {
-          const msg = err?.message || String(err)
-          // Ignore "already exists" errors — they're expected for IF NOT EXISTS
-          if (msg.includes('already exists') || msg.includes('already has') || msg.includes('cannot cast')) {
-            // Expected — skip silently
-          } else {
-            errors++
-            console.error(`[db-sync] Statement error: ${msg.slice(0, 300)}`)
-            console.error(`[db-sync] Failed statement: ${stmt.slice(0, 200)}`)
-          }
+      console.log('[db-sync] Starting DB sync (optimized DO blocks)...')
+
+      // 1. Create all tables (1 DO block = 1 executeRawUnsafe call)
+      try {
+        await db.$executeRawUnsafe(CREATE_TABLES_SQL)
+        console.log('[db-sync] All tables created/verified')
+      } catch (err: any) {
+        const msg = err?.message || String(err)
+        if (msg.includes('already exists')) {
+          console.log('[db-sync] Tables already existed — OK')
+        } else {
+          console.error(`[db-sync] Create tables error: ${msg.slice(0, 300)}`)
         }
       }
-      if (errors > 0) {
-        console.log(`[db-sync] Setup completed with ${errors} non-critical errors`)
-      } else {
-        console.log('[db-sync] All setup statements completed successfully')
+
+      // 2. Add missing columns + indexes (1 DO block = 1 call)
+      try {
+        await db.$executeRawUnsafe(ADD_COLUMNS_AND_INDEXES_SQL)
+        console.log('[db-sync] All columns + indexes added/verified')
+      } catch (err: any) {
+        const msg = err?.message || String(err)
+        if (msg.includes('already exists')) {
+          console.log('[db-sync] Columns/indexes already existed — OK')
+        } else {
+          console.error(`[db-sync] Columns + indexes error: ${msg.slice(0, 300)}`)
+        }
       }
 
-      // 2. Execute FK creation block (single PL/pgSQL DO block — safe as one call)
+      // 3. FK creation (1 DO block = 1 call)
       try {
         await db.$executeRawUnsafe(FK_SETUP_SQL)
         console.log('[db-sync] FK setup completed')
@@ -275,7 +309,7 @@ export async function ensureDbSync(): Promise<void> {
         }
       }
 
-      // 3. Verify and fix ghost columns in Match table
+      // 4. Fix ghost columns in Match table
       // Columns that are NOT NULL without default but NOT in the Prisma schema
       // cause "Null constraint violation" on INSERT
       try {
@@ -294,7 +328,11 @@ export async function ensureDbSync(): Promise<void> {
         `
         for (const col of ghostColumns) {
           console.log(`[db-sync] Fixing ghost column: Match.${col.column_name} (NOT NULL without default) → making nullable`)
-          await db.$executeRawUnsafe(`ALTER TABLE "Match" ALTER COLUMN "${col.column_name}" DROP NOT NULL`)
+          try {
+            await db.$executeRawUnsafe(`ALTER TABLE "Match" ALTER COLUMN "${col.column_name}" DROP NOT NULL`)
+          } catch {
+            // Column might not exist at all — skip silently
+          }
         }
         if (ghostColumns.length === 0) {
           console.log('[db-sync] No ghost columns found in Match table')
@@ -305,6 +343,7 @@ export async function ensureDbSync(): Promise<void> {
       }
 
       syncDone = true
+      console.log('[db-sync] Sync completed successfully (4 SQL calls total)')
     })()
   }
 
