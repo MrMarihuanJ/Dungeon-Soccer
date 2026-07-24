@@ -13,26 +13,18 @@ import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import {
   flipCoin, coinToPossession, resolveAction, applyActionToState,
-  createInitialMatchState, GAME_MODE_CONFIG,
-  checkMatchEndCondition, isHalftimeReached, isTimeExpired,
-  type MatchState, type CoinResult, type TeamMatchState, type GameMode,
+  createInitialMatchState, type MatchState, type CoinResult, type TeamMatchState,
+  type FreeKickMultiplierInfo,
 } from '@/lib/match-engine'
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
-import { ensureDbSync } from '@/lib/db-sync'
+import { Prisma } from '@prisma/client'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
-
-  try {
-    await ensureDbSync()
-  } catch (err: any) {
-    console.error('[match/action] DB sync failed:', err?.message?.slice(0, 200))
-    // Don't abort — tables might already exist
-  }
 
   const body = await req.json().catch(() => ({}))
   const matchId = String(body.matchId ?? '')
@@ -44,127 +36,11 @@ export async function POST(req: NextRequest) {
 
   const match = await db.match.findUnique({ where: { id: matchId } })
   if (!match) return NextResponse.json({ ok: false, error: 'Partida não encontrada.' }, { status: 404 })
-  if (match.homeUserId !== session.userId && (match.awayUserId !== null && match.awayUserId !== session.userId)) {
+  if (match.homeUserId !== session.userId && match.awayUserId !== session.userId) {
     return NextResponse.json({ ok: false, error: 'Sem acesso.' }, { status: 403 })
-  }
-  // During WAITING phase (awayUserId null), only homeUser can perform COIN_FLIP
-  if (match.awayUserId === null && type !== 'COIN_FLIP') {
-    return NextResponse.json({ ok: false, error: 'Oponente ainda não entrou na partida.' }, { status: 400 })
   }
   if (match.status === 'FINISHED') {
     return NextResponse.json({ ok: false, error: 'Partida já encerrada.' }, { status: 400 })
-  }
-  if (match.status === 'WAITING') {
-    return NextResponse.json({ ok: false, error: 'A partida ainda está esperando o oponente entrar.' }, { status: 400 })
-  }
-
-  // ===== Validação de turno: só o jogador com posse pode submeter PLAY_ACTION =====
-  // BUG FIX: Always validate turn, even when currentPossession is null.
-  // Previously, the condition `match.currentPossession` (truthy check) skipped
-  // validation when currentPossession was null, allowing any player to submit
-  // actions. Now we default to HOME if null, and always validate.
-  //
-  // EXCEPTION: For offline matches (vs bot), the home user submits actions
-  // for BOTH sides. The bot doesn't have a real session, so we allow the
-  // home user to submit when it's the bot's turn.
-  if (type === 'PLAY_ACTION') {
-    const currentPossession = match.currentPossession || 'HOME'
-    const expectedUserId = currentPossession === 'HOME' ? match.homeUserId : (match.awayUserId ?? '')
-
-    // For offline matches: home user can submit bot's actions too
-    const isOfflineMatch = match.isOffline || false
-    const BOT_USER_ID = 'BOT_PLAYER_DUNGEON_SOCER_001'
-
-    if (!isOfflineMatch || session.userId !== match.homeUserId) {
-      // Normal validation: only the player with possession can submit
-      if (session.userId !== expectedUserId) {
-        return NextResponse.json({
-          ok: false,
-          error: 'Não é seu turno. Espere o oponente jogar.',
-          currentPossession: match.currentPossession,
-        }, { status: 400 })
-      }
-    }
-    // Offline + home user: always allowed (they control the bot too)
-  }
-
-  const gameMode = (match.gameMode || 'QUICK_MATCH') as GameMode
-  const modeConfig = GAME_MODE_CONFIG[gameMode]
-
-  // ===== Verifica tempo expirado (para modos com timer) =====
-  if (type === 'PLAY_ACTION' && modeConfig.durationMs > 0 && match.matchStartedAt) {
-    if (isTimeExpired({
-      gameMode,
-      matchStartedAt: match.matchStartedAt,
-      pausedAt: match.pausedAt,
-      totalPausedMs: match.totalPausedMs || 0,
-      halftimeTaken: match.halftimeTaken || false,
-      secondHalfStartedAt: match.secondHalfStartedAt,
-    })) {
-      // Tempo expirou — finaliza a partida
-      let winner: string | null = null
-      if (match.homeScore > match.awayScore) winner = 'HOME'
-      else if (match.awayScore > match.homeScore) winner = 'AWAY'
-      else winner = 'DRAW'
-
-      await db.match.update({
-        where: { id: matchId },
-        data: { status: 'FINISHED', winner },
-      })
-
-      // Atualiza W/L/D e XP
-      await updateUserStats(match.homeUserId, match.awayUserId ?? '', winner, modeConfig)
-
-      return NextResponse.json({
-        ok: true,
-        timeExpired: true,
-        newState: {
-          status: 'FINISHED',
-          currentPossession: match.currentPossession,
-          homeScore: match.homeScore,
-          awayScore: match.awayScore,
-          homeProgress: match.homeProgress,
-          awayProgress: match.awayProgress,
-          turnCount: match.turnCount,
-          winner,
-          gameMode,
-          matchEndReason: 'Tempo esgotado!',
-        },
-      })
-    }
-  }
-
-  // ===== Verifica intervalo (FULL_90) =====
-  if (type === 'PLAY_ACTION' && gameMode === 'FULL_90' && match.matchStartedAt && !match.halftimeTaken) {
-    if (isHalftimeReached({
-      gameMode,
-      matchStartedAt: match.matchStartedAt,
-      pausedAt: match.pausedAt,
-      totalPausedMs: match.totalPausedMs || 0,
-      halftimeTaken: false,
-    })) {
-      // Entra no intervalo
-      await db.match.update({
-        where: { id: matchId },
-        data: { status: 'HALFTIME', pausedAt: new Date() },
-      })
-
-      return NextResponse.json({
-        ok: true,
-        halftimeReached: true,
-        newState: {
-          status: 'HALFTIME',
-          currentPossession: match.currentPossession,
-          homeScore: match.homeScore,
-          awayScore: match.awayScore,
-          homeProgress: match.homeProgress,
-          awayProgress: match.awayProgress,
-          turnCount: match.turnCount,
-          winner: null,
-          gameMode,
-        },
-      })
-    }
   }
 
   // ===== COIN_FLIP =====
@@ -183,13 +59,11 @@ export async function POST(req: NextRequest) {
           coinResult: coin,
           startingUserId: startingSide === 'HOME' ? match.homeUserId : match.awayUserId,
           currentPossession: startingSide,
-          matchStartedAt: new Date(),
-          turnStartedAt: new Date(),
         },
       })
     } catch (err) {
       console.error('[match/action] coin flip update error:', err)
-      return NextResponse.json({ ok: false, error: 'Erro ao atualizar partida.' }, { status: 500 })
+      return NextResponse.json({ ok: false, error: 'Erro ao atualizar partida. Verifique se o banco está atualizado.' }, { status: 500 })
     }
 
     return NextResponse.json({
@@ -198,7 +72,6 @@ export async function POST(req: NextRequest) {
       startingSide,
       startingUserId: startingSide === 'HOME' ? match.homeUserId : match.awayUserId,
       currentPossession: startingSide,
-      gameMode,
     })
   }
 
@@ -219,7 +92,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Ação inválida.' }, { status: 400 })
     }
 
-    // Reconstrói o estado a partir do banco
+    const isHome = match.homeUserId === session.userId
+    const currentSide = (match.currentPossession as 'HOME' | 'AWAY') || 'HOME'
+
+    // Reconstrói o estado a partir do banco (agora com progresso persistido!)
     const defaultTeamState: TeamMatchState = {
       substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
       injuredPlayers: [], sentOffPlayers: [],
@@ -228,6 +104,7 @@ export async function POST(req: NextRequest) {
     let homeTeamState = defaultTeamState
     let awayTeamState = defaultTeamState
 
+    // Parse team states from JSON
     try {
       if (match.homeTeamStateJson && match.homeTeamStateJson !== '{}') {
         homeTeamState = JSON.parse(match.homeTeamStateJson) as TeamMatchState
@@ -243,39 +120,34 @@ export async function POST(req: NextRequest) {
       matchId: match.id,
       status: match.status as MatchState['status'],
       coinResult: match.coinResult as CoinResult | null,
-      startingSide: match.startingUserId === match.homeUserId ? 'HOME' : (match.awayUserId === match.startingUserId ? 'AWAY' : null),
-      currentPossession: (match.currentPossession as 'HOME' | 'AWAY') || 'HOME',
+      startingSide: match.startingUserId === match.homeUserId ? 'HOME' : match.awayUserId === match.startingUserId ? 'AWAY' : null,
+      currentPossession: currentSide,
       homeScore: match.homeScore,
       awayScore: match.awayScore,
       homeProgress: match.homeProgress ?? 0,
       awayProgress: match.awayProgress ?? 0,
       turnCount: match.turnCount,
-      maxTurns: modeConfig.maxTurns > 0 ? modeConfig.maxTurns : 999,
+      maxTurns: 24,
       events: JSON.parse(match.eventsJson),
       winner: null,
       homeTeamState,
       awayTeamState,
-      gameMode,
-      matchStartedAt: match.matchStartedAt,
-      pausedAt: match.pausedAt,
-      totalPausedMs: match.totalPausedMs || 0,
-      halftimeTaken: match.halftimeTaken || false,
-      secondHalfStartedAt: match.secondHalfStartedAt,
-      xpReward: match.xpReward || modeConfig.xpWin,
-      turnStartedAt: match.turnStartedAt,
-      matchEndReason: '',
     }
 
-    // Player names para narrativa (enviados pelo cliente)
-    const playerName = body.playerName ? String(body.playerName) : undefined
-    const targetPlayerName = body.targetPlayerName ? String(body.targetPlayerName) : undefined
-
     // Processa a jogada
-    const roll = resolveAction(action)
-    const newState = applyActionToState(state, action, roll, playerName, targetPlayerName)
+    // Aceita freeKickBonus (bônus extra no dado para cobrança de falta)
+    // e freeKickKickerId + freeKickMultiplier para registrar no evento
+    const freeKickBonus = Number(body.freeKickBonus ?? 0)
+    const freeKickKickerId = body.freeKickKickerId ?? null
+    const freeKickMultiplierInput = body.freeKickMultiplier as FreeKickMultiplierInfo | undefined | null
+
+    // Validação: freeKickBonus só pode ser usado com ações FREE_KICK
+    const effectiveBonus = action.category === 'FREE_KICK' ? freeKickBonus : 0
+    const roll = resolveAction(action, effectiveBonus)
+    const newState = applyActionToState(state, action, roll, freeKickKickerId, freeKickMultiplierInput || null)
     const lastEvent = newState.events[newState.events.length - 1]
 
-    // Atualiza a partida no banco
+    // Atualiza a partida no banco (agora persistindo progresso e team states!)
     const updateData: any = {
       currentPossession: newState.currentPossession,
       homeScore: newState.homeScore,
@@ -286,16 +158,22 @@ export async function POST(req: NextRequest) {
       eventsJson: JSON.stringify(newState.events),
       homeTeamStateJson: JSON.stringify(newState.homeTeamState),
       awayTeamStateJson: JSON.stringify(newState.awayTeamState),
-      turnStartedAt: new Date(),
     }
-
     if (newState.status === 'FINISHED') {
       updateData.status = 'FINISHED'
       updateData.winner = newState.winner
-      // Atualiza W/L/D dos usuários com XP baseado no modo
-      await updateUserStats(match.homeUserId, match.awayUserId ?? '', newState.winner, modeConfig)
+      // Atualiza W/L/D dos usuários
+      if (newState.winner === 'HOME') {
+        await db.user.update({ where: { id: match.homeUserId }, data: { wins: { increment: 1 }, xp: { increment: 50 } } })
+        await db.user.update({ where: { id: match.awayUserId }, data: { losses: { increment: 1 }, xp: { increment: 10 } } })
+      } else if (newState.winner === 'AWAY') {
+        await db.user.update({ where: { id: match.awayUserId }, data: { wins: { increment: 1 }, xp: { increment: 50 } } })
+        await db.user.update({ where: { id: match.homeUserId }, data: { losses: { increment: 1 }, xp: { increment: 10 } } })
+      } else {
+        await db.user.update({ where: { id: match.homeUserId }, data: { draws: { increment: 1 }, xp: { increment: 20 } } })
+        await db.user.update({ where: { id: match.awayUserId }, data: { draws: { increment: 1 }, xp: { increment: 20 } } })
+      }
     }
-
     try {
       await db.match.update({ where: { id: matchId }, data: updateData })
     } catch (err) {
@@ -317,30 +195,9 @@ export async function POST(req: NextRequest) {
         winner: newState.winner,
         homeTeamState: newState.homeTeamState,
         awayTeamState: newState.awayTeamState,
-        gameMode,
-        matchEndReason: newState.matchEndReason,
       },
     })
   }
 
   return NextResponse.json({ ok: false, error: 'type inválido.' }, { status: 400 })
-}
-
-// ===== Helper: atualizar W/L/D e XP baseado no modo de jogo =====
-async function updateUserStats(
-  homeUserId: string,
-  awayUserId: string,
-  winner: string | null,
-  modeConfig: typeof GAME_MODE_CONFIG['QUICK_MATCH'],
-) {
-  if (winner === 'HOME') {
-    await db.user.update({ where: { id: homeUserId }, data: { wins: { increment: 1 }, xp: { increment: modeConfig.xpWin } } })
-    await db.user.update({ where: { id: awayUserId }, data: { losses: { increment: 1 }, xp: { increment: modeConfig.xpLose } } })
-  } else if (winner === 'AWAY') {
-    await db.user.update({ where: { id: awayUserId }, data: { wins: { increment: 1 }, xp: { increment: modeConfig.xpWin } } })
-    await db.user.update({ where: { id: homeUserId }, data: { losses: { increment: 1 }, xp: { increment: modeConfig.xpLose } } })
-  } else {
-    await db.user.update({ where: { id: homeUserId }, data: { draws: { increment: 1 }, xp: { increment: modeConfig.xpDraw } } })
-    await db.user.update({ where: { id: awayUserId }, data: { draws: { increment: 1 }, xp: { increment: modeConfig.xpDraw } } })
-  }
 }

@@ -3,20 +3,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
-import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
-
-  try {
-    await ensureDbSync()
-  } catch (err: any) {
-    console.error('[friends/request] DB sync failed:', err?.message?.slice(0, 200))
-    // Don't abort — tables might already exist
-  }
 
   const body = await req.json().catch(() => ({}))
   const identifier = String(body.identifier ?? '').trim()

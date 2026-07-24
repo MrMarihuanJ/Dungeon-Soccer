@@ -3,20 +3,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import type { TeamMatchState } from '@/lib/match-engine'
-import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
-
-  try {
-    await ensureDbSync()
-  } catch (err: any) {
-    console.error('[match/state] DB sync failed:', err?.message?.slice(0, 200))
-    // Don't abort — tables might already exist
-  }
 
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
@@ -32,7 +24,6 @@ export async function GET(req: NextRequest) {
   if (!match) return NextResponse.json({ ok: false, error: 'Partida não encontrada.' }, { status: 404 })
 
   // Verifica permissão
-  // awayUserId can be null during WAITING phase — homeUser can always access
   if (match.homeUserId !== session.userId && match.awayUserId !== session.userId) {
     return NextResponse.json({ ok: false, error: 'Sem acesso a esta partida.' }, { status: 403 })
   }
@@ -66,6 +57,7 @@ export async function GET(req: NextRequest) {
       awayProgress: match.awayProgress ?? 0,
       homeTeamState,
       awayTeamState,
+      startingSide: match.startingUserId === match.homeUserId ? 'HOME' : match.awayUserId === match.startingUserId ? 'AWAY' : null,
     },
   })
 }

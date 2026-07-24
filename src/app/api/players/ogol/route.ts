@@ -29,28 +29,7 @@ async function searchOgolProfile(playerName: string, team?: string | null): Prom
   try {
     // Dynamic import to avoid issues if SDK is not available
     const ZAI = (await import('z-ai-web-dev-sdk')).default
-
-    // Try multiple initialization strategies (same as search route)
-    let zai: any = null
-    try {
-      zai = await ZAI.create()
-    } catch {
-      // Try env vars — use new ZAI(config) since ZAI.create() doesn't accept params
-      const baseUrl = process.env.ZAI_BASE_URL
-      const apiKey = process.env.ZAI_API_KEY
-      const token = process.env.ZAI_TOKEN
-      const chatId = process.env.ZAI_CHAT_ID
-      const userId = process.env.ZAI_USER_ID
-      if (baseUrl && apiKey && token) {
-        try {
-          zai = new ZAI({ baseUrl, apiKey, token, chatId: chatId || '', userId: userId || '' })
-        } catch { /* skip */ }
-      }
-    }
-
-    if (!zai) {
-      return { name: playerName, profileUrl: null, snippet: null, searchResults: [] }
-    }
+    const zai = await ZAI.create()
 
     const query = team
       ? `site:ogol.com.br ${playerName} ${team}`

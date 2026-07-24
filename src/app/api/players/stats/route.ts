@@ -25,28 +25,7 @@ interface PlayerStats {
 async function searchPlayerStats(playerName: string, team?: string | null): Promise<PlayerStats> {
   try {
     const ZAI = (await import('z-ai-web-dev-sdk')).default
-
-    // Initialize SDK — try .z-ai-config first, then env vars
-    let zai: any = null
-    try {
-      zai = await ZAI.create()
-    } catch {
-      // Fallback: use environment variables with new ZAI(config)
-      const baseUrl = process.env.ZAI_BASE_URL
-      const apiKey = process.env.ZAI_API_KEY
-      const token = process.env.ZAI_TOKEN
-      const chatId = process.env.ZAI_CHAT_ID
-      const userId = process.env.ZAI_USER_ID
-      if (baseUrl && apiKey && token) {
-        try {
-          zai = new ZAI({ baseUrl, apiKey, token, chatId: chatId || '', userId: userId || '' })
-        } catch { /* skip */ }
-      }
-    }
-
-    if (!zai) {
-      return { name: playerName, ogolUrl: null, transfermarktUrl: null, latestStats: null, sources: [] }
-    }
+    const zai = await ZAI.create()
 
     // Search for player stats from multiple sources
     const query = team

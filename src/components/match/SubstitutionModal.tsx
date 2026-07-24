@@ -11,6 +11,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
@@ -141,7 +142,7 @@ export function SubstitutionModal({
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-400">
                 Escolha o reserva que entra:
               </p>
-              <div className="max-h-[280px] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4b5563 transparent' }}>
+              <ScrollArea className="max-h-[280px]">
                 <ul className="space-y-2">
                   {availableReserves.map((reserve) => (
                     <motion.li
@@ -174,7 +175,7 @@ export function SubstitutionModal({
                     </motion.li>
                   ))}
                 </ul>
-              </div>
+              </ScrollArea>
             </div>
           )}
 
