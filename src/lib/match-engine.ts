@@ -270,6 +270,109 @@ export interface DiceRollResult {
   success: boolean      // sucesso geral?
   critical: 'none' | 'crit_hit' | 'crit_fail'  // natural 20 / natural 1
   exceptional: boolean  // sucesso excecional (margem >= 5)
+  // ===== Multiplicador de cobrança de falta =====
+  freeKickMultiplier?: FreeKickMultiplier  // se aplicável
+}
+
+// =====================================================================
+// Sistema de Multiplicadores para Cobrança de Falta
+// =====================================================================
+// Cada jogador em campo recebe um multiplicador aleatório (positivo ou negativo)
+// quando uma falta ocorre. Esse multiplicador influencia:
+//   - diceBonus: bônus/malus adicionado ao lançamento do dado (d20 + skillBonus + diceBonus)
+//   - goalChanceBonus: bônus/malus percentual na chance de gol (goalChance + goalChanceBonus)
+//
+// Os multiplicadores são gerados aleatoriamente toda vez que uma falta ocorre,
+// com valores e jogadores variando de forma imprevisível, sem repetições contínuas.
+// =====================================================================
+
+export interface FreeKickMultiplier {
+  playerId: string       // ID do jogador que vai bater a falta
+  playerName: string     // Nome do jogador (para exibição)
+  diceBonus: number      // Bônus/malus no lançamento do dado (ex: +3, -2)
+  goalChanceBonus: number // Bônus/malus na chance de gol (ex: +0.15, -0.10)
+  description: string    // Descrição textual para exibição ao usuário
+}
+
+/**
+ * Gera multiplicadores aleatórios para todos os jogadores em campo do time favorecido.
+ * Alguns jogadores receberão multiplicadores positivos (bônus), outros negativos (penalização).
+ * O sistema garante variedade e imprevisibilidade:
+ *   - ~40% dos jogadores recebem multiplicadores positivos (bônus no dado ou na chance de gol)
+ *   - ~30% recebem multiplicadores negativos (malus no dado ou na chance de gol)
+ *   - ~30% recebem multiplicadores neutros ou mistos (bônus no dado + malus na chance, etc.)
+ *
+ * O jogador com o maior bônus geral é o "batedor ideal", mas o usuário pode escolher qualquer um.
+ */
+export function generateFreeKickMultipliers(
+  fieldPlayers: { id: string; name: string; position: string; overall?: number }[],
+): FreeKickMultiplier[] {
+  if (fieldPlayers.length === 0) return []
+
+  // Shuffle players para evitar padrões repetidos
+  const shuffledPlayers = [...fieldPlayers].sort(() => Math.random() - 0.5)
+
+  return shuffledPlayers.map((player, index) => {
+    // Usar seed baseado em timestamp + índice para aleatoriedade imprevisível
+    const seedRandom = Math.random()
+
+    // Determinar tipo de multiplicador com probabilidades variadas
+    // Jogadores com maior overall tendem a receber bônus melhores
+    const overallFactor = (player.overall || 75) / 100 // 0-1, normalized
+
+    let diceBonus: number
+    let goalChanceBonus: number
+    let description: string
+
+    // Distribuição de multiplicadores:
+    // ~40% bônus positivo, ~30% negativo, ~30% misto
+    const rollType = seedRandom
+
+    if (rollType < 0.25) {
+      // Bônus forte no dado + chance de gol (jogador em dia inspirado)
+      diceBonus = Math.floor(Math.random() * 4) + 1  // +1 a +4
+      goalChanceBonus = Math.round((Math.random() * 0.20 + 0.05) * 100) / 100  // +0.05 a +0.25
+      description = `🔥 Batedor inspirado! Bônus +${diceBonus} no dado e +${Math.round(goalChanceBonus * 100)}% na chance de gol.`
+    } else if (rollType < 0.40) {
+      // Bônus moderado no dado (confiança extra)
+      diceBonus = Math.floor(Math.random() * 3) + 1  // +1 a +3
+      goalChanceBonus = 0
+      description = `⚡ Confiança extra! Bônus +${diceBonus} no lançamento do dado.`
+    } else if (rollType < 0.55) {
+      // Bônus na chance de gol (preciso na finalização)
+      diceBonus = 0
+      goalChanceBonus = Math.round((Math.random() * 0.15 + 0.05) * 100) / 100  // +0.05 a +0.20
+      description = `🎯 Precisão! Bônus +${Math.round(goalChanceBonus * 100)}% na chance de gol.`
+    } else if (rollType < 0.70) {
+      // Multiplicador misto: bônus no dado, mas malus na chance de gol
+      diceBonus = Math.floor(Math.random() * 3) + 1  // +1 a +3
+      goalChanceBonus = -(Math.round((Math.random() * 0.10 + 0.05) * 100) / 100)  // -0.05 a -0.15
+      description = `🎲 Sorte no dado (+${diceBonus}), mas pressão: -${Math.round(Math.abs(goalChanceBonus) * 100)}% chance de gol.`
+    } else if (rollType < 0.85) {
+      // Multiplicador negativo: nervosismo (malus no dado)
+      diceBonus = -(Math.floor(Math.random() * 3) + 1)  // -1 a -3
+      goalChanceBonus = 0
+      description = `😰 Nervosismo! Malus -${Math.abs(diceBonus)} no lançamento do dado.`
+    } else if (rollType < 0.95) {
+      // Multiplicador negativo forte: malus no dado e na chance de gol
+      diceBonus = -(Math.floor(Math.random() * 3) + 1)  // -1 a -3
+      goalChanceBonus = -(Math.round((Math.random() * 0.15 + 0.05) * 100) / 100)  // -0.05 a -0.20
+      description = `❌ Dia ruim! Malus -${Math.abs(diceBonus)} no dado e -${Math.round(Math.abs(goalChanceBonus) * 100)}% chance de gol.`
+    } else {
+      // Neutro (jogador normal, sem bônus/malus)
+      diceBonus = 0
+      goalChanceBonus = 0
+      description = '📋 Batedor padrão. Sem bônus ou malus adicionais.'
+    }
+
+    return {
+      playerId: player.id,
+      playerName: player.name,
+      diceBonus,
+      goalChanceBonus,
+      description,
+    }
+  })
 }
 
 // ===== PENALTY/FOUL EVENTS =====
@@ -368,9 +471,11 @@ export function rollD20(): number {
 // =====================================================================
 // Resolução de jogada
 // =====================================================================
-export function resolveAction(action: FootballAction, extraBonus = 0): DiceRollResult {
+export function resolveAction(action: FootballAction, extraBonus = 0, freeKickMultiplier?: FreeKickMultiplier): DiceRollResult {
   const dice = rollD20()
-  const bonus = action.skillBonus + extraBonus
+  // Bônus total = skillBonus da ação + extraBonus + diceBonus do multiplicador (se cobrança de falta)
+  const diceBonusFromMultiplier = freeKickMultiplier?.diceBonus ?? 0
+  const bonus = action.skillBonus + extraBonus + diceBonusFromMultiplier
   const total = dice + bonus
   const dc = action.dc
   const margin = total - dc
@@ -402,6 +507,7 @@ export function resolveAction(action: FootballAction, extraBonus = 0): DiceRollR
     success,
     critical,
     exceptional,
+    freeKickMultiplier,
   }
 }
 
@@ -1020,8 +1126,10 @@ export function applyActionToState(
         event.possessionChanged = true
       } else if (action.category === 'SHOOT' && action.goalChance > 0) {
         // Ação de chute com chance de gol (mesmo sem chegar a 100)
+        // Aplicar multiplicador de cobrança de falta se existir
+        const effectiveGoalChance = Math.max(0, Math.min(1, action.goalChance + (roll.freeKickMultiplier?.goalChanceBonus ?? 0)))
         const goalRoll = Math.random()
-        if (goalRoll < action.goalChance) {
+        if (goalRoll < effectiveGoalChance) {
           // Gol!
           event.isGoal = true
           if (possession === 'HOME') {
@@ -1041,7 +1149,7 @@ export function applyActionToState(
           newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
           event.possessionChanged = true
         }
-      } else if (action.category === 'SPECIAL' && action.goalChance > 0 && Math.random() < action.goalChance) {
+      } else if (action.category === 'SPECIAL' && action.goalChance > 0 && Math.random() < Math.max(0, Math.min(1, action.goalChance + (roll.freeKickMultiplier?.goalChanceBonus ?? 0)))) {
         // Ação especial com chance de gol
         event.isGoal = true
         if (possession === 'HOME') {

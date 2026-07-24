@@ -37,7 +37,7 @@ import {
 } from '@/lib/dnd-actions'
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
-  type PenaltyEvent, type TeamMatchState, type GameMode,
+  type PenaltyEvent, type TeamMatchState, type GameMode, type FreeKickMultiplier,
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
   pickPlayerForAction,
@@ -143,6 +143,7 @@ export function MatchArena({
   const [varEventDesc, setVarEventDesc] = useState('')
   const [freeKickOpen, setFreeKickOpen] = useState(false)
   const [freeKickPossession, setFreeKickPossession] = useState<Possession>('HOME')
+  const [freeKickMultiplier, setFreeKickMultiplier] = useState<FreeKickMultiplier | null>(null)
   const [subOpen, setSubOpen] = useState(false)
   const [subIsForced, setSubIsForced] = useState(false)
   const [subInjuredPlayer, setSubInjuredPlayer] = useState<SelectedPlayer | null>(null)
@@ -875,8 +876,10 @@ export function MatchArena({
   // BUG FIX: Free kick play callback — now validates turn ownership before proceeding.
   // Previously, this bypassed the processing/diceRolling guards blindly, allowing
   // actions to be submitted even when it was the opponent's turn.
-  const handleFreeKickPlay = async (kickerId: string, action: FootballAction) => {
+  // NEW: Accepts FreeKickMultiplier from FreeKickDialog and passes it to the API.
+  const handleFreeKickPlay = async (kickerId: string, action: FootballAction, multiplier: FreeKickMultiplier) => {
     setFreeKickOpen(false)
+    setFreeKickMultiplier(multiplier)
     // Validate: only proceed if it's actually my team's turn (possession)
     // This prevents submitting a free kick when the opponent should be playing
     setState((freshState) => {
@@ -892,26 +895,173 @@ export function MatchArena({
       const kicker = myStarters.find(p => p.id === kickerId)
       const kickerName = kicker?.name
       // Fire-and-forget — handleSelectAction manages its own state
-      handleSelectAction(action, kickerName)
+      // Pass the multiplier via extraBonus and goalChanceBonus
+      handleFreeKickAction(action, kickerName, multiplier)
       return freshState
     })
   }
 
-  // Substitution callback
-  const handleSubstitution = (outPlayerId: string, inPlayerId: string) => {
+  // Processa a cobrança de falta com multiplicador, enviando tudo à API
+  const handleFreeKickAction = async (action: FootballAction, kickerName?: string, multiplier?: FreeKickMultiplier) => {
+    if (processing || diceRolling) return
+    setProcessing(true)
+    setDiceRolling(true)
+    setLastRoll(null)
+    setLastEvent(null)
+
+    // Aguarda animação do dado (1.8s)
+    setTimeout(async () => {
+      try {
+        const res = await fetch('/api/match/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            matchId,
+            type: 'PLAY_ACTION',
+            action,
+            playerName: kickerName || undefined,
+            targetPlayerName: undefined,
+            freeKickMultiplier: multiplier || undefined,
+          }),
+        })
+        const data = await res.json()
+
+        // Check for time expiry or halftime from server
+        if (data.timeExpired) {
+          setState((s) => ({
+            ...s,
+            status: 'FINISHED',
+            winner: data.newState.winner,
+            matchEndReason: 'Tempo esgotado!',
+            homeScore: data.newState.homeScore,
+            awayScore: data.newState.awayScore,
+          }))
+          setDiceRolling(false)
+          setPhase('FINISHED')
+          setProcessing(false)
+          return
+        }
+
+        if (!data.ok) {
+          toast.error(data.error || 'Erro ao processar cobrança de falta.')
+          setDiceRolling(false)
+          setProcessing(false)
+          return
+        }
+
+        setLastRoll(data.event.roll)
+        setLastEvent(data.event)
+        setState((s) => ({
+          ...s,
+          currentPossession: data.newState.currentPossession,
+          homeScore: data.newState.homeScore,
+          awayScore: data.newState.awayScore,
+          homeProgress: data.newState.homeProgress,
+          awayProgress: data.newState.awayProgress,
+          turnCount: data.newState.turnCount,
+          status: data.newState.status,
+          winner: data.newState.winner,
+          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
+          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
+          events: [...s.events, data.event],
+          matchEndReason: data.newState.matchEndReason || '',
+          turnStartedAt: new Date(),
+        }))
+        setDiceRolling(false)
+
+        // Toast para gol na cobrança de falta
+        if (data.event.isGoal) {
+          const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
+          const goalPlayerName = data.event.playerName || scorer
+          toast.success(`⚽ GOOOOL! ${goalPlayerName} marca na cobrança de falta para ${scorer}!`, { duration: 4000 })
+
+          if (gameMode === 'QUICK_MATCH') {
+            const newHomeScore = data.newState.homeScore
+            const newAwayScore = data.newState.awayScore
+            if (newHomeScore >= modeConfig.goalsToWin || newAwayScore >= modeConfig.goalsToWin) {
+              setTimeout(() => {
+                setPhase('FINISHED')
+                setProcessing(false)
+              }, 2000)
+              return
+            }
+          }
+        } else if (multiplier) {
+          // Toast mostrando resultado com multiplicador
+          if (data.event.roll.success) {
+            toast.success(`✅ Cobrança de falta bem-sucedida! ${multiplier.description}`, { duration: 3000 })
+          } else {
+            toast.error(`❌ Cobrança de falta falhou! ${multiplier.description}`, { duration: 3000 })
+          }
+        }
+
+        // Clear action cards
+        setAvailableActions([])
+        setFreeKickMultiplier(null)
+        proceedToNextTurn(data)
+      } catch (err) {
+        console.error('[MatchArena] free kick action error:', err)
+        toast.error('Erro de conexão na cobrança de falta.')
+        setDiceRolling(false)
+        setProcessing(false)
+      }
+    }, 1800)
+  }
+
+  // Substitution callback — agora persiste no banco via API
+  // BUG FIX: Lesão conta no total de 5 substituições. Antes, a substituição
+  // por lesão atualizava apenas o estado local, mas não persistia no banco.
+  // Agora, toda substituição (voluntária ou por lesão) é enviada à API
+  // /api/match/substitution para persistir corretamente.
+  const handleSubstitution = async (outPlayerId: string, inPlayerId: string) => {
     setSubOpen(false)
-    const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
-    const updatedTeamState: TeamMatchState = {
-      ...myTeamState,
-      substitutionsUsed: myTeamState.substitutionsUsed + 1,
-      injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
+
+    // Chamar a API para persistir a substituição no banco
+    try {
+      const res = await fetch('/api/match/substitution', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matchId,
+          outPlayerId,
+          inPlayerId,
+          isForced: subIsForced,  // Lesão ou voluntária — ambas contam no total de 5
+        }),
+      })
+      const data = await res.json()
+
+      if (data.ok) {
+        // Atualizar estado local com dados do servidor (garante consistência)
+        const updatedTeamState = data.teamState
+        setState((s) => ({
+          ...s,
+          homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
+          awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
+        }))
+        toast.success('✅ Substituição realizada!')
+        if (data.playedWithLess) {
+          toast.warning('⚠️ Limite atingido. Time joga com um jogador a menos.', { duration: 4000 })
+        }
+      } else {
+        toast.error(data.error || 'Erro ao realizar substituição.')
+      }
+    } catch (err) {
+      console.error('[MatchArena] substitution API error:', err)
+      // Fallback: atualizar apenas localmente se API falhar
+      const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+      const updatedTeamState: TeamMatchState = {
+        ...myTeamState,
+        substitutionsUsed: myTeamState.substitutionsUsed + 1,
+        injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
+      }
+      setState((s) => ({
+        ...s,
+        homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
+        awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
+      }))
+      toast.success('✅ Substituição realizada (local).')
     }
-    setState((s) => ({
-      ...s,
-      homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
-      awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
-    }))
-    toast.success('✅ Substituição realizada!')
+
     finishPenaltyAndContinue()
   }
 
@@ -1852,7 +2002,8 @@ export function MatchArena({
       {/* BUG FIX: Only render FreeKickDialog if it's my team's free kick.
           Previously, this dialog was always rendered using myStarters regardless
           of who was favored, causing the fouling player to select a kicker for
-          the opponent's free kick. */}
+          the opponent's free kick.
+          NEW: onPlayFreeKick now accepts FreeKickMultiplier for dynamic bonuses. */}
       <FreeKickDialog
         open={freeKickOpen}
         onClose={() => { setFreeKickOpen(false); finishPenaltyAndContinue() }}
