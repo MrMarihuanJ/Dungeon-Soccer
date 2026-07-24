@@ -73,9 +73,9 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       )
     }
-    if (!['GK', 'DF', 'MF', 'FW'].includes(position)) {
+    if (!['GK', 'DF', 'LD', 'LE', 'MF', 'FW'].includes(position)) {
       return NextResponse.json(
-        { ok: false, error: 'Posição inválida. Use GK, DF, MF ou FW.' },
+        { ok: false, error: 'Posição inválida. Use GK, DF, LD, LE, MF ou FW.' },
         { status: 400 },
       )
     }
@@ -120,9 +120,9 @@ export async function PUT(req: NextRequest) {
     if (body.shirtNumber !== undefined) data.shirtNumber = body.shirtNumber ? Number(body.shirtNumber) : null
     if (body.value !== undefined) data.value = body.value ? Number(body.value) : null
 
-    if (data.position && !['GK', 'DF', 'MF', 'FW'].includes(String(data.position))) {
+    if (data.position && !['GK', 'DF', 'LD', 'LE', 'MF', 'FW'].includes(String(data.position))) {
       return NextResponse.json(
-        { ok: false, error: 'Posição inválida. Use GK, DF, MF ou FW.' },
+        { ok: false, error: 'Posição inválida. Use GK, DF, LD, LE, MF ou FW.' },
         { status: 400 },
       )
     }

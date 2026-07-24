@@ -4,6 +4,7 @@
 // TeamBuilderApp - Aplicação principal do montador de times
 // Inclui: tema dark/light, easter eggs, salvar time por usuário,
 //         compartilhar time, ver estatísticas no ogol.com.br
+//         + modo RPG com convite/join flow
 // =====================================================================
 
 import { useEffect, useState, useCallback } from 'react'
@@ -27,17 +28,25 @@ import {
   type SecretTeamId,
 } from '@/components/effects/EasterEggs'
 import { MatchLobby } from '@/components/match/MatchLobby'
+import { MatchArena } from '@/components/match/MatchArena'
+import { InviteCodeEntryDialog } from '@/components/match/InviteCodeEntryDialog'
 import { TeamRatingCard } from '@/components/football/TeamRatingCard'
 import { GameModeSelector } from '@/components/football/GameModeSelector'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { getFormation, type FieldPosition } from '@/lib/football/formations'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Share2, BarChart3 } from 'lucide-react'
+import { Card, CardContent } from '@/components/ui/card'
+import { Share2, BarChart3, Swords, Loader2, AlertTriangle, Users } from 'lucide-react'
+import { GAME_MODE_CONFIG, type GameMode } from '@/lib/match-engine'
 
 type SearchMode = 'starter' | 'reserve'
 
-export function TeamBuilderApp() {
+interface Props {
+  inviteCode?: string
+}
+
+export function TeamBuilderApp({ inviteCode }: Props) {
   const {
     formationId,
     starters,
@@ -64,12 +73,23 @@ export function TeamBuilderApp() {
   const [substOpen, setSubstOpen] = useState(false)
   const [reserveToEnter, setReserveToEnter] = useState<SelectedPlayer | null>(null)
   const [matchMode, setMatchMode] = useState(false)
+  const [inviteEntryOpen, setInviteEntryOpen] = useState(false)
   const [currentUser, setCurrentUser] = useState<{ id: string; username: string; displayName?: string | null } | null>(null)
 
   // New: share & stats dialogs
   const [shareOpen, setShareOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
   const [statsPlayer, setStatsPlayer] = useState<SelectedPlayer | null>(null)
+
+  // ===== Invite/Join state =====
+  const [joinState, setJoinState] = useState<'idle' | 'joining' | 'joined' | 'error'>(inviteCode ? 'joining' : 'idle')
+  const [joinMatchId, setJoinMatchId] = useState<string | null>(null)
+  const [joinHomeUser, setJoinHomeUser] = useState<{ id: string; username: string; displayName?: string | null } | null>(null)
+  const [joinAwayUser, setJoinAwayUser] = useState<{ id: string; username: string; displayName?: string | null } | null>(null)
+  const [joinGameMode, setJoinGameMode] = useState<GameMode>('QUICK_MATCH')
+  const [joinInviteCode, setJoinInviteCode] = useState<string | null>(inviteCode ?? null)
+  const [joinCoinResult, setJoinCoinResult] = useState<string | null>(null) // 'heads' | 'tails'
+  const [joinCurrentPossession, setJoinCurrentPossession] = useState<string | null>(null) // 'HOME' | 'AWAY'
 
   // Verifica usuário logado (para o modo de partida)
   useEffect(() => {
@@ -84,6 +104,72 @@ export function TeamBuilderApp() {
   useEffect(() => {
     initStarters()
   }, [initStarters])
+
+  // ===== Join Match via Invite Code =====
+  const handleJoinMatch = async (code: string) => {
+    setJoinState('joining')
+    try {
+      const res = await fetch('/api/match/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inviteCode: code }),
+      })
+      const data = await res.json()
+      if (!data.ok) {
+        toast.error(data.error || 'Erro ao entrar na partida.')
+        setJoinState('error')
+        // Clear invite param from URL
+        const url = new URL(window.location.href)
+        url.searchParams.delete('invite')
+        window.history.pushState({}, '', url.toString())
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        return
+      }
+
+      // Successfully joined! Set match data and transition
+      setJoinMatchId(data.match.id)
+      setMatchMode(true)
+      setJoinState('joined')
+
+      // Set home and away users
+      setJoinHomeUser({
+        id: data.match.homeUser.id,
+        username: data.match.homeUser.username,
+        displayName: data.match.homeUser.displayName,
+      })
+      setJoinAwayUser({
+        id: data.match.awayUser.id,
+        username: data.match.awayUser.username,
+        displayName: data.match.awayUser.displayName,
+      })
+      setJoinGameMode(data.match.gameMode)
+      setJoinInviteCode(code)
+      // Store coin result from auto-flip so MatchArena can show animation immediately
+      if (data.match.coinResult) {
+        setJoinCoinResult(data.match.coinResult)
+        setJoinCurrentPossession(data.match.currentPossession || data.match.startingSide)
+      }
+
+      // Clear invite param from URL after successful join
+      const url = new URL(window.location.href)
+      url.searchParams.delete('invite')
+      window.history.pushState({}, '', url.toString())
+      window.dispatchEvent(new PopStateEvent('popstate'))
+
+      toast.success(`Você entrou na partida de ${data.match.homeUser.username}!`)
+    } catch {
+      toast.error('Erro de conexão ao entrar na partida.')
+      setJoinState('error')
+    }
+  }
+
+  // ===== Auto-join when inviteCode is present and user is logged in =====
+  useEffect(() => {
+    if (inviteCode && joinState === 'joining' && currentUser) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      handleJoinMatch(inviteCode)
+    }
+  }, [inviteCode, currentUser])
 
   const selectedIds = [
     ...Object.values(starters).map((p) => p?.id).filter(Boolean),
@@ -223,6 +309,138 @@ export function TeamBuilderApp() {
 
   const startersCount = Object.values(starters).filter(Boolean).length
 
+  // ===== Invite Join: Show joining/error screen =====
+  if (inviteCode && joinState === 'joining' && !currentUser) {
+    // User is not logged in yet, show login prompt
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 p-6 text-center text-white">
+        <div className="max-w-md">
+          <motion.div
+            animate={{ rotate: [0, 10, -10, 0] }}
+            transition={{ duration: 2, repeat: Infinity }}
+          >
+            <Users className="mb-4 h-16 w-16 text-amber-400" />
+          </motion.div>
+          <h1 className="mb-3 text-2xl font-bold text-amber-400">⚔️ Convite recebido!</h1>
+          <p className="mb-4 text-sm text-gray-400">
+            Você recebeu um convite para jogar Dungeon Soccer, mas precisa estar logado para entrar.
+          </p>
+          <p className="mb-6 text-xs text-gray-500">
+            Faça login e o convite será aplicado automaticamente.
+          </p>
+          <Button
+            onClick={() => {
+              // Clear invite from URL and go to login
+              const url = new URL(window.location.href)
+              url.searchParams.delete('invite')
+              window.history.pushState({}, '', url.toString())
+              window.dispatchEvent(new PopStateEvent('popstate'))
+              setJoinState('idle')
+              setJoinInviteCode(null)
+            }}
+            className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+          >
+            Voltar ao site
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (inviteCode && joinState === 'joining' && currentUser) {
+    // Currently attempting to join
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 p-6 text-center text-white">
+        <div className="max-w-md">
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+          >
+            <Swords className="mb-4 h-16 w-16 text-amber-400" />
+          </motion.div>
+          <h1 className="mb-3 text-2xl font-bold text-amber-400">⚔️ Entrando na partida...</h1>
+          <p className="mb-4 text-sm text-gray-400">
+            Conectando com o jogador que te convidou.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (inviteCode && joinState === 'error') {
+    // Error joining
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 p-6 text-center text-white">
+        <div className="max-w-md">
+          <AlertTriangle className="mb-4 h-16 w-16 text-red-400" />
+          <h1 className="mb-3 text-2xl font-bold text-red-400">❌ Erro ao entrar</h1>
+          <p className="mb-4 text-sm text-gray-400">
+            O convite pode ser inválido, expirado ou a partida já começou.
+          </p>
+          <Button
+            onClick={() => {
+              setJoinState('idle')
+              setJoinInviteCode(null)
+            }}
+            className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+          >
+            Voltar ao site
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // ===== Joined successfully via invite — render MatchArena =====
+  if (joinState === 'joined' && matchMode && joinMatchId && joinHomeUser && joinAwayUser) {
+    return (
+      <MatchArena
+        matchId={joinMatchId}
+        homeUser={joinHomeUser}
+        awayUser={joinAwayUser}
+        currentUserId={currentUser!.id}
+        gameMode={joinGameMode}
+        inviteCode={joinInviteCode || ''}
+        initialState={joinCoinResult ? {
+          matchId: joinMatchId,
+          status: 'IN_PROGRESS' as const,
+          coinResult: joinCoinResult as 'heads' | 'tails',
+          startingSide: joinCurrentPossession as 'HOME' | 'AWAY',
+          currentPossession: joinCurrentPossession as 'HOME' | 'AWAY',
+          homeScore: 0,
+          awayScore: 0,
+          homeProgress: 0,
+          awayProgress: 0,
+          turnCount: 0,
+          maxTurns: GAME_MODE_CONFIG[joinGameMode].maxTurns > 0 ? GAME_MODE_CONFIG[joinGameMode].maxTurns : 999,
+          events: [],
+          winner: null,
+          matchStartedAt: new Date(),
+          turnStartedAt: new Date(),
+          homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+          awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+          gameMode: joinGameMode,
+          xpReward: GAME_MODE_CONFIG[joinGameMode].xpWin,
+          pausedAt: null,
+          totalPausedMs: 0,
+          halftimeTaken: false,
+          secondHalfStartedAt: null,
+          matchEndReason: '',
+        } : undefined}
+        onExit={() => {
+          setMatchMode(false)
+          setJoinMatchId(null)
+          setJoinHomeUser(null)
+          setJoinAwayUser(null)
+          setJoinInviteCode(null)
+          setJoinCoinResult(null)
+          setJoinCurrentPossession(null)
+          setJoinState('idle')
+        }}
+      />
+    )
+  }
+
   // ===== Modo Partida RPG =====
   if (matchMode) {
     if (!currentUser) {
@@ -263,6 +481,7 @@ export function TeamBuilderApp() {
         onTeamSave={handleTeamSave}
         onTeamLoad={handleTeamLoad}
         onOpenMatch={() => setMatchMode(true)}
+        onOpenInviteEntry={() => setInviteEntryOpen(true)}
       />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
@@ -458,6 +677,14 @@ export function TeamBuilderApp() {
         open={statsOpen}
         onOpenChange={setStatsOpen}
         player={statsPlayer}
+      />
+
+      {/* Invite Code Entry Dialog — para digitar código manualmente */}
+      <InviteCodeEntryDialog
+        open={inviteEntryOpen}
+        onOpenChange={setInviteEntryOpen}
+        onSubmitCode={handleJoinMatch}
+        currentUser={currentUser}
       />
     </div>
   )

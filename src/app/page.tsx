@@ -6,6 +6,7 @@
 // Renderiza:
 //   - Painel admin se URL contiver ?admin
 //   - Montador de times caso contrário
+//   - Se URL contiver ?invite=CODE, passa inviteCode para TeamBuilderApp
 // =====================================================================
 
 import { useSyncExternalStore } from 'react'
@@ -27,11 +28,18 @@ function getIsAdminFromUrl(): boolean {
   return new URLSearchParams(window.location.search).has('admin')
 }
 
-// Empty snapshot for SSR (server sempre retorna false)
-const ssrSnapshot = false
+function getInviteFromUrl(): string | null {
+  if (typeof window === 'undefined') return null
+  return new URLSearchParams(window.location.search).get('invite')
+}
+
+// SSR snapshots
+const ssrIsAdmin = false
+const ssrInvite = null
 
 export default function Home() {
-  const isAdmin = useSyncExternalStore(subscribe, getIsAdminFromUrl, () => ssrSnapshot)
+  const isAdmin = useSyncExternalStore(subscribe, getIsAdminFromUrl, () => ssrIsAdmin)
+  const inviteCode = useSyncExternalStore(subscribe, getInviteFromUrl, () => ssrInvite)
 
   if (isAdmin) {
     return (
@@ -48,5 +56,5 @@ export default function Home() {
     )
   }
 
-  return <TeamBuilderApp />
+  return <TeamBuilderApp inviteCode={inviteCode ?? undefined} />
 }

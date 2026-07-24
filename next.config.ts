@@ -33,25 +33,6 @@ const nextConfig: NextConfig = {
         protocol: "https",
         hostname: "thesportsdb.com",
       },
-      // Transfermarkt CDN for player photos
-      {
-        protocol: "https",
-        hostname: "img.a4p.de",
-      },
-      {
-        protocol: "https",
-        hostname: "cdn.sportdatahub.com",
-      },
-      // Additional API-Football image CDN
-      {
-        protocol: "https",
-        hostname: "api-sports.io",
-      },
-      // General fallback for player photos from various sources
-      {
-        protocol: "https",
-        hostname: "secure.cache.images.core.windows.net",
-      },
     ],
   },
 };

@@ -1,17 +1,14 @@
 'use client'
 
 // =====================================================================
-// PlayerSearchModal V2 - Modal de busca à prova de falhas
+// PlayerSearchModal - Modal de busca com autocomplete em tempo real
 // --------------------------------------------------------------------
 // Funcionalidades:
 //   - Input de texto com debounce de 250ms
-//   - Consulta /api/players/search em tempo real (5+ fontes)
-//   - Lista de sugestões com foto, nome, time e badges de fonte
+//   - Consulta /api/players/search em tempo real
+//   - Lista de sugestões com foto, nome e time
 //   - Filtro de posição (opcional) - default = posição do slot
 //   - Seleção do jogador fecha o modal e dispara callback
-//   - Links externos: Transfermarkt, Sofascore, SoFIFA, ogol.com.br
-//   - Badges de fonte coloridos: API-Football, Transfermarkt, Sofascore,
-//     SoFIFA, ogol, SportsDB, Local
 // =====================================================================
 
 import { useEffect, useState, useCallback, useRef } from 'react'
@@ -21,7 +18,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Search, UserPlus, AlertCircle, X, Globe, ExternalLink } from 'lucide-react'
+import { Search, UserPlus, AlertCircle, X, Globe } from 'lucide-react'
 import Image from 'next/image'
 import type { FieldPosition, PositionRole } from '@/lib/football/formations'
 import { ROLE_TO_POSITION } from '@/lib/football/formations'
@@ -36,7 +33,7 @@ interface ApiPlayer {
   photoUrl: string
   nationality?: string | null
   shirtNumber?: number | null
-  source?: 'api_football' | 'transfermarkt' | 'sofascore' | 'sofifa' | 'ogol' | 'thesportsdb' | 'local' | 'web'
+  source?: 'thesportsdb' | 'transfermarkt' | 'sofascore' | 'local'
   overall?: number
   age?: number
   pace?: number
@@ -48,17 +45,17 @@ interface ApiPlayer {
   leagueTier?: string
   isRetired?: boolean
   isInactive?: boolean
-  sofifaUrl?: string
-  sofascoreUrl?: string
-  transfermarktUrl?: string
-  ogolUrl?: string
+  // Links externos para detalhes do jogador
+  transfermarktUrl?: string | null
+  sofascoreUrl?: string | null
+  ogolUrl?: string | null
 }
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   position: FieldPosition | null
-  selectedPlayerIds: string[]
+  selectedPlayerIds: string[] // IDs já selecionados (titulares + reservas)
   onSelect: (player: SelectedPlayer) => void
   gameMode?: 'DREAM_TEAM' | 'WORLD_CUP'
 }
@@ -75,10 +72,10 @@ export function PlayerSearchModal({
   const [results, setResults] = useState<ApiPlayer[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({})
-  const [isCached, setIsCached] = useState(false)
+  const [sourcesInfo, setSourcesInfo] = useState<{ thesportsdb: number; transfermarkt: number; sofascore: number; local: number } | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Posição-alvo no banco (GK/DF/MF/FW) baseada no role tático do slot
   const targetPos = position ? ROLE_TO_POSITION[position.role] : null
 
   const runSearch = useCallback(
@@ -87,14 +84,10 @@ export function PlayerSearchModal({
         setResults([])
         setError(null)
         setLoading(false)
-        setSourceCounts({})
-        setIsCached(false)
         return
       }
       setLoading(true)
       setError(null)
-      setSourceCounts({})
-      setIsCached(false)
       try {
         const params = new URLSearchParams({ q, limit: '15' })
         if (targetPos) params.set('pos', targetPos)
@@ -105,13 +98,11 @@ export function PlayerSearchModal({
         if (!res.ok) throw new Error('Falha na busca')
         const data = await res.json()
         setResults(data.players ?? [])
-        setSourceCounts(data.sources ?? {})
-        setIsCached(data.cached ?? false)
+        setSourcesInfo(data.sources ?? null)
       } catch (e) {
         console.error(e)
         setError('Não foi possível buscar jogadores. Tente novamente.')
         setResults([])
-        setSourceCounts({})
       } finally {
         setLoading(false)
       }
@@ -136,8 +127,6 @@ export function PlayerSearchModal({
       setQuery('')
       setResults([])
       setError(null)
-      setSourceCounts({})
-      setIsCached(false)
     }
   }, [open])
 
@@ -168,38 +157,6 @@ export function PlayerSearchModal({
     onOpenChange(false)
   }
 
-  // Source badge colors — V2 with more sources
-  const getSourceBadge = (source: string) => {
-    switch (source) {
-      case 'api_football':
-        return { label: 'API-Football', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', emoji: '⚽' }
-      case 'transfermarkt':
-        return { label: 'Transfermarkt', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300', emoji: '💰' }
-      case 'sofascore':
-        return { label: 'Sofascore', cls: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300', emoji: '📊' }
-      case 'sofifa':
-        return { label: 'SoFIFA', cls: 'bg-lime-100 text-lime-700 dark:bg-lime-900/40 dark:text-lime-300', emoji: '🎮' }
-      case 'ogol':
-        return { label: 'ogol', cls: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300', emoji: '🟢' }
-      case 'thesportsdb':
-        return { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300', emoji: '🔍' }
-      case 'local':
-        return { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', emoji: '🏠' }
-      default:
-        return { label: 'Web', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300', emoji: '🌐' }
-    }
-  }
-
-  // External link for a source
-  const getExternalLink = (p: ApiPlayer) => {
-    if (p.transfermarktUrl) return { url: p.transfermarktUrl, label: 'Transfermarkt', icon: '💰' }
-    if (p.sofascoreUrl) return { url: p.sofascoreUrl, label: 'Sofascore', icon: '📊' }
-    if (p.sofifaUrl) return { url: p.sofifaUrl, label: 'SoFIFA', icon: '🎮' }
-    if (p.ogolUrl) return { url: p.ogolUrl, label: 'ogol', icon: '🟢' }
-    // Default: ogol.com.br search
-    return { url: `https://www.ogol.com.br/search.php?search=${encodeURIComponent(p.name)}`, label: 'ogol', icon: '🟢' }
-  }
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md sm:max-w-lg">
@@ -210,8 +167,8 @@ export function PlayerSearchModal({
           </DialogTitle>
           <DialogDescription>
             {position
-              ? `Busca mundial em tempo real via Transfermarkt + Sofascore + SoFIFA + ogol + banco local. Filtro automático: ${targetPos}.`
-              : 'Busca mundial à prova de falhas. Digite o nome de qualquer jogador do mundo — 5+ fontes simultâneas.'}
+              ? `Busca mundial em tempo real via TheSportsDB + Transfermarkt + Sofascore + banco local. Filtro automático: ${targetPos}.`
+              : 'Busca mundial em tempo real via TheSportsDB + Transfermarkt + Sofascore + banco local. Digite o nome de qualquer jogador do mundo.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -223,7 +180,7 @@ export function PlayerSearchModal({
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Ex: Neymar, Vini Jr, Pedri, Haaland..."
+              placeholder="Ex: Neymar, Vini Jr, Pedro..."
               className="pl-9 pr-9"
               aria-label="Buscar jogador"
             />
@@ -239,29 +196,40 @@ export function PlayerSearchModal({
             )}
           </div>
 
-          {/* Filtro de posição ativo + Source counts */}
-          {(targetPos || (Object.keys(sourceCounts).length > 0 && !loading)) && (
-            <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
-              {targetPos && (
-                <Badge variant="secondary" className="bg-emerald-100 text-emerald-700">
-                  Posição: {targetPos}
-                </Badge>
-              )}
-              {isCached && (
-                <Badge variant="secondary" className="bg-yellow-100 text-yellow-700">
-                  ⚡ Cache
-                </Badge>
-              )}
-              {Object.entries(sourceCounts).map(([source, count]) => {
-                const badge = getSourceBadge(source)
-                return (
-                  <Badge key={source} variant="secondary" className={`${badge.cls} text-[9px]`}>
-                    {badge.emoji} {badge.label}: {count}
-                  </Badge>
-                )
-              })}
+          {/* Filtro de posição ativo + indicadores de fontes */}
+          {targetPos && (
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <Badge variant="secondary" className="bg-emerald-100 text-emerald-700">
+                Posição: {targetPos}
+              </Badge>
               <span>·</span>
               <span>{results.length} resultado(s)</span>
+            </div>
+          )}
+          {!targetPos && results.length > 0 && (
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <span>{results.length} resultado(s)</span>
+            </div>
+          )}
+          {/* Source indicators */}
+          {sourcesInfo && !loading && (
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <span>Fontes:</span>
+              {sourcesInfo.thesportsdb > 0 && (
+                <Badge variant="outline" className="text-[9px] border-sky-500/30 text-sky-600 dark:text-sky-400">SportsDB ({sourcesInfo.thesportsdb})</Badge>
+              )}
+              {sourcesInfo.transfermarkt > 0 && (
+                <Badge variant="outline" className="text-[9px] border-indigo-500/30 text-indigo-600 dark:text-indigo-400">Transfermarkt ({sourcesInfo.transfermarkt})</Badge>
+              )}
+              {sourcesInfo.sofascore > 0 && (
+                <Badge variant="outline" className="text-[9px] border-orange-500/30 text-orange-600 dark:text-orange-400">Sofascore ({sourcesInfo.sofascore})</Badge>
+              )}
+              {sourcesInfo.local > 0 && (
+                <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">Local ({sourcesInfo.local})</Badge>
+              )}
+              {sourcesInfo.thesportsdb + sourcesInfo.transfermarkt + sourcesInfo.sofascore + sourcesInfo.local === 0 && (
+                <span className="text-amber-500">Nenhuma fonte retornou resultados</span>
+              )}
             </div>
           )}
 
@@ -280,9 +248,6 @@ export function PlayerSearchModal({
                       </div>
                     </div>
                   ))}
-                  <p className="text-center text-[11px] text-gray-400 mt-2">
-                    Buscando em Transfermarkt + Sofascore + SoFIFA + ogol + SportsDB + Local...
-                  </p>
                 </div>
               )}
 
@@ -323,8 +288,14 @@ export function PlayerSearchModal({
                 <ul className="space-y-1">
                   {results.map((p) => {
                     const isSelected = selectedPlayerIds.includes(p.id)
-                    const sourceBadge = getSourceBadge(p.source || 'local')
-                    const extLink = getExternalLink(p)
+                    const sourceBadge = p.source === 'thesportsdb'
+                      ? { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
+                      : p.source === 'transfermarkt'
+                        ? { label: 'Transfermarkt', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' }
+                        : p.source === 'sofascore'
+                          ? { label: 'Sofascore', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
+                          : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+                    // Overall badge estilo FIFA
                     const overall = p.overall ?? 0
                     const overallTier = overall >= 90 ? 'bg-gradient-to-br from-yellow-400 to-amber-600 text-amber-900'
                       : overall >= 84 ? 'bg-gradient-to-br from-purple-500 to-purple-700 text-white'
@@ -358,7 +329,7 @@ export function PlayerSearchModal({
                             />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
+                            <div className="flex items-center gap-2">
                               <span className="truncate font-semibold text-gray-900 dark:text-gray-100">
                                 {p.name}
                               </span>
@@ -373,7 +344,7 @@ export function PlayerSearchModal({
                                 </span>
                               )}
                               <span className={`rounded px-1 text-[9px] font-medium ${sourceBadge.cls}`}>
-                                {sourceBadge.emoji} {sourceBadge.label}
+                                {sourceBadge.label}
                               </span>
                             </div>
                             <div className="truncate text-xs text-gray-500 dark:text-gray-400">
@@ -390,30 +361,48 @@ export function PlayerSearchModal({
                             </div>
                           )}
                           <div className="shrink-0 flex items-center gap-1">
-                            {/* External link to source site */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                window.open(extLink.url, '_blank')
-                              }}
-                              className="rounded p-1 text-gray-400 transition-colors hover:bg-emerald-100 hover:text-emerald-600 dark:hover:bg-emerald-900/30 dark:hover:text-emerald-400"
-                              title={`Ver no ${extLink.label}`}
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </button>
+                            {/* Transfermarkt link */}
+                            {p.transfermarktUrl && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(p.transfermarktUrl!, '_blank')
+                                }}
+                                className="rounded p-1 text-gray-400 transition-colors hover:bg-indigo-100 hover:text-indigo-600 dark:hover:bg-indigo-900/30 dark:hover:text-indigo-400"
+                                title="Ver no Transfermarkt"
+                              >
+                                <Globe className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            {/* Sofascore link */}
+                            {p.sofascoreUrl && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(p.sofascoreUrl!, '_blank')
+                                }}
+                                className="rounded p-1 text-gray-400 transition-colors hover:bg-orange-100 hover:text-orange-600 dark:hover:bg-orange-900/30 dark:hover:text-orange-400"
+                                title="Ver no Sofascore"
+                              >
+                                <Globe className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                             {/* ogol.com.br link */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                window.open(`https://www.ogol.com.br/search.php?search=${encodeURIComponent(p.name)}`, '_blank')
-                              }}
-                              className="rounded p-1 text-gray-400 transition-colors hover:bg-green-100 hover:text-green-600 dark:hover:bg-green-900/30 dark:hover:text-green-400"
-                              title="Ver no ogol.com.br"
-                            >
-                              <Globe className="h-3.5 w-3.5" />
-                            </button>
+                            {p.ogolUrl && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(p.ogolUrl!, '_blank')
+                                }}
+                                className="rounded p-1 text-gray-400 transition-colors hover:bg-green-100 hover:text-green-600 dark:hover:bg-green-900/30 dark:hover:text-green-400"
+                                title="Ver no ogol.com.br"
+                              >
+                                <Globe className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                             {isSelected ? (
                               <Badge variant="outline" className="text-[10px] text-gray-400">
                                 já no time
@@ -432,7 +421,7 @@ export function PlayerSearchModal({
           </ScrollArea>
 
           <p className="text-center text-[11px] text-gray-400">
-            🌍 Busca mundial à prova de falhas · Transfermarkt + Sofascore + SoFIFA + ogol + SportsDB + Local
+            🌍 Busca mundial em tempo real · TheSportsDB + Transfermarkt + Sofascore + banco local + ogol.com.br
           </p>
         </div>
       </DialogContent>

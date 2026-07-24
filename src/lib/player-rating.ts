@@ -139,7 +139,7 @@ function positionalRating(players: Array<{ overall: number; effectiveOverall: nu
   const filtered = players.filter((p) => {
     if (area === 'ATT') return p.position === 'FW'
     if (area === 'MID') return p.position === 'MF'
-    return p.position === 'GK' || p.position === 'DF'
+    return p.position === 'GK' || p.position === 'DF' || p.position === 'LD' || p.position === 'LE'
   })
   if (filtered.length === 0) return 0
   const sum = filtered.reduce((acc, p) => acc + p.effectiveOverall, 0)

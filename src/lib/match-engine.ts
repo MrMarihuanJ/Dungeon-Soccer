@@ -23,13 +23,243 @@
 //   5. Se progress >= 100 → GOL! Placar +1, bola volta pro meio
 //   6. Se fracasso: posse passa ao adversário
 //   7. Próximo turno: jogador com posse recebe 5 ações mistas
-//   8. Repete até um limite de turnos (ex: 20) → quem tem mais gols vence
+//   8. Repete até condição de término (gols, tempo ou turnos)
+//
+// Modos de Jogo:
+//   - QUICK_MATCH: Primeiro a marcar 2 gols vence (sem timer)
+//   - TIMED_10: Partida de 10 minutos (tempo real)
+//   - FULL_90: Partida completa de 90 min com intervalo (tempo real)
 // =====================================================================
 
 import type { FootballAction } from './dnd-actions'
 
 export type Possession = 'HOME' | 'AWAY'
 export type CoinResult = 'heads' | 'tails'
+
+// ===== GAME MODE TYPES =====
+export type GameMode = 'QUICK_MATCH' | 'TIMED_10' | 'FULL_90'
+
+// ===== GAME MODE CONSTANTS =====
+export const GAME_MODE_CONFIG: Record<GameMode, {
+  label: string
+  description: string
+  emoji: string
+  /** Duração total em milissegundos (0 = sem limite de tempo) */
+  durationMs: number
+  /** Gols para vencer (0 = sem limite de gols) */
+  goalsToWin: number
+  /** Tempo de decisão por turno em segundos */
+  turnTimerSeconds: number
+  /** Duração do intervalo em ms (0 = sem intervalo) */
+  halftimeDurationMs: number
+  /** XP para vitória */
+  xpWin: number
+  /** XP para derrota */
+  xpLose: number
+  /** XP para empate */
+  xpDraw: number
+  /** Limite de turnos (0 = sem limite) */
+  maxTurns: number
+}> = {
+  QUICK_MATCH: {
+    label: 'Partida Rápida',
+    description: 'Primeiro a marcar 2 gols vence. Sem limite de tempo.',
+    emoji: '⚡',
+    durationMs: 0,
+    goalsToWin: 2,
+    turnTimerSeconds: 30,
+    halftimeDurationMs: 0,
+    xpWin: 30,
+    xpLose: 5,
+    xpDraw: 15,
+    maxTurns: 0,
+  },
+  TIMED_10: {
+    label: '10 Minutos',
+    description: 'Partida de 10 minutos. Quem tiver mais gols no fim vence.',
+    emoji: '⏱️',
+    durationMs: 10 * 60 * 1000,
+    goalsToWin: 0,
+    turnTimerSeconds: 45,
+    halftimeDurationMs: 0,
+    xpWin: 50,
+    xpLose: 10,
+    xpDraw: 25,
+    maxTurns: 0,
+  },
+  FULL_90: {
+    label: '90 Minutos',
+    description: 'Partida completa: 2 tempos de 45 min com intervalo de 15 min.',
+    emoji: '🏆',
+    durationMs: 90 * 60 * 1000,
+    goalsToWin: 0,
+    turnTimerSeconds: 60,
+    halftimeDurationMs: 15 * 60 * 1000,
+    xpWin: 100,
+    xpLose: 20,
+    xpDraw: 40,
+    maxTurns: 0,
+  },
+}
+
+/**
+ * Calcula o tempo restante em ms de uma partida baseado nos timestamps do DB.
+ * Retorna null se não houver timer (QUICK_MATCH ou partida não iniciada).
+ */
+export function calculateRemainingTimeMs(params: {
+  gameMode: GameMode
+  matchStartedAt: Date | null
+  pausedAt: Date | null
+  totalPausedMs: number
+  halftimeTaken: boolean
+  secondHalfStartedAt: Date | null
+}): number | null {
+  const config = GAME_MODE_CONFIG[params.gameMode]
+  if (config.durationMs === 0 || !params.matchStartedAt) return null
+
+  const now = Date.now()
+  const startedAt = new Date(params.matchStartedAt).getTime()
+
+  // Se está pausado, o tempo permanece congelado
+  if (params.pausedAt) {
+    const pausedAtTime = new Date(params.pausedAt).getTime()
+    const elapsedBeforePause = pausedAtTime - startedAt - params.totalPausedMs
+    return Math.max(0, config.durationMs - elapsedBeforePause)
+  }
+
+  // Para FULL_90: se no intervalo, tempo fica congelado no fim do 1o tempo
+  if (params.gameMode === 'FULL_90' && !params.halftimeTaken) {
+    const elapsedSinceStart = now - startedAt - params.totalPausedMs
+    const firstHalfMs = 45 * 60 * 1000
+    if (elapsedSinceStart >= firstHalfMs) {
+      return Math.max(0, config.durationMs - firstHalfMs) // 45 min restantes
+    }
+  }
+
+  const elapsed = now - startedAt - params.totalPausedMs
+  return Math.max(0, config.durationMs - elapsed)
+}
+
+/**
+ * Calcula o tempo de jogo simulado (em formato MM:SS) baseado no modo.
+ * Para FULL_90: mapeia o tempo real decorrido para o tempo de jogo (0-90 min).
+ */
+export function calculateMatchTime(params: {
+  gameMode: GameMode
+  matchStartedAt: Date | null
+  pausedAt: Date | null
+  totalPausedMs: number
+  halftimeTaken: boolean
+  secondHalfStartedAt: Date | null
+}): string {
+  if (!params.matchStartedAt) return '00:00'
+
+  const config = GAME_MODE_CONFIG[params.gameMode]
+  if (config.durationMs === 0) return '--:--'
+
+  const remaining = calculateRemainingTimeMs(params)
+  if (remaining === null) return '--:--'
+
+  const totalMs = config.durationMs
+  const elapsedMs = totalMs - remaining
+
+  // Converter ms decorridos para minutos:segundos de jogo
+  const matchMinutes = Math.floor(elapsedMs / 60000)
+  const matchSeconds = Math.floor((elapsedMs % 60000) / 1000)
+
+  return `${String(matchMinutes).padStart(2, '0')}:${String(matchSeconds).padStart(2, '0')}`
+}
+
+/**
+ * Verifica se a partida deve entrar no intervalo (apenas FULL_90).
+ */
+export function isHalftimeReached(params: {
+  gameMode: GameMode
+  matchStartedAt: Date | null
+  pausedAt: Date | null
+  totalPausedMs: number
+  halftimeTaken: boolean
+}): boolean {
+  if (params.gameMode !== 'FULL_90' || !params.matchStartedAt || params.halftimeTaken) return false
+
+  const config = GAME_MODE_CONFIG[params.gameMode]
+  const now = Date.now()
+  const startedAt = new Date(params.matchStartedAt).getTime()
+
+  let elapsed = now - startedAt - params.totalPausedMs
+  if (params.pausedAt) {
+    elapsed = new Date(params.pausedAt).getTime() - startedAt - params.totalPausedMs
+  }
+
+  const firstHalfMs = 45 * 60 * 1000
+  return elapsed >= firstHalfMs
+}
+
+/**
+ * Verifica se o tempo da partida expirou.
+ */
+export function isTimeExpired(params: {
+  gameMode: GameMode
+  matchStartedAt: Date | null
+  pausedAt: Date | null
+  totalPausedMs: number
+  halftimeTaken: boolean
+  secondHalfStartedAt: Date | null
+}): boolean {
+  const remaining = calculateRemainingTimeMs(params)
+  return remaining !== null && remaining <= 0
+}
+
+/**
+ * Verifica se a condição de término da partida foi atingida baseada no modo de jogo.
+ */
+export function checkMatchEndCondition(params: {
+  gameMode: GameMode
+  homeScore: number
+  awayScore: number
+  turnCount: number
+  matchStartedAt: Date | null
+  pausedAt: Date | null
+  totalPausedMs: number
+  halftimeTaken: boolean
+  secondHalfStartedAt: Date | null
+}): { finished: boolean; winner: Possession | 'DRAW' | null; reason: string } {
+  const config = GAME_MODE_CONFIG[params.gameMode]
+
+  // 1. Verifica limite de gols (QUICK_MATCH)
+  if (config.goalsToWin > 0) {
+    if (params.homeScore >= config.goalsToWin) {
+      return { finished: true, winner: 'HOME', reason: `${config.goalsToWin} gols atingidos!` }
+    }
+    if (params.awayScore >= config.goalsToWin) {
+      return { finished: true, winner: 'AWAY', reason: `${config.goalsToWin} gols atingidos!` }
+    }
+  }
+
+  // 2. Verifica tempo expirado
+  if (isTimeExpired(params)) {
+    if (params.homeScore > params.awayScore) {
+      return { finished: true, winner: 'HOME', reason: 'Tempo esgotado!' }
+    }
+    if (params.awayScore > params.homeScore) {
+      return { finished: true, winner: 'AWAY', reason: 'Tempo esgotado!' }
+    }
+    return { finished: true, winner: 'DRAW', reason: 'Tempo esgotado! Empate!' }
+  }
+
+  // 3. Verifica limite de turnos (se configurado)
+  if (config.maxTurns > 0 && params.turnCount >= config.maxTurns) {
+    if (params.homeScore > params.awayScore) {
+      return { finished: true, winner: 'HOME', reason: 'Limite de turnos atingido!' }
+    }
+    if (params.awayScore > params.homeScore) {
+      return { finished: true, winner: 'AWAY', reason: 'Limite de turnos atingido!' }
+    }
+    return { finished: true, winner: 'DRAW', reason: 'Limite de turnos atingido! Empate!' }
+  }
+
+  return { finished: false, winner: null, reason: '' }
+}
 
 export interface DiceRollResult {
   dice: number          // 1-20 (rolagem pura do d20)
@@ -76,96 +306,6 @@ export interface TeamMatchState {
   sentOffPlayers: string[]   // IDs dos jogadores expulsos
 }
 
-// ===== FREE KICK MULTIPLIER SYSTEM =====
-export type MultiplierType = 'dice_bonus' | 'goal_chance_bonus'
-
-export interface FreeKickMultiplierInfo {
-  playerId: string
-  playerName: string
-  multiplier: number           // valor numérico do multiplicador
-  type: MultiplierType         // tipo: bônus no dado OU bônus na chance de gol
-  description: string          // descrição exibida ao jogador
-}
-
-// Gerar multiplicadores aleatórios para cobrança de falta
-// - Cada jogador em campo recebe um multiplicador (positivo ou negativo)
-// - O tipo (dice_bonus ou goal_chance_bonus) é aleatório
-// - Garante pelo menos 2 jogadores com multiplicador negativo
-// - Usa seed baseado em timestamp + turno para imprevisibilidade
-export function generateFreeKickMultipliers(
-  fieldPlayers: { id: string; name: string; position: string; overall?: number }[],
-): FreeKickMultiplierInfo[] {
-  if (fieldPlayers.length === 0) return []
-
-  // Seed de imprevisibilidade: mistura timestamp com dados aleatórios
-  const seed = Date.now() + Math.random() * 10000
-  const results: FreeKickMultiplierInfo[] = []
-
-  // Embaralhar jogadores para que os multiplicadores não sejam sempre
-  // atribuídos na mesma ordem
-  const shuffledPlayers = [...fieldPlayers].sort(() => Math.random() - 0.5)
-
-  // Determinar quais jogadores terão multiplicadores negativos
-  // Garantir pelo menos 2 negativos (se houver >= 2 jogadores)
-  const negativeCount = Math.max(2, Math.floor(shuffledPlayers.length * 0.3))
-  const negativeIndices = new Set<number>()
-  while (negativeIndices.size < Math.min(negativeCount, shuffledPlayers.length)) {
-    negativeIndices.add(Math.floor(Math.random() * shuffledPlayers.length))
-  }
-
-  shuffledPlayers.forEach((player, idx) => {
-    // Tipo aleatório: dice_bonus ou goal_chance_bonus
-    const type: MultiplierType = Math.random() < 0.5 ? 'dice_bonus' : 'goal_chance_bonus'
-
-    let multiplier: number
-    const isNegative = negativeIndices.has(idx)
-
-    if (isNegative) {
-      // Multiplicador negativo
-      if (type === 'dice_bonus') {
-        // -1 a -3 no bônus do dado
-        multiplier = -(Math.floor(Math.random() * 3) + 1)
-      } else {
-        // -5% a -15% na chance de gol
-        multiplier = -(Math.floor(Math.random() * 11) + 5) / 100
-      }
-    } else {
-      // Multiplicador positivo
-      if (type === 'dice_bonus') {
-        // +1 a +5 no bônus do dado
-        multiplier = Math.floor(Math.random() * 5) + 1
-      } else {
-        // +5% a +25% na chance de gol
-        multiplier = (Math.floor(Math.random() * 21) + 5) / 100
-      }
-    }
-
-    // Descrição para exibição
-    let description: string
-    if (type === 'dice_bonus') {
-      description = multiplier > 0
-        ? `Bônus +${multiplier} no dado (rolagem d20+skillBonus+${multiplier})`
-        : `Penalidade ${multiplier} no dado (rolagem d20+skillBonus${multiplier})`
-    } else {
-      const pct = Math.round(Math.abs(multiplier) * 100)
-      description = multiplier > 0
-        ? `Bônus +${pct}% na chance de gol`
-        : `Penalidade -${pct}% na chance de gol`
-    }
-
-    results.push({
-      playerId: player.id,
-      playerName: player.name,
-      multiplier,
-      type,
-      description,
-    })
-  })
-
-  // Reordenar por nome para apresentação consistente
-  return results.sort(() => Math.random() - 0.5)
-}
-
 export interface MatchEvent {
   turn: number
   possession: Possession
@@ -184,13 +324,15 @@ export interface MatchEvent {
   timestamp: number
   penaltyEvent?: PenaltyEvent | null
   varResult?: { decision: 'CONFIRMED' | 'OVERTURNED'; dice: number; description: string } | null
-  freeKickKickerId?: string | null
-  freeKickMultiplier?: FreeKickMultiplierInfo | null
+  // ===== Narrativa com nome de jogador =====
+  playerName?: string
+  targetPlayerName?: string
+  narrative?: string
 }
 
 export interface MatchState {
   matchId: string
-  status: 'COIN_FLIP' | 'IN_PROGRESS' | 'FINISHED'
+  status: 'WAITING' | 'COIN_FLIP' | 'IN_PROGRESS' | 'PAUSED' | 'HALFTIME' | 'FINISHED'
   coinResult: CoinResult | null
   startingSide: Possession | null
   currentPossession: Possession | null
@@ -204,6 +346,16 @@ export interface MatchState {
   winner: Possession | 'DRAW' | null
   homeTeamState: TeamMatchState
   awayTeamState: TeamMatchState
+  // ===== Timer & Game Mode =====
+  gameMode: GameMode
+  matchStartedAt: Date | null
+  pausedAt: Date | null
+  totalPausedMs: number
+  halftimeTaken: boolean
+  secondHalfStartedAt: Date | null
+  xpReward: number
+  turnStartedAt: Date | null
+  matchEndReason: string
 }
 
 // =====================================================================
@@ -510,10 +662,11 @@ export function resolveVARDecision(): { decision: 'CONFIRMED' | 'OVERTURNED'; di
 // =====================================================================
 // Cria estado inicial da partida
 // =====================================================================
-export function createInitialMatchState(matchId: string, maxTurns = 24): MatchState {
+export function createInitialMatchState(matchId: string, gameMode: GameMode = 'QUICK_MATCH', maxTurns?: number): MatchState {
+  const config = GAME_MODE_CONFIG[gameMode]
   return {
     matchId,
-    status: 'COIN_FLIP',
+    status: 'WAITING',
     coinResult: null,
     startingSide: null,
     currentPossession: null,
@@ -522,11 +675,20 @@ export function createInitialMatchState(matchId: string, maxTurns = 24): MatchSt
     homeProgress: 0,
     awayProgress: 0,
     turnCount: 0,
-    maxTurns,
+    maxTurns: maxTurns ?? (config.maxTurns > 0 ? config.maxTurns : 999),
     events: [],
     winner: null,
     homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
     awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    gameMode,
+    matchStartedAt: null,
+    pausedAt: null,
+    totalPausedMs: 0,
+    halftimeTaken: false,
+    secondHalfStartedAt: null,
+    xpReward: config.xpWin,
+    turnStartedAt: null,
+    matchEndReason: '',
   }
 }
 
@@ -544,14 +706,179 @@ export function coinToPossession(coin: CoinResult): Possession {
 }
 
 // =====================================================================
+// Gera narrativa com nome de jogador para a ação
+// =====================================================================
+const NARRATIVE_TEMPLATES: Record<string, string[]> = {
+  KICKOFF: [
+    '{player} faz a saída de bola.',
+    '{player} inicia a jogada pelo meio.',
+    '{player} toca a bola para começar.',
+  ],
+  PASS: [
+    '{player} faz {action} para {target}.',
+    '{player} executa {action} encontrando {target}.',
+    '{target} recebe {action} de {player}.',
+    '{player} procura {target} com {action}.',
+  ],
+  DRIBBLE: [
+    '{player} tenta {action}!',
+    '{player} arrisca {action} pelo lado!',
+    '{player} sai driblando com {action}!',
+  ],
+  SHOOT: [
+    '{player} arrisca {action}!',
+    '{player} solta {action} de fora da área!',
+    '{player} finaliza com {action}!',
+  ],
+  DEFEND: [
+    '{player} faz {action}!',
+    '{player} corta o ataque com {action}!',
+    '{player} intercepta com {action}!',
+  ],
+  SPECIAL: [
+    '{player} executa {action}!',
+    '{player} brilha com {action}!',
+    '{player} tenta a jogada especial: {action}!',
+  ],
+  FREE_KICK: [
+    '{player} cobra a falta com {action}!',
+    '{player} bate a falta: {action}!',
+    '{player} prepara {action} na cobrança!',
+  ],
+}
+
+const GOAL_NARRATIVE_TEMPLATES: string[] = [
+  'GOOOL! {player} faz {action} e marca!',
+  'GOOOL! {player} bateu {action} e balançou a rede!',
+  'GOOOL! {player} marca com {action}!',
+  'GOOOL! Que golaço de {player}! {action} perfeito!',
+  'GOOOL! {player} não perdoa! {action} no ângulo!',
+]
+
+const FAIL_NARRATIVE_TEMPLATES: string[] = [
+  '{player} erra {action}.',
+  '{player} perde a bola tentando {action}.',
+  '{action} de {player} não funciona.',
+]
+
+/**
+ * Gera uma narrativa descritiva para a jogada.
+ * @param action Ação de futebol
+ * @param playerName Nome do jogador que executa
+ * @param targetPlayerName Nome do jogador que recebe (para passes)
+ * @param isGoal Se resultou em gol
+ * @param success Se a jogada foi bem-sucedida
+ */
+export function generateNarrative(
+  action: FootballAction | { id: string; name: string; emoji: string; category: string; dc: number },
+  playerName: string,
+  targetPlayerName?: string,
+  isGoal?: boolean,
+  success?: boolean,
+): string {
+  const category = action.category as string
+  const actionName = action.name.toLowerCase()
+
+  if (isGoal) {
+    const templates = GOAL_NARRATIVE_TEMPLATES
+    const template = templates[Math.floor(Math.random() * templates.length)]
+    return template
+      .replace('{player}', playerName)
+      .replace('{action}', actionName)
+  }
+
+  if (!success) {
+    const templates = FAIL_NARRATIVE_TEMPLATES
+    const template = templates[Math.floor(Math.random() * templates.length)]
+    return template
+      .replace('{player}', playerName)
+      .replace('{action}', actionName)
+  }
+
+  const templates = NARRATIVE_TEMPLATES[category] || NARRATIVE_TEMPLATES['PASS']
+  const template = templates[Math.floor(Math.random() * templates.length)]
+  return template
+    .replace('{player}', playerName)
+    .replace('{action}', actionName)
+    .replace('{target}', targetPlayerName || 'companheiro')
+}
+
+/**
+ * Seleciona um jogador aleatório da lista de titulares.
+ * Pode filtrar por posição preferida da ação.
+ */
+export function pickRandomPlayer(players: { name: string; position: string }[]): string {
+  if (players.length === 0) return 'Jogador'
+  const idx = Math.floor(Math.random() * players.length)
+  return players[idx].name
+}
+
+/**
+ * Seleciona dois jogadores diferentes da lista (para passes/passes longos).
+ */
+export function pickTwoRandomPlayers(players: { name: string; position: string }[]): { player: string; target: string } {
+  if (players.length <= 1) return { player: pickRandomPlayer(players), target: 'companheiro' }
+  const idx1 = Math.floor(Math.random() * players.length)
+  let idx2 = Math.floor(Math.random() * players.length)
+  while (idx2 === idx1 && players.length > 1) {
+    idx2 = Math.floor(Math.random() * players.length)
+  }
+  return { player: players[idx1].name, target: players[idx2].name }
+}
+
+/**
+ * Seleciona jogador baseado na categoria da ação (prioriza posição adequada).
+ */
+export function pickPlayerForAction(
+  players: { name: string; position: string }[],
+  category: string,
+): { player: string; target: string } {
+  if (players.length === 0) return { player: 'Jogador', target: 'companheiro' }
+
+  // Para chutes, prioriza atacantes
+  if (category === 'SHOOT' || category === 'FREE_KICK') {
+    const attackers = players.filter(p => p.position === 'FW')
+    if (attackers.length > 0) {
+      const player = attackers[Math.floor(Math.random() * attackers.length)].name
+      const { target } = pickTwoRandomPlayers(players)
+      return { player, target }
+    }
+    const midfielders = players.filter(p => p.position === 'MF')
+    if (midfielders.length > 0) {
+      const player = midfielders[Math.floor(Math.random() * midfielders.length)].name
+      const { target } = pickTwoRandomPlayers(players)
+      return { player, target }
+    }
+  }
+
+  // Para defesa, prioriza defensores
+  if (category === 'DEFEND') {
+    const defenders = players.filter(p => p.position === 'DF' || p.position === 'LD' || p.position === 'LE' || p.position === 'GK')
+    if (defenders.length > 0) {
+      const player = defenders[Math.floor(Math.random() * defenders.length)].name
+      const { target } = pickTwoRandomPlayers(players)
+      return { player, target }
+    }
+  }
+
+  // Para passes, pega dois jogadores diferentes
+  if (category === 'PASS' || category === 'KICKOFF') {
+    return pickTwoRandomPlayers(players)
+  }
+
+  // Para outros, seleciona aleatoriamente
+  return pickTwoRandomPlayers(players)
+}
+
+// =====================================================================
 // Processa uma jogada e atualiza o estado
 // =====================================================================
 export function applyActionToState(
   state: MatchState,
   action: FootballAction,
   roll: DiceRollResult,
-  freeKickKickerId?: string | null,
-  freeKickMultiplier?: FreeKickMultiplierInfo | null,
+  playerName?: string,
+  targetPlayerName?: string,
 ): MatchState {
   const newState: MatchState = {
     ...state,
@@ -576,8 +903,8 @@ export function applyActionToState(
     isGoal: false,
     possessionChanged: false,
     timestamp: Date.now(),
-    freeKickKickerId,
-    freeKickMultiplier,
+    playerName: playerName || undefined,
+    targetPlayerName: targetPlayerName || undefined,
   }
 
   newState.turnCount += 1
@@ -693,13 +1020,8 @@ export function applyActionToState(
         event.possessionChanged = true
       } else if (action.category === 'SHOOT' && action.goalChance > 0) {
         // Ação de chute com chance de gol (mesmo sem chegar a 100)
-        // Aplica multiplicador de chance de gol se for cobrança de falta
-        let effectiveGoalChance = action.goalChance
-        if (freeKickMultiplier && freeKickMultiplier.type === 'goal_chance_bonus') {
-          effectiveGoalChance = Math.max(0, Math.min(1, effectiveGoalChance + freeKickMultiplier.multiplier))
-        }
         const goalRoll = Math.random()
-        if (goalRoll < effectiveGoalChance) {
+        if (goalRoll < action.goalChance) {
           // Gol!
           event.isGoal = true
           if (possession === 'HOME') {
@@ -731,33 +1053,6 @@ export function applyActionToState(
         }
         newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
         event.possessionChanged = true
-      } else if (action.category === 'FREE_KICK' && action.goalChance > 0) {
-        // Cobrança de falta com chance de gol
-        // Aplica multiplicador de chance de gol se disponível
-        let effectiveGoalChance = action.goalChance
-        if (freeKickMultiplier && freeKickMultiplier.type === 'goal_chance_bonus') {
-          effectiveGoalChance = Math.max(0, Math.min(1, effectiveGoalChance + freeKickMultiplier.multiplier))
-        }
-        const goalRoll = Math.random()
-        if (goalRoll < effectiveGoalChance) {
-          // Gol na cobrança de falta!
-          event.isGoal = true
-          if (possession === 'HOME') {
-            newState.homeScore += 1
-            newState.homeProgress = 0
-          } else {
-            newState.awayScore += 1
-            newState.awayProgress = 0
-          }
-          newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
-          event.possessionChanged = true
-        } else if (action.ballRetentionOnFail > 0 && Math.random() < action.ballRetentionOnFail) {
-          // Falta defendida mas mantém a bola (rebote)
-        } else {
-          // Perdeu a bola
-          newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
-          event.possessionChanged = true
-        }
       }
       // Se não foi gol e não perdeu posse, continua com a posse
     } else {
@@ -790,14 +1085,43 @@ export function applyActionToState(
     }
   }
 
+  // Gera narrativa com nome de jogador
+  if (event.playerName) {
+    event.narrative = generateNarrative(
+      event.action,
+      event.playerName,
+      event.targetPlayerName,
+      event.isGoal,
+      event.roll.success,
+    )
+  }
+
   newState.events.push(event)
 
-  // Verifica fim de partida
-  if (newState.turnCount >= newState.maxTurns) {
+  // Verifica fim de partida baseado no modo de jogo
+  const endCheck = checkMatchEndCondition({
+    gameMode: newState.gameMode,
+    homeScore: newState.homeScore,
+    awayScore: newState.awayScore,
+    turnCount: newState.turnCount,
+    matchStartedAt: newState.matchStartedAt,
+    pausedAt: newState.pausedAt,
+    totalPausedMs: newState.totalPausedMs,
+    halftimeTaken: newState.halftimeTaken,
+    secondHalfStartedAt: newState.secondHalfStartedAt,
+  })
+
+  if (endCheck.finished) {
+    newState.status = 'FINISHED'
+    newState.winner = endCheck.winner
+    newState.matchEndReason = endCheck.reason
+  } else if (newState.turnCount >= newState.maxTurns) {
+    // Fallback: limite de turnos atingido
     newState.status = 'FINISHED'
     if (newState.homeScore > newState.awayScore) newState.winner = 'HOME'
     else if (newState.awayScore > newState.homeScore) newState.winner = 'AWAY'
     else newState.winner = 'DRAW'
+    newState.matchEndReason = 'Limite de turnos atingido!'
   }
 
   return newState

@@ -4,12 +4,16 @@
 // MatchArena - Componente principal que orquestra a partida RPG
 // --------------------------------------------------------------------
 // Fases:
+//   0. WAITING — esperando oponente entrar (multiplayer)
 //   1. COIN_FLIP — mostra moeda girando + resultado
 //   2. PLAYER_TURN — jogador atual escolhe ação, vê dado, vê resultado
-//   3. FINISHED — placar final + vencedor
+//   3. OPPONENT_TURN — esperando jogada do oponente (polling)
+//   4. PAUSED — partida pausada, timer congelado
+//   5. HALFTIME — intervalo (apenas FULL_90)
+//   6. FINISHED — placar final + vencedor
 // =====================================================================
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,7 +22,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Swords, Trophy, ArrowLeft, Coins, Play, Loader2, History, ChevronRight,
-  AlertTriangle, Users,
+  AlertTriangle, Users, Pause, RotateCcw, Clock, Coffee, Zap, Share2,
 } from 'lucide-react'
 import { CoinFlip } from './CoinFlip'
 import { DiceRoll } from './DiceRoll'
@@ -26,14 +30,17 @@ import { ActionCard } from './ActionCard'
 import { SubstitutionModal } from './SubstitutionModal'
 import { VARReview } from './VARReview'
 import { FreeKickDialog } from './FreeKickDialog'
+import { MatchInviteDialog } from './MatchInviteDialog'
 import {
   sampleActions, sampleMixedActions, CATEGORY_META,
   type FootballAction,
 } from '@/lib/dnd-actions'
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
-  type PenaltyEvent, type TeamMatchState, type FreeKickMultiplierInfo,
-  generateFreeKickMultipliers,
+  type PenaltyEvent, type TeamMatchState, type GameMode,
+  GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
+  checkMatchEndCondition, isHalftimeReached,
+  pickPlayerForAction,
 } from '@/lib/match-engine'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
@@ -53,18 +60,23 @@ interface Props {
   homeUser: Player
   awayUser: Player
   currentUserId: string
+  gameMode?: GameMode
+  inviteCode?: string
   initialState?: MatchState
+  isOffline?: boolean  // Offline mode: bot auto-plays on OPPONENT_TURN
   onExit: () => void
 }
 
-type Phase = 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION'
+type Phase = 'WAITING' | 'COIN_FLIP' | 'PLAYER_TURN' | 'OPPONENT_TURN' | 'FINISHED' | 'PENALTY_EVENT' | 'VAR_REVIEW' | 'FREE_KICK' | 'SUBSTITUTION' | 'PAUSED' | 'HALFTIME'
 
 export function MatchArena({
-  matchId, homeUser, awayUser, currentUserId, initialState, onExit,
+  matchId, homeUser, awayUser, currentUserId, gameMode = 'QUICK_MATCH', inviteCode, initialState, isOffline = false, onExit,
 }: Props) {
+  const modeConfig = GAME_MODE_CONFIG[gameMode]
+
   const [state, setState] = useState<MatchState>(initialState || {
     matchId,
-    status: 'COIN_FLIP',
+    status: 'WAITING',
     coinResult: null,
     startingSide: null,
     currentPossession: null,
@@ -73,22 +85,42 @@ export function MatchArena({
     homeProgress: 0,
     awayProgress: 0,
     turnCount: 0,
-    maxTurns: 24,
+    maxTurns: modeConfig.maxTurns > 0 ? modeConfig.maxTurns : 999,
     events: [],
     winner: null,
     homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
     awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    gameMode,
+    matchStartedAt: null,
+    pausedAt: null,
+    totalPausedMs: 0,
+    halftimeTaken: false,
+    secondHalfStartedAt: null,
+    xpReward: modeConfig.xpWin,
+    turnStartedAt: null,
+    matchEndReason: '',
   })
 
   const [phase, setPhase] = useState<Phase>(
     initialState?.status === 'FINISHED'
       ? 'FINISHED'
-      : initialState?.status === 'IN_PROGRESS'
-        ? (initialState.currentPossession === (currentUserId === homeUser.id ? 'HOME' : 'AWAY') ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-        : 'COIN_FLIP'
+      : initialState?.status === 'PAUSED'
+        ? 'PAUSED'
+        : initialState?.status === 'HALFTIME'
+          ? 'HALFTIME'
+          : initialState?.status === 'WAITING'
+            ? 'WAITING'
+            : initialState?.status === 'IN_PROGRESS' && initialState.coinResult
+              ? 'COIN_FLIP' // Show coin animation first before transitioning to game
+              : initialState?.status === 'IN_PROGRESS'
+                ? (initialState.currentPossession === (currentUserId === homeUser.id ? 'HOME' : 'AWAY') ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+                : 'COIN_FLIP'
   )
 
-  const [coinFlipping, setCoinFlipping] = useState(false)
+  const [coinFlipping, setCoinFlipping] = useState(
+    // If initialState has a coin result, start the animation immediately
+    !!initialState?.coinResult
+  )
   const [diceRolling, setDiceRolling] = useState(false)
   const [lastRoll, setLastRoll] = useState<DiceRollResult | null>(null)
   const [lastEvent, setLastEvent] = useState<MatchEvent | null>(null)
@@ -96,7 +128,16 @@ export function MatchArena({
   const [processing, setProcessing] = useState(false)
   const [turn, setTurn] = useState(1)
 
-  // New: penalty/substitution/VAR/freekick states
+  // Timer state
+  const [matchTimeDisplay, setMatchTimeDisplay] = useState('--:--')
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null)
+  const [turnTimerSeconds, setTurnTimerSeconds] = useState(modeConfig.turnTimerSeconds)
+  const [isPaused, setIsPaused] = useState(false)
+  const [isHalftime, setIsHalftime] = useState(false)
+  const [pausing, setPausing] = useState(false)
+  const [resuming, setResuming] = useState(false)
+
+  // Penalty/substitution/VAR/freekick states
   const [currentPenalty, setCurrentPenalty] = useState<PenaltyEvent | null>(null)
   const [varOpen, setVarOpen] = useState(false)
   const [varEventDesc, setVarEventDesc] = useState('')
@@ -108,113 +149,394 @@ export function MatchArena({
   const [myReserves, setMyReserves] = useState<SelectedPlayer[]>([])
   const [myStarters, setMyStarters] = useState<SelectedPlayer[]>([])
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
-  const [freeKickMultipliers, setFreeKickMultipliers] = useState<FreeKickMultiplierInfo[]>([])
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
 
-  // Populate starters/reserves from the Zustand store
+  // Refs for timers
+  const matchTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const turnTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const autoPlayRef = useRef(false)
+
+  // Populate starters/reserves from the Zustand store (use useMemo to avoid setState in effect)
   const { starters: storeStarters, reserves: storeReserves } = useTeamStore()
+  const startersList = useMemo(() => Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null), [storeStarters])
+  const reservesList = useMemo(() => storeReserves, [storeReserves])
   useEffect(() => {
-    const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
     setMyStarters(startersList)
-    setMyReserves(storeReserves)
-  }, [storeStarters, storeReserves])
+    setMyReserves(reservesList)
+  }, [startersList, reservesList])
 
   const isHome = currentUserId === homeUser.id
   const mySide: Possession = isHome ? 'HOME' : 'AWAY'
   const myUser = isHome ? homeUser : awayUser
   const oppUser = isHome ? awayUser : homeUser
 
-  // ===== COIN FLIP SYNC — polling para o oponente =====
-  // Se estamos na fase COIN_FLIP e o outro jogador lançou a moeda,
-  // precisamos detectar isso via polling do estado da partida
+  // ===== Transition after coin animation (unified mechanism) =====
+  // This SINGLE effect handles ALL coin flip transitions:
+  //   - Player B joining with initialState (coinFlipping=true from init)
+  //   - Player A detecting coin result via initial fetch (coinFlipping set to true)
+  //   - Player detecting coin result via COIN_FLIP polling (coinFlipping set to true)
+  // No separate mount effect or fetch timeout needed — this reacts to state changes.
+  const transitionScheduledRef = useRef(false)
   useEffect(() => {
-    if (phase !== 'COIN_FLIP') return
-    if (coinFlipping) return // já estamos lançando
+    // Only transition when: animation is running, we have a result, and we're in COIN_FLIP phase
+    if (!coinFlipping || !state.coinResult || phase !== 'COIN_FLIP') {
+      transitionScheduledRef.current = false
+      return
+    }
+    // Don't schedule duplicate transitions
+    if (transitionScheduledRef.current) return
+    transitionScheduledRef.current = true
+    console.log('[MatchArena] Coin animation started — scheduling transition in 2600ms', {
+      coinResult: state.coinResult, currentPossession: state.currentPossession, mySide
+    })
 
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/match/state?id=${matchId}`)
-        const data = await res.json()
-        if (data.ok && data.match && data.match.status === 'IN_PROGRESS' && data.match.coinResult) {
-          // O outro jogador lançou a moeda! Atualiza estado local
-          setState((s) => ({
-            ...s,
-            status: 'IN_PROGRESS',
-            coinResult: data.match.coinResult,
-            startingSide: data.match.startingSide,
-            currentPossession: data.match.currentPossession,
-            homeScore: data.match.homeScore,
-            awayScore: data.match.awayScore,
-            homeProgress: data.match.homeProgress,
-            awayProgress: data.match.awayProgress,
-            turnCount: data.match.turnCount,
-          }))
-          // Determina quem começa
-          const myTurn = data.match.currentPossession === mySide
-          setCoinFlipping(true) // Mostra animação da moeda
-          setTimeout(() => {
-            setCoinFlipping(false)
-            setPhase(myTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-            setTurn(1)
-            if (myTurn) {
-              drawKickoffActions()
-            } else {
-              setTimeout(() => simulateOpponent(), 1500)
-            }
-          }, 2600)
+    const timer = setTimeout(() => {
+      transitionScheduledRef.current = false
+      setCoinFlipping(false)
+      // Use state updaters to read CURRENT values (avoids stale closure)
+      setState((s) => {
+        const derivedStartingSide = s.coinResult === 'heads' ? 'HOME' : 'AWAY'
+        const possession = s.currentPossession || derivedStartingSide
+        return {
+          ...s,
+          status: 'IN_PROGRESS',
+          startingSide: derivedStartingSide,
+          currentPossession: possession,
         }
-      } catch (err) {
-        // Silently fail — polling will retry
-      }
-    }, 2500) // Poll every 2.5s
+      })
+      // Compute myTurn from CURRENT state (use functional setState to avoid stale closure)
+      // We need mySide which is stable (derived from props), and currentPossession which we just set
+      // Since setState is async, we compute from the coinResult we already know
+      const derivedStartingSide = state.coinResult === 'heads' ? 'HOME' : 'AWAY'
+      const possession = state.currentPossession || derivedStartingSide
+      const myTurn = possession === mySide
+      setPhase(myTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+      if (myTurn) drawKickoffActions()
+      setTurn(1)
+      toast.success('🪙 Moeda lançada! A partida começa!')
+    }, 2600) // Same duration as coin animation
 
-    return () => clearInterval(interval)
-  }, [phase, coinFlipping, matchId, mySide])
+    return () => {
+      clearTimeout(timer)
+      transitionScheduledRef.current = false
+    }
+  }, [coinFlipping, state.coinResult, phase, state.currentPossession, mySide])
 
-  // ===== IN_PROGRESS SYNC — polling para atualizar estado =====
-  // Quando o oponente faz uma jogada, precisamos detectar via polling
+  // ===== Initial state fetch on mount (sync with server) =====
   useEffect(() => {
-    if (phase !== 'OPPONENT_TURN') return
-    if (diceRolling) return // já estamos processando
-
-    const interval = setInterval(async () => {
+    const doInitialFetch = async () => {
       try {
-        const res = await fetch(`/api/match/state?id=${matchId}`)
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
         const data = await res.json()
-        if (data.ok && data.match) {
-          const matchState = data.match
-          // Verifica se houve mudança no turno ou posse
-          if (matchState.turnCount > state.turnCount || matchState.currentPossession !== state.currentPossession) {
+        if (!data.ok) return
+
+        const serverState = data.match
+
+        setState((s) => ({
+          ...s,
+          status: serverState.status,
+          currentPossession: serverState.currentPossession,
+          homeScore: serverState.homeScore,
+          awayScore: serverState.awayScore,
+          homeProgress: serverState.homeProgress,
+          awayProgress: serverState.awayProgress,
+          turnCount: serverState.turnCount,
+          winner: serverState.winner,
+          homeTeamState: serverState.homeTeamState || s.homeTeamState,
+          awayTeamState: serverState.awayTeamState || s.awayTeamState,
+          events: serverState.events || s.events,
+          coinResult: serverState.coinResult || s.coinResult,
+          matchEndReason: serverState.matchEndReason || '',
+          matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : null,
+          pausedAt: serverState.pausedAt ? new Date(serverState.pausedAt) : null,
+          secondHalfStartedAt: serverState.secondHalfStartedAt ? new Date(serverState.secondHalfStartedAt) : null,
+          turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : null,
+          totalPausedMs: serverState.totalPausedMs || 0,
+          halftimeTaken: serverState.halftimeTaken || false,
+        }))
+
+        // Update phase based on server status
+        if (serverState.status === 'WAITING') {
+          setPhase('WAITING')
+        } else if (serverState.status === 'COIN_FLIP') {
+          setPhase('COIN_FLIP')
+        } else if (serverState.status === 'IN_PROGRESS') {
+          // If the coin was already flipped (auto-flip on join or by opponent),
+          // set coinResult + coinFlipping so the unified transition effect handles it.
+          // NO separate setTimeout here — the transition effect handles the animation timing.
+          if (serverState.coinResult) {
+            console.log('[MatchArena] Initial fetch detected IN_PROGRESS with coinResult', {
+              coinResult: serverState.coinResult, currentPossession: serverState.currentPossession
+            })
+            // Set coinResult in state and start animation — transition effect will handle the rest
             setState((s) => ({
               ...s,
-              currentPossession: matchState.currentPossession,
-              homeScore: matchState.homeScore,
-              awayScore: matchState.awayScore,
-              homeProgress: matchState.homeProgress,
-              awayProgress: matchState.awayProgress,
-              turnCount: matchState.turnCount,
-              status: matchState.status,
-              winner: matchState.winner,
+              coinResult: serverState.coinResult,
+              currentPossession: serverState.currentPossession || s.currentPossession,
+              startingSide: serverState.coinResult === 'heads' ? 'HOME' : 'AWAY',
+              status: 'IN_PROGRESS',
+              matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : new Date(),
+              turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : new Date(),
+              homeScore: serverState.homeScore ?? s.homeScore,
+              awayScore: serverState.awayScore ?? s.awayScore,
+              homeProgress: serverState.homeProgress ?? s.homeProgress,
+              awayProgress: serverState.awayProgress ?? s.awayProgress,
+              turnCount: serverState.turnCount ?? s.turnCount,
             }))
-            // Atualiza fase
-            if (matchState.status === 'FINISHED') {
-              setPhase('FINISHED')
-            } else {
-              const myTurnNow = matchState.currentPossession === mySide
-              if (myTurnNow) {
-                setPhase('PLAYER_TURN')
-                drawMixedActions()
-                setTurn(matchState.turnCount)
-              }
-            }
+            setPhase('COIN_FLIP')
+            setCoinFlipping(true)
+            // The unified transition effect (above) will schedule the 2600ms timeout
+          } else {
+            const myTurnNow = serverState.currentPossession === mySide
+            setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
           }
+        } else if (serverState.status === 'FINISHED') {
+          setPhase('FINISHED')
+        } else if (serverState.status === 'HALFTIME') {
+          setPhase('HALFTIME')
+        } else if (serverState.status === 'PAUSED') {
+          setPhase('PAUSED')
         }
-      } catch (err) {
+      } catch {
         // Silently fail — polling will retry
       }
-    }, 3000)
+    }
+    doInitialFetch()
+  }, [matchId])
 
-    return () => clearInterval(interval)
-  }, [phase, diceRolling, matchId, mySide, state.turnCount, state.currentPossession])
+  // ===== MATCH TIMER (real-time countdown) =====
+  useEffect(() => {
+    if (modeConfig.durationMs === 0 || !state.matchStartedAt || phase === 'COIN_FLIP' || phase === 'FINISHED') {
+      return
+    }
+
+    if (isPaused || phase === 'PAUSED' || phase === 'HALFTIME') {
+      // Don't update timer when paused
+      return
+    }
+
+    const updateTimer = () => {
+      const timeStr = calculateMatchTime({
+        gameMode: state.gameMode,
+        matchStartedAt: state.matchStartedAt,
+        pausedAt: state.pausedAt,
+        totalPausedMs: state.totalPausedMs,
+        halftimeTaken: state.halftimeTaken,
+        secondHalfStartedAt: state.secondHalfStartedAt,
+      })
+      setMatchTimeDisplay(timeStr)
+
+      const remaining = calculateRemainingTimeMs({
+        gameMode: state.gameMode,
+        matchStartedAt: state.matchStartedAt,
+        pausedAt: state.pausedAt,
+        totalPausedMs: state.totalPausedMs,
+        halftimeTaken: state.halftimeTaken,
+        secondHalfStartedAt: state.secondHalfStartedAt,
+      })
+      if (remaining !== null) {
+        setRemainingSeconds(Math.ceil(remaining / 1000))
+      }
+    }
+
+    updateTimer()
+    matchTimerRef.current = setInterval(updateTimer, 1000)
+
+    return () => {
+      if (matchTimerRef.current) clearInterval(matchTimerRef.current)
+    }
+  }, [state.matchStartedAt, state.pausedAt, state.totalPausedMs, state.halftimeTaken, state.secondHalfStartedAt, isPaused, phase, state.gameMode, modeConfig.durationMs])
+
+  // ===== CHECK FOR TIME EXPIRY =====
+  useEffect(() => {
+    if (remainingSeconds !== null && remainingSeconds <= 0 && phase !== 'FINISHED' && phase !== 'PAUSED') {
+      // Time expired - end match
+      handleTimeExpired()
+    }
+  }, [remainingSeconds])
+
+  // ===== CHECK FOR HALFTIME =====
+  useEffect(() => {
+    if (gameMode === 'FULL_90' && state.matchStartedAt && !state.halftimeTaken && phase !== 'FINISHED' && phase !== 'PAUSED' && phase !== 'HALFTIME') {
+      const reached = isHalftimeReached({
+        gameMode,
+        matchStartedAt: state.matchStartedAt,
+        pausedAt: state.pausedAt,
+        totalPausedMs: state.totalPausedMs,
+        halftimeTaken: false,
+      })
+      if (reached) {
+        handleHalftimeReached()
+      }
+    }
+  }, [remainingSeconds, state.matchStartedAt, state.halftimeTaken, phase])
+
+  // ===== TURN TIMER =====
+  useEffect(() => {
+    if (phase !== 'PLAYER_TURN' || isPaused) {
+      if (turnTimerRef.current) clearInterval(turnTimerRef.current)
+      return
+    }
+
+    setTurnTimerSeconds(modeConfig.turnTimerSeconds)
+
+    turnTimerRef.current = setInterval(() => {
+      setTurnTimerSeconds((prev) => {
+        if (prev <= 1) {
+          // Auto-play a random action
+          if (!autoPlayRef.current) {
+            autoPlayRef.current = true
+            handleAutoPlay()
+          }
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => {
+      if (turnTimerRef.current) clearInterval(turnTimerRef.current)
+    }
+  }, [phase, isPaused, turn])
+
+  // Reset turn timer when it's my turn again
+  useEffect(() => {
+    if (phase === 'PLAYER_TURN') {
+      setTurnTimerSeconds(modeConfig.turnTimerSeconds)
+      autoPlayRef.current = false
+    }
+  }, [phase, turn])
+
+  const handleTimeExpired = async () => {
+    // Call the action API which will detect time expiry and end the match
+    try {
+      const res = await fetch('/api/match/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matchId, type: 'PLAY_ACTION', action: { id: 'idle', name: 'idle', emoji: '⏰', category: 'PASS', dc: 99, skillBonus: 0, progress: 0, ballRetentionOnFail: 0, goalChance: 0, description: '' } }),
+      })
+      const data = await res.json()
+      if (data.ok && data.newState) {
+        setState((s) => ({
+          ...s,
+          status: 'FINISHED',
+          winner: data.newState.winner,
+          matchEndReason: 'Tempo esgotado!',
+        }))
+        setPhase('FINISHED')
+      }
+    } catch {
+      // Fallback: just set finished locally
+      const winner = state.homeScore > state.awayScore ? 'HOME' : state.awayScore > state.homeScore ? 'AWAY' : 'DRAW'
+      setState((s) => ({ ...s, status: 'FINISHED', winner, matchEndReason: 'Tempo esgotado!' }))
+      setPhase('FINISHED')
+    }
+  }
+
+  const handleHalftimeReached = async () => {
+    try {
+      // The action API will set status to HALFTIME
+      // We'll update locally too
+      setState((s) => ({ ...s, status: 'HALFTIME' }))
+      setPhase('HALFTIME')
+      setIsHalftime(true)
+      toast('⚽ Fim do primeiro tempo! Intervalo.', { duration: 5000 })
+    } catch {
+      // ignore
+    }
+  }
+
+  const handleAutoPlay = () => {
+    if (processing || diceRolling) return
+    // BUG FIX: Auto-play also excludes DEFEND (same logic as drawMixedActions)
+    const actions = sampleMixedActions(1, true)
+    const action = actions[0]
+    if (action) {
+      // Seleciona jogador automaticamente
+      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
+      let autoPlayerName: string | undefined
+      if (startersList.length > 0) {
+        const { player } = pickPlayerForAction(
+          startersList.map(p => ({ name: p.name, position: p.position })),
+          action.category,
+        )
+        autoPlayerName = player
+      }
+      handleSelectAction(action, autoPlayerName)
+    }
+  }
+
+  // ===== PAUSE / RESUME =====
+  const handlePause = async () => {
+    setPausing(true)
+    try {
+      const res = await fetch('/api/match/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matchId }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setIsPaused(true)
+        setPhase('PAUSED')
+        setState((s) => ({ ...s, status: 'PAUSED', pausedAt: new Date() }))
+        toast('⏸️ Partida pausada!')
+      } else {
+        toast.error(data.error || 'Erro ao pausar.')
+      }
+    } catch {
+      toast.error('Erro de conexão ao pausar.')
+    } finally {
+      setPausing(false)
+    }
+  }
+
+  const handleResume = async () => {
+    setResuming(true)
+    try {
+      const res = await fetch('/api/match/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matchId }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setIsPaused(false)
+        setIsHalftime(false)
+        // Calculate paused duration for local state
+        const prevPausedMs = state.totalPausedMs
+        const pausedAtTime = state.pausedAt ? new Date(state.pausedAt).getTime() : Date.now()
+        const pausedDuration = Date.now() - pausedAtTime
+
+        setState((s) => ({
+          ...s,
+          status: 'IN_PROGRESS',
+          pausedAt: null,
+          totalPausedMs: prevPausedMs + pausedDuration,
+          halftimeTaken: s.halftimeTaken || isHalftime,
+          secondHalfStartedAt: isHalftime ? new Date() : s.secondHalfStartedAt,
+          turnStartedAt: new Date(),
+        }))
+
+        // Resume to correct phase
+        const myTurn = state.currentPossession === mySide
+        setPhase(myTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+        if (myTurn) {
+          drawMixedActions()
+        } else {
+          setAvailableActions([])
+        }
+        toast('▶️ Partida retomada!')
+      } else {
+        toast.error(data.error || 'Erro ao retomar.')
+      }
+    } catch {
+      toast.error('Erro de conexão ao retomar.')
+    } finally {
+      setResuming(false)
+    }
+  }
 
   // Sorteia 3 ações de KICKOFF para o primeiro turno
   const drawKickoffActions = useCallback(() => {
@@ -222,13 +544,18 @@ export function MatchArena({
   }, [])
 
   // Sorteia 5 ações mistas para turnos subsequentes
+  // BUG FIX: When it's MY turn (I have possession), exclude DEFEND actions.
+  // In real football, the attacking team shouldn't have "defend" options —
+  // a successful DEFEND action would steal the ball from yourself.
   const drawMixedActions = useCallback(() => {
-    setAvailableActions(sampleMixedActions(5))
+    // When drawing actions for the team WITH possession, exclude DEFEND
+    setAvailableActions(sampleMixedActions(5, true))
   }, [])
 
   // ===== COIN FLIP =====
   const handleCoinFlip = async () => {
-    if (coinFlipping) return // Guard: não lançar se já está lançando
+    // Don't start if animation is already running (polling detected the result)
+    if (coinFlipping || state.coinResult) return
     setCoinFlipping(true)
     try {
       const res = await fetch('/api/match/action', {
@@ -238,51 +565,81 @@ export function MatchArena({
       })
       const data = await res.json()
       if (!data.ok) {
-        // Se a moeda já foi lançada pelo outro jogador, o polling detectará
-        // Não mostrar erro, apenas resetar o estado de flipping
-        if (data.error === 'Moeda já foi lançada.' || data.error?.includes('já foi lançada')) {
-          // O outro jogador lançou — o polling useEffect vai detectar
-          setCoinFlipping(false)
-          return
+        // If coin was already flipped by the other player, fetch the result and start animation
+        // The unified transition effect will handle the timeout
+        if (data.error === 'Moeda já foi lançada.') {
+          toast.info('🪙 O outro jogador já lançou a moeda!')
+          // Fetch current match state to get the coin result
+          try {
+            const stateRes = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+            const stateData = await stateRes.json()
+            if (stateData.ok && stateData.match?.coinResult) {
+              const serverState = stateData.match
+              // Set state + coinFlipping is already true — unified transition effect handles timeout
+              setState((s) => ({
+                ...s,
+                coinResult: serverState.coinResult,
+                currentPossession: serverState.currentPossession || s.currentPossession,
+                startingSide: serverState.coinResult === 'heads' ? 'HOME' : 'AWAY',
+                status: 'IN_PROGRESS',
+                matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : new Date(),
+                turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : new Date(),
+                homeScore: serverState.homeScore ?? s.homeScore,
+                awayScore: serverState.awayScore ?? s.awayScore,
+                homeProgress: serverState.homeProgress ?? s.homeProgress,
+                awayProgress: serverState.awayProgress ?? s.awayProgress,
+                turnCount: serverState.turnCount ?? s.turnCount,
+              }))
+              // coinFlipping is already true — unified transition effect handles the rest
+              return
+            }
+          } catch {
+            // If state fetch fails, fall through to error handler
+          }
         }
         toast.error(data.error || 'Erro no lançamento da moeda.')
         setCoinFlipping(false)
         return
       }
-      // Aguarda animação da moeda (2.5s)
-      setTimeout(() => {
-        setCoinFlipping(false)
-        setState((s) => ({
-          ...s,
-          status: 'IN_PROGRESS',
-          coinResult: data.coinResult,
-          startingSide: data.startingSide,
-          currentPossession: data.currentPossession,
-        }))
-        const myTurn = data.currentPossession === mySide
-        setPhase(myTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-        if (myTurn) {
-          drawKickoffActions()
-        } else {
-          // O oponente começou: simula jogada dele após 1.5s
-          setTimeout(() => simulateOpponent(), 1500)
-        }
-        setTurn(1)
-      }, 2600)
+      // Coin flip succeeded — set result in state, coinFlipping is already true
+      // The unified transition effect will schedule the 2600ms timeout
+      setState((s) => ({
+        ...s,
+        coinResult: data.coinResult,
+        startingSide: data.startingSide,
+        currentPossession: data.currentPossession,
+        status: 'IN_PROGRESS',
+        matchStartedAt: new Date(),
+        turnStartedAt: new Date(),
+      }))
+      // No separate setTimeout — unified transition effect handles the animation + transition
     } catch (err) {
       console.error('[MatchArena] coin flip error:', err)
-      toast.error('Erro de conexão ao lançar moeda. Verifique se você está logado.')
+      toast.error('Erro de conexão ao lançar moeda.')
       setCoinFlipping(false)
     }
   }
 
   // ===== PLAYER seleciona ação =====
-  const handleSelectAction = async (action: FootballAction) => {
+  const handleSelectAction = async (action: FootballAction, forcedPlayerName?: string) => {
     if (processing || diceRolling) return
     setProcessing(true)
     setDiceRolling(true)
     setLastRoll(null)
     setLastEvent(null)
+
+    // Seleciona jogador para narrativa
+    let playerName = forcedPlayerName
+    let targetPlayerName: string | undefined
+    if (!playerName) {
+      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
+      const { player, target } = pickPlayerForAction(
+        startersList.map(p => ({ name: p.name, position: p.position })),
+        action.category,
+      )
+      playerName = player
+      targetPlayerName = target
+    }
 
     // Aguarda animação do dado (1.8s)
     setTimeout(async () => {
@@ -290,9 +647,46 @@ export function MatchArena({
         const res = await fetch('/api/match/action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ matchId, type: 'PLAY_ACTION', action }),
+          body: JSON.stringify({
+            matchId,
+            type: 'PLAY_ACTION',
+            action,
+            playerName: playerName || undefined,
+            targetPlayerName: targetPlayerName || undefined,
+          }),
         })
         const data = await res.json()
+
+        // Check for time expiry or halftime from server
+        if (data.timeExpired) {
+          setState((s) => ({
+            ...s,
+            status: 'FINISHED',
+            winner: data.newState.winner,
+            matchEndReason: 'Tempo esgotado!',
+            homeScore: data.newState.homeScore,
+            awayScore: data.newState.awayScore,
+          }))
+          setDiceRolling(false)
+          setPhase('FINISHED')
+          setProcessing(false)
+          return
+        }
+
+        if (data.halftimeReached) {
+          setState((s) => ({
+            ...s,
+            status: 'HALFTIME',
+            pausedAt: new Date(),
+          }))
+          setDiceRolling(false)
+          setPhase('HALFTIME')
+          setIsHalftime(true)
+          toast('⚽ Fim do primeiro tempo! Intervalo.', { duration: 5000 })
+          setProcessing(false)
+          return
+        }
+
         if (!data.ok) {
           toast.error(data.error || 'Erro ao processar jogada.')
           setDiceRolling(false)
@@ -314,13 +708,29 @@ export function MatchArena({
           homeTeamState: data.newState.homeTeamState || s.homeTeamState,
           awayTeamState: data.newState.awayTeamState || s.awayTeamState,
           events: [...s.events, data.event],
+          matchEndReason: data.newState.matchEndReason || '',
+          turnStartedAt: new Date(),
         }))
         setDiceRolling(false)
 
         // Toast para eventos especiais
         if (data.event.isGoal) {
           const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
-          toast.success(`⚽ GOOOOL do ${scorer}!`, { duration: 4000 })
+          const goalPlayerName = data.event.playerName || scorer
+          toast.success(`⚽ GOOOOL! ${goalPlayerName} marca para ${scorer}!`, { duration: 4000 })
+
+          // Check for QUICK_MATCH win condition
+          if (gameMode === 'QUICK_MATCH') {
+            const newHomeScore = data.newState.homeScore
+            const newAwayScore = data.newState.awayScore
+            if (newHomeScore >= modeConfig.goalsToWin || newAwayScore >= modeConfig.goalsToWin) {
+              setTimeout(() => {
+                setPhase('FINISHED')
+                setProcessing(false)
+              }, 2000)
+              return
+            }
+          }
         } else if (data.event.roll.critical === 'crit_hit') {
           toast.success('🎲 CRITICAL HIT! Sucesso automático!')
         } else if (data.event.roll.critical === 'crit_fail') {
@@ -332,7 +742,6 @@ export function MatchArena({
           const pe = data.event.penaltyEvent
           setCurrentPenalty(pe)
 
-          // Show penalty toast
           const penaltyEmojis: Record<string, string> = {
             FOUL: '🟨', OFFSIDE: '🚫', CORNER: '🚩', BALL_OUT: '📤',
             YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
@@ -343,19 +752,24 @@ export function MatchArena({
             style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
           })
 
-          // Process penalty flow after showing the dice result
           setTimeout(() => {
             handlePenaltyFlow(pe)
           }, 2500)
           return
         }
 
+        // BUG FIX: Clear action cards immediately to prevent double-click during
+        // the 2.2s result display window. Previously, availableActions remained
+        // visible for ~2.2s after processing, allowing the player to submit
+        // another action in the same turn.
+        setAvailableActions([])
         // No penalty: normal flow
         proceedToNextTurn(data)
-        setProcessing(false)
+        // Keep processing=true until phase transition completes (inside proceedToNextTurn)
+        // Previously setProcessing(false) here allowed re-clicking during the 2.2s delay
       } catch (err) {
         console.error('[MatchArena] action error:', err)
-        toast.error('Erro de conexão. Verifique se você está logado.')
+        toast.error('Erro de conexão.')
         setDiceRolling(false)
         setProcessing(false)
       }
@@ -364,76 +778,81 @@ export function MatchArena({
 
   // ===== Handle penalty event flow =====
   const handlePenaltyFlow = (pe: PenaltyEvent) => {
-    // 1. VAR review (if required)
     if (pe.requiresVAR) {
       setVarEventDesc(pe.description)
       setVarOpen(true)
       setPendingPenalty(pe)
-      return // VAR will call back, then we continue
+      return
     }
     processPenaltyAfterVAR(pe)
   }
 
   const processPenaltyAfterVAR = (pe: PenaltyEvent) => {
-    // 2. Injury → substitution needed
     if (pe.type === 'INJURY' && pe.requiresSubstitution) {
       setSubIsForced(true)
-      // Find the real player from myStarters by ID, or use a random starter if no ID
       let injPlayer: SelectedPlayer | null = null
       if (pe.injuredPlayerId) {
         injPlayer = myStarters.find(p => p.id === pe.injuredPlayerId) || null
       }
       if (!injPlayer && myStarters.length > 0) {
-        // Pick a random starter as the injured player
         injPlayer = myStarters[Math.floor(Math.random() * myStarters.length)]
       }
       if (!injPlayer) {
-        // Fallback placeholder
         injPlayer = { id: pe.injuredPlayerId || 'unknown', name: 'Jogador Lesionado', fullName: 'Jogador Lesionado', team: '', position: 'MF', photoUrl: '' }
       }
       setSubInjuredPlayer(injPlayer)
       setSubOpen(true)
       return
     }
-    // 3. Free kick needed — gerar multiplicadores aleatórios para os jogadores
+    // BUG FIX: Only show FreeKickDialog if the free kick favors MY team.
+    // If the opponent is favored (e.g., I committed a foul), transition to their turn instead.
     if (pe.requiresFreeKick || pe.type === 'FOUL') {
-      setFreeKickPossession(pe.favoredPossession)
-      // Gerar multiplicadores aleatórios para cobrança de falta
-      const multipliers = generateFreeKickMultipliers(myStarters)
-      setFreeKickMultipliers(multipliers)
-      setFreeKickOpen(true)
+      if (pe.favoredPossession === mySide) {
+        setFreeKickPossession(pe.favoredPossession)
+        setFreeKickOpen(true)
+        return
+      }
+      // Free kick favors opponent — skip dialog and transition to their turn
+      finishPenaltyAndContinue()
       return
     }
-    // 4. Penalty kick → also goes to free kick flow with special context
     if (pe.type === 'PENALTY_KICK') {
-      setFreeKickPossession(pe.favoredPossession)
-      // Gerar multiplicadores aleatórios para pênalti
-      const multipliers = generateFreeKickMultipliers(myStarters)
-      setFreeKickMultipliers(multipliers)
-      setFreeKickOpen(true)
+      if (pe.favoredPossession === mySide) {
+        setFreeKickPossession(pe.favoredPossession)
+        setFreeKickOpen(true)
+        return
+      }
+      // Penalty favors opponent — skip dialog and transition to their turn
+      finishPenaltyAndContinue()
       return
     }
-    // 5. No special flow needed (offside, corner, ball_out, cards without sub)
     finishPenaltyAndContinue()
   }
 
+  // BUG FIX: Use setState updater to get fresh state (avoids stale closure).
+  // Previously, `state.currentPossession` was read from a stale closure captured
+  // inside setTimeout callbacks (e.g. 2500ms penalty delay). This caused wrong
+  // phase assignment — PLAYER_TURN when it should be OPPONENT_TURN.
   const finishPenaltyAndContinue = () => {
     setCurrentPenalty(null)
     setPendingPenalty(null)
-    if (state.status === 'FINISHED') {
-      setPhase('FINISHED')
-    } else {
-      const stillMyTurn = state.currentPossession === mySide
-      setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
-      if (stillMyTurn) {
-        drawMixedActions()
-        setTurn((t) => t + 1)
+    // Use setState updater to read fresh state instead of stale closure
+    setState((freshState) => {
+      if (freshState.status === 'FINISHED') {
+        setPhase('FINISHED')
       } else {
-        setAvailableActions([])
-        setTimeout(() => simulateOpponent(), 1500)
+        const stillMyTurn = freshState.currentPossession === mySide
+        setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+        if (stillMyTurn) {
+          drawMixedActions()
+          setTurn((t) => t + 1)
+        } else {
+          setAvailableActions([])
+        }
       }
-    }
-    setProcessing(false)
+      setProcessing(false)
+      return freshState // Return same state — we only used it to read currentPossession
+    })
   }
 
   // VAR decision callback
@@ -444,7 +863,6 @@ export function MatchArena({
     })
     if (pendingPenalty) {
       if (decision === 'OVERTURNED') {
-        // Overturned: skip the penalty (e.g., no foul, no card)
         finishPenaltyAndContinue()
       } else {
         processPenaltyAfterVAR(pendingPenalty)
@@ -454,161 +872,52 @@ export function MatchArena({
     }
   }
 
-  // Free kick play callback — agora com multiplicador
-  const handleFreeKickPlay = async (kickerId: string, action: FootballAction, multiplier: FreeKickMultiplierInfo | null) => {
+  // BUG FIX: Free kick play callback — now validates turn ownership before proceeding.
+  // Previously, this bypassed the processing/diceRolling guards blindly, allowing
+  // actions to be submitted even when it was the opponent's turn.
+  const handleFreeKickPlay = async (kickerId: string, action: FootballAction) => {
     setFreeKickOpen(false)
-    setFreeKickMultipliers([])
-
-    // Determina o bônus extra para o dado (dice_bonus) ou chance de gol (goal_chance_bonus)
-    let freeKickBonus = 0
-    if (multiplier && multiplier.type === 'dice_bonus') {
-      freeKickBonus = Math.round(multiplier.multiplier)
-    }
-
-    // Process the free kick as a normal action, but with extra bonus and multiplier info
-    if (processing || diceRolling) return
-    setProcessing(true)
-    setDiceRolling(true)
-    setLastRoll(null)
-    setLastEvent(null)
-
-    // Aguarda animação do dado (1.8s)
-    setTimeout(async () => {
-      try {
-        const res = await fetch('/api/match/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            matchId,
-            type: 'PLAY_ACTION',
-            action,
-            freeKickBonus,
-            freeKickKickerId: kickerId,
-            freeKickMultiplier: multiplier,
-          }),
-        })
-        const data = await res.json()
-        if (!data.ok) {
-          toast.error(data.error || 'Erro ao processar cobrança de falta.')
-          setDiceRolling(false)
-          setProcessing(false)
-          return
-        }
-        setLastRoll(data.event.roll)
-        setLastEvent(data.event)
-        setState((s) => ({
-          ...s,
-          currentPossession: data.newState.currentPossession,
-          homeScore: data.newState.homeScore,
-          awayScore: data.newState.awayScore,
-          homeProgress: data.newState.homeProgress,
-          awayProgress: data.newState.awayProgress,
-          turnCount: data.newState.turnCount,
-          status: data.newState.status,
-          winner: data.newState.winner,
-          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
-          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
-          events: [...s.events, data.event],
-        }))
-        setDiceRolling(false)
-
-        // Toast para eventos especiais
-        if (data.event.isGoal) {
-          const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
-          toast.success(`⚽ GOOOOL do ${scorer}! (Cobrança de falta)`, { duration: 4000 })
-        } else if (data.event.roll.critical === 'crit_hit') {
-          toast.success('🎲 CRITICAL HIT na cobrança!')
-        } else if (data.event.roll.critical === 'crit_fail') {
-          toast.error('💀 CRITICAL FAIL na cobrança!')
-        }
-
-        // Mostra info do multiplicador usado
-        if (multiplier) {
-          toast.info(`🎯 ${multiplier.playerName}: ${multiplier.description}`, { duration: 3000 })
-        }
-
-        // Handle penalty events from free kick (rare)
-        if (data.event.penaltyEvent) {
-          const pe = data.event.penaltyEvent
-          setCurrentPenalty(pe)
-          toast(`⚠️ ${pe.description}`, { duration: 4000 })
-          setTimeout(() => handlePenaltyFlow(pe), 2500)
-          return
-        }
-
-        // Normal flow after free kick
-        proceedToNextTurn(data)
-        setProcessing(false)
-      } catch (err) {
-        console.error('[MatchArena] free kick error:', err)
-        toast.error('Erro de conexão na cobrança de falta.')
-        setDiceRolling(false)
-        setProcessing(false)
-      }
-    }, 1800)
-  }
-
-  // Substitution callback — agora persiste no banco via API
-  const handleSubstitution = async (outPlayerId: string, inPlayerId: string) => {
-    setSubOpen(false)
-    try {
-      const res = await fetch('/api/match/substitution', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          matchId,
-          outPlayerId,
-          inPlayerId,
-          isForced: subIsForced,
-        }),
-      })
-      const data = await res.json()
-      if (!data.ok) {
-        // Se limite atingido por lesão, informa que joga com um a menos
-        if (data.playedWithLess) {
-          toast.warning('⚠️ Limite atingido. Time joga com um a menos.')
-        } else {
-          toast.error(data.error || 'Erro na substituição.')
-        }
+    // Validate: only proceed if it's actually my team's turn (possession)
+    // This prevents submitting a free kick when the opponent should be playing
+    setState((freshState) => {
+      if (freshState.currentPossession !== mySide) {
+        toast.error('Não é seu turno para cobrar a falta.')
         finishPenaltyAndContinue()
-        return
+        return freshState
       }
-      // Atualiza estado local com dados do banco (persistido!)
-      const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
-      const updatedTeamState: TeamMatchState = {
-        ...data.teamState,
-      }
-      setState((s) => ({
-        ...s,
-        homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
-        awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
-      }))
-      if (data.playedWithLess) {
-        toast.warning('⚠️ Substituição por lesão: limite atingido, time joga com um a menos.')
-      } else {
-        toast.success(`✅ Substituição realizada! (${data.teamState.substitutionsUsed}/${data.teamState.maxSubstitutions})`)
-      }
-      finishPenaltyAndContinue()
-    } catch (err) {
-      console.error('[MatchArena] substitution error:', err)
-      // Fallback: atualiza localmente se API falhar
-      const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
-      const updatedTeamState: TeamMatchState = {
-        ...myTeamState,
-        substitutionsUsed: myTeamState.substitutionsUsed + 1,
-        injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
-      }
-      setState((s) => ({
-        ...s,
-        homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
-        awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
-      }))
-      toast.success('✅ Substituição realizada (local).')
-      finishPenaltyAndContinue()
-    }
+      // Reset flags only after confirming it's my turn
+      setProcessing(false)
+      setDiceRolling(false)
+      // Find kicker name for narrative
+      const kicker = myStarters.find(p => p.id === kickerId)
+      const kickerName = kicker?.name
+      // Fire-and-forget — handleSelectAction manages its own state
+      handleSelectAction(action, kickerName)
+      return freshState
+    })
   }
 
-  // Continue after penalty flow (shared helper)
+  // Substitution callback
+  const handleSubstitution = (outPlayerId: string, inPlayerId: string) => {
+    setSubOpen(false)
+    const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+    const updatedTeamState: TeamMatchState = {
+      ...myTeamState,
+      substitutionsUsed: myTeamState.substitutionsUsed + 1,
+      injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
+    }
+    setState((s) => ({
+      ...s,
+      homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
+      awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
+    }))
+    toast.success('✅ Substituição realizada!')
+    finishPenaltyAndContinue()
+  }
+
+  // BUG FIX: Set processing=false AFTER phase transition (inside the timeout),
+  // not before. This eliminates the 2.2s window where processing=false but
+  // phase hasn't changed yet, which allowed players to click action cards twice.
   const proceedToNextTurn = (data: any) => {
     setTimeout(() => {
       if (data.newState.status === 'FINISHED') {
@@ -621,13 +930,14 @@ export function MatchArena({
           setTurn((t) => t + 1)
         } else {
           setAvailableActions([])
-          setTimeout(() => simulateOpponent(), 1500)
         }
       }
+      // Move processing=false here — after phase transition is complete
+      setProcessing(false)
     }, 2200)
   }
 
-  // ===== Voluntary substitution (player can request anytime) =====
+  // ===== Voluntary substitution =====
   const handleVoluntarySub = () => {
     const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
     if (myTeamState.substitutionsUsed >= myTeamState.maxSubstitutions) {
@@ -639,96 +949,294 @@ export function MatchArena({
     setSubOpen(true)
   }
 
-  // ===== Simula jogada do adversário (IA simples) =====
-  const simulateOpponent = async () => {
-    setDiceRolling(true)
-    setLastRoll(null)
-    setLastEvent(null)
-    // Sorteia uma ação aleatória (mistura de categorias)
-    const actions = sampleMixedActions(1)
-    const action = actions[0]
-    if (!action) return
+  // ===== fetchMatchState (atualiza estado local com dados do servidor) =====
+  const fetchMatchState = async () => {
+    try {
+      const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      if (!data.ok) return
 
-    setTimeout(async () => {
+      const serverState = data.match
+      
+      setState((s) => ({
+        ...s,
+        status: serverState.status,
+        currentPossession: serverState.currentPossession,
+        homeScore: serverState.homeScore,
+        awayScore: serverState.awayScore,
+        homeProgress: serverState.homeProgress,
+        awayProgress: serverState.awayProgress,
+        turnCount: serverState.turnCount,
+        winner: serverState.winner,
+        homeTeamState: serverState.homeTeamState || s.homeTeamState,
+        awayTeamState: serverState.awayTeamState || s.awayTeamState,
+        events: serverState.events || s.events,
+        coinResult: serverState.coinResult || s.coinResult,
+        matchEndReason: serverState.matchEndReason || '',
+      }))
+
+      // Update phase based on new status
+      if (serverState.status === 'COIN_FLIP' && !serverState.coinResult) {
+        setPhase('COIN_FLIP')
+      } else if (serverState.status === 'IN_PROGRESS') {
+        const myTurnNow = serverState.currentPossession === mySide
+        setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+        if (myTurnNow) drawMixedActions()
+        lastEventCountRef.current = (serverState.events || []).length
+      } else if (serverState.status === 'FINISHED') {
+        setPhase('FINISHED')
+      }
+    } catch (err) {
+      console.error('[MatchArena] fetch state error:', err)
+    }
+  }
+
+  // ===== BOT AUTO-PLAY (offline mode) =====
+  // In offline mode, when it's OPPONENT_TURN, the bot plays automatically
+  // after a short delay to simulate "thinking".
+  const botAutoPlayRef = useRef<NodeJS.Timeout | null>(null)
+
+  useEffect(() => {
+    // Only auto-play bot when offline and it's the bot's turn
+    if (!isOffline || phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS' || processing || diceRolling) {
+      if (botAutoPlayRef.current) {
+        clearTimeout(botAutoPlayRef.current)
+        botAutoPlayRef.current = null
+      }
+      return
+    }
+
+    // Bot "thinks" for 1.5-2.5 seconds before playing
+    const thinkDelay = 1500 + Math.random() * 1000
+    botAutoPlayRef.current = setTimeout(() => {
+      const actions = sampleMixedActions(1, true)
+      const action = actions[0]
+      if (action) {
+        // Use generic bot player name for narrative
+        handleSelectAction(action, 'Bot')
+      }
+    }, thinkDelay)
+
+    return () => {
+      if (botAutoPlayRef.current) {
+        clearTimeout(botAutoPlayRef.current)
+        botAutoPlayRef.current = null
+      }
+    }
+  }, [isOffline, phase, state.status, processing, diceRolling])
+
+  // ===== POLL FOR OPPONENT ACTIONS (online multiplayer only) =====
+  const opponentPollRef = useRef<NodeJS.Timeout | null>(null)
+  const lastEventCountRef = useRef(state.events.length)
+
+  useEffect(() => {
+    // In offline mode, we don't poll — the bot auto-plays instead
+    if (isOffline) {
+      if (opponentPollRef.current) {
+        clearInterval(opponentPollRef.current)
+        opponentPollRef.current = null
+      }
+      return
+    }
+
+    // Only poll when it's the opponent's turn and the game is in progress (online mode)
+    if (phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS') {
+      if (opponentPollRef.current) {
+        clearInterval(opponentPollRef.current)
+        opponentPollRef.current = null
+      }
+      return
+    }
+
+    // Poll every 2 seconds for state updates
+    opponentPollRef.current = setInterval(async () => {
       try {
-        const res = await fetch('/api/match/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ matchId, type: 'PLAY_ACTION', action }),
-        })
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
         const data = await res.json()
-        if (!data.ok) {
-          setDiceRolling(false)
-          return
-        }
-        setLastRoll(data.event.roll)
-        setLastEvent(data.event)
-        setState((s) => ({
-          ...s,
-          currentPossession: data.newState.currentPossession,
-          homeScore: data.newState.homeScore,
-          awayScore: data.newState.awayScore,
-          homeProgress: data.newState.homeProgress,
-          awayProgress: data.newState.awayProgress,
-          turnCount: data.newState.turnCount,
-          status: data.newState.status,
-          winner: data.newState.winner,
-          homeTeamState: data.newState.homeTeamState || s.homeTeamState,
-          awayTeamState: data.newState.awayTeamState || s.awayTeamState,
-          events: [...s.events, data.event],
-        }))
-        setDiceRolling(false)
+        if (!data.ok) return
 
-        if (data.event.isGoal) {
-          const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
-          toast.success(`⚽ GOOOOL do ${scorer}!`, { duration: 4000 })
-        }
+        const serverState = data.match
+        const serverEvents = serverState.events || []
+        
+        // Check if there are new events (opponent played)
+        if (serverEvents.length > lastEventCountRef.current) {
+          const newEvents = serverEvents.slice(lastEventCountRef.current)
+          const latestEvent = newEvents[newEvents.length - 1]
 
-        // Handle penalty for opponent too
-        if (data.event.penaltyEvent) {
-          const pe = data.event.penaltyEvent
-          const penaltyEmojis: Record<string, string> = {
-            FOUL: '🟨', OFFSIDE: '🚫', CORNER: '🚩', BALL_OUT: '📤',
-            YELLOW_CARD: '🟡', RED_CARD: '🔴', INJURY: '🏥',
-            PENALTY_KICK: '⚪', VAR_REVIEW: '📺',
+          // Update state with server data
+          setState((s) => ({
+            ...s,
+            currentPossession: serverState.currentPossession,
+            homeScore: serverState.homeScore,
+            awayScore: serverState.awayScore,
+            homeProgress: serverState.homeProgress,
+            awayProgress: serverState.awayProgress,
+            turnCount: serverState.turnCount,
+            status: serverState.status,
+            winner: serverState.winner,
+            homeTeamState: serverState.homeTeamState || s.homeTeamState,
+            awayTeamState: serverState.awayTeamState || s.awayTeamState,
+            events: [...s.events, ...newEvents],
+            matchEndReason: serverState.matchEndReason || '',
+          }))
+          
+          lastEventCountRef.current = serverEvents.length
+
+          // Show last event
+          if (latestEvent) {
+            setLastEvent(latestEvent)
+            if (latestEvent.roll) setLastRoll(latestEvent.roll)
+
+            if (latestEvent.isGoal) {
+              const scorer = latestEvent.possession === 'HOME' ? homeUser.username : awayUser.username
+              toast.success(`⚽ GOOOOL! ${latestEvent.playerName || scorer} marca!`, { duration: 4000 })
+              
+              if (gameMode === 'QUICK_MATCH') {
+                if (serverState.homeScore >= modeConfig.goalsToWin || serverState.awayScore >= modeConfig.goalsToWin) {
+                  setTimeout(() => setPhase('FINISHED'), 2000)
+                  return
+                }
+              }
+            }
           }
-          toast(`${penaltyEmojis[pe.type] ?? '⚠️'} ${pe.description}`, {
-            duration: 4000,
-            style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
-          })
-          // For opponent, auto-process penalties (no UI)
-          if (pe.type === 'RED_CARD') {
-            setState((s) => ({
-              ...s,
-              awayTeamState: {
-                ...s.awayTeamState,
-                redCards: s.awayTeamState.redCards + 1,
-              },
-            }))
-          }
-        }
 
-        setTimeout(() => {
-          if (data.newState.status === 'FINISHED') {
+          // Check for penalty events
+          if (latestEvent?.penaltyEvent) {
+            const pe = latestEvent.penaltyEvent
+            setCurrentPenalty(pe)
+            toast(`${pe.description}`, { duration: 4000 })
+            setTimeout(() => handlePenaltyFlow(pe), 2500)
+            return
+          }
+
+          // Determine whose turn it is now
+          if (serverState.status === 'FINISHED') {
             setPhase('FINISHED')
+            setProcessing(false)
           } else {
-            const myTurnNow = data.newState.currentPossession === mySide
+            const myTurnNow = serverState.currentPossession === mySide
             setPhase(myTurnNow ? 'PLAYER_TURN' : 'OPPONENT_TURN')
             if (myTurnNow) {
               drawMixedActions()
               setTurn((t) => t + 1)
-            } else {
-              setTimeout(() => simulateOpponent(), 1500)
             }
+            setProcessing(false)
           }
-          setProcessing(false)
-        }, 2200)
+        }
       } catch (err) {
-        console.error('[MatchArena] opponent action error:', err)
-        setDiceRolling(false)
+        console.error('[MatchArena] opponent poll error:', err)
       }
-    }, 1800)
-  }
+    }, 2000)
+
+    return () => {
+      if (opponentPollRef.current) {
+        clearInterval(opponentPollRef.current)
+        opponentPollRef.current = null
+      }
+    }
+  }, [phase, state.status, matchId, mySide, gameMode, modeConfig.goalsToWin])
+
+  // ===== Poll for opponent joining (WAITING phase) =====
+  useEffect(() => {
+    if (phase !== 'WAITING') return
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!data.ok) return
+
+        const serverState = data.match
+        if (serverState.status === 'COIN_FLIP' || serverState.status === 'IN_PROGRESS') {
+          // Opponent has joined! Set coin data and start animation.
+          // The unified transition effect will handle the 2600ms timeout.
+          console.log('[MatchArena] WAITING poll detected', serverState.status, {
+            coinResult: serverState.coinResult, currentPossession: serverState.currentPossession
+          })
+          setState((s) => ({
+            ...s,
+            status: serverState.status,
+            currentPossession: serverState.currentPossession || s.currentPossession,
+            coinResult: serverState.coinResult || s.coinResult,
+            startingSide: serverState.coinResult === 'heads' ? 'HOME' : (serverState.coinResult === 'tails' ? 'AWAY' : s.startingSide),
+            matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : s.matchStartedAt,
+            turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : s.turnStartedAt,
+            homeScore: serverState.homeScore ?? s.homeScore,
+            awayScore: serverState.awayScore ?? s.awayScore,
+            homeProgress: serverState.homeProgress ?? s.homeProgress,
+            awayProgress: serverState.awayProgress ?? s.awayProgress,
+            turnCount: serverState.turnCount ?? s.turnCount,
+          }))
+          
+          if (serverState.status === 'COIN_FLIP') {
+            setPhase('COIN_FLIP')
+            toast.success('🎉 Oponente entrou! A partida vai começar!')
+          } else if (serverState.status === 'IN_PROGRESS') {
+            // Game already started (coin auto-flipped on join)
+            // Set phase to COIN_FLIP and coinFlipping=true so the animation shows,
+            // then the unified transition effect handles the 2600ms timeout
+            setPhase('COIN_FLIP')
+            setCoinFlipping(true)
+            // No separate setTimeout here — unified transition effect handles it
+          }
+        }
+      } catch {
+        // Silently retry
+      }
+    }, 3000)
+
+    return () => clearInterval(pollInterval)
+  }, [phase, matchId, mySide])
+
+  // ===== Poll for coin flip result (COIN_FLIP phase, when other player already flipped) =====
+  useEffect(() => {
+    // Only poll during COIN_FLIP phase, in online mode, when we haven't started animation yet
+    if (phase !== 'COIN_FLIP' || isOffline || coinFlipping || state.coinResult) return
+
+    const coinPollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/match/state?id=${matchId}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!data.ok) return
+
+        const serverState = data.match
+
+        // The other player has already flipped the coin — set state and start animation.
+        // The unified transition effect will handle the 2600ms timeout.
+        if (serverState.status === 'IN_PROGRESS' && serverState.coinResult) {
+          clearInterval(coinPollInterval)
+          console.log('[MatchArena] COIN_FLIP poll detected coin result', {
+            coinResult: serverState.coinResult, currentPossession: serverState.currentPossession
+          })
+          // Set state + start animation — unified transition effect handles the timeout
+          setState((s) => ({
+            ...s,
+            coinResult: serverState.coinResult,
+            currentPossession: serverState.currentPossession || s.currentPossession,
+            startingSide: serverState.coinResult === 'heads' ? 'HOME' : 'AWAY',
+            status: 'IN_PROGRESS',
+            matchStartedAt: serverState.matchStartedAt ? new Date(serverState.matchStartedAt) : new Date(),
+            turnStartedAt: serverState.turnStartedAt ? new Date(serverState.turnStartedAt) : new Date(),
+            homeScore: serverState.homeScore ?? s.homeScore,
+            awayScore: serverState.awayScore ?? s.awayScore,
+            homeProgress: serverState.homeProgress ?? s.homeProgress,
+            awayProgress: serverState.awayProgress ?? s.awayProgress,
+            turnCount: serverState.turnCount ?? s.turnCount,
+          }))
+          setCoinFlipping(true)
+          // No separate setTimeout — unified transition effect handles the animation + transition
+        }
+      } catch (err) {
+        console.error('[MatchArena] coin flip poll error:', err)
+      }
+    }, 2000) // Poll every 2 seconds
+
+    return () => clearInterval(coinPollInterval)
+  }, [phase, isOffline, coinFlipping, state.coinResult, matchId, mySide])
 
   // ===== Renderização =====
   const myScore = isHome ? state.homeScore : state.awayScore
@@ -737,6 +1245,16 @@ export function MatchArena({
   const oppProgress = isHome ? state.awayProgress : state.homeProgress
   const myPossession = state.currentPossession === mySide
   const winnerIsMe = state.winner === mySide
+
+  // Format remaining time for display
+  const formatRemainingTime = (seconds: number | null) => {
+    if (seconds === null) return null
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+
+  const isTimerUrgent = remainingSeconds !== null && remainingSeconds <= 30
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950 text-white">
@@ -749,9 +1267,32 @@ export function MatchArena({
           </Button>
           <div className="flex items-center gap-2">
             <Swords className="h-5 w-5 text-amber-400" />
-            <span className="font-bold">Partida RPG</span>
+            <span className="font-bold">{modeConfig.emoji} {modeConfig.label}</span>
+            {/* Timer badge */}
+            {modeConfig.durationMs > 0 && state.matchStartedAt && (
+              <Badge
+                variant="outline"
+                className={`font-mono text-sm ${
+                  isTimerUrgent
+                    ? 'border-red-500 bg-red-950/50 text-red-400 animate-pulse'
+                    : 'border-emerald-700 text-emerald-300'
+                }`}
+              >
+                <Clock className="mr-1 h-3 w-3" />
+                {matchTimeDisplay}
+                {remainingSeconds !== null && (
+                  <span className="ml-1 text-[10px] opacity-70">({formatRemainingTime(remainingSeconds)})</span>
+                )}
+              </Badge>
+            )}
+            {/* QUICK_MATCH: show goal target */}
+            {gameMode === 'QUICK_MATCH' && (
+              <Badge variant="outline" className="border-amber-700 text-amber-300">
+                ⚽ Primeiro a {modeConfig.goalsToWin}
+              </Badge>
+            )}
             <Badge variant="outline" className="border-emerald-700 text-emerald-300">
-              Turno {turn} / {state.maxTurns}
+              Turno {turn}
             </Badge>
             {/* Match stats badges */}
             <Badge variant="outline" className="border-yellow-700 text-yellow-300 text-[10px]">
@@ -764,6 +1305,28 @@ export function MatchArena({
               🔄 {isHome ? state.homeTeamState.substitutionsUsed : state.awayTeamState.substitutionsUsed}/5
             </Badge>
           </div>
+          {/* Pause/Resume button */}
+          {(phase === 'PLAYER_TURN' || phase === 'OPPONENT_TURN' || phase === 'PAUSED') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={isPaused ? handleResume : handlePause}
+              disabled={pausing || resuming}
+              className={`${
+                isPaused
+                  ? 'border-emerald-600 text-emerald-300 hover:bg-emerald-900/30'
+                  : 'border-amber-600 text-amber-300 hover:bg-amber-900/30'
+              }`}
+            >
+              {pausing || resuming ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : isPaused ? (
+                <><Play className="h-4 w-4" /> Retomar</>
+              ) : (
+                <><Pause className="h-4 w-4" /> Pausar</>
+              )}
+            </Button>
+          )}
         </div>
       </header>
 
@@ -775,7 +1338,6 @@ export function MatchArena({
           className="mb-6 rounded-2xl border border-emerald-900/50 bg-gray-900/60 p-4"
         >
           <div className="flex items-center justify-between gap-4">
-            {/* Jogador HOME */}
             <PlayerSide
               user={homeUser}
               isMe={isHome}
@@ -783,15 +1345,21 @@ export function MatchArena({
               score={state.homeScore}
               progress={state.homeProgress}
               color="emerald"
+              goalsToWin={gameMode === 'QUICK_MATCH' ? modeConfig.goalsToWin : 0}
             />
 
             {/* VS */}
             <div className="flex flex-col items-center">
               <span className="text-2xl font-black text-amber-400">VS</span>
               <span className="text-xs text-gray-500">{state.turnCount} jogadas</span>
+              {/* Turn timer */}
+              {phase === 'PLAYER_TURN' && !isPaused && (
+                <div className={`mt-1 text-xs font-mono ${turnTimerSeconds <= 10 ? 'text-red-400 animate-pulse' : 'text-gray-400'}`}>
+                  ⏳ {turnTimerSeconds}s
+                </div>
+              )}
             </div>
 
-            {/* Jogador AWAY */}
             <PlayerSide
               user={awayUser}
               isMe={!isHome}
@@ -799,11 +1367,12 @@ export function MatchArena({
               score={state.awayScore}
               progress={state.awayProgress}
               color="sky"
+              goalsToWin={gameMode === 'QUICK_MATCH' ? modeConfig.goalsToWin : 0}
             />
           </div>
 
           {/* Barra de progresso do campo */}
-          {phase !== 'COIN_FLIP' && phase !== 'FINISHED' && (
+          {phase !== 'COIN_FLIP' && phase !== 'FINISHED' && phase !== 'PAUSED' && phase !== 'HALFTIME' && phase !== 'WAITING' && (
             <div className="mt-4 flex items-center gap-2 text-xs">
               <span className="text-emerald-400">⚽ {homeUser.username}</span>
               <div className="relative flex-1">
@@ -838,20 +1407,48 @@ export function MatchArena({
                     <Coins className="h-16 w-16 text-amber-400" />
                   </motion.div>
                   <div className="text-center">
-                    <h2 className="text-2xl font-bold text-amber-400">Pronto para começar?</h2>
-                    <p className="mt-1 text-sm text-gray-400">
-                      O juiz vai lançar a moeda para decidir quem sai com a bola.
-                    </p>
+                    {isOffline ? (
+                      <>
+                        <h2 className="text-2xl font-bold text-amber-400">Pronto para começar?</h2>
+                        <p className="mt-1 text-sm text-gray-400">
+                          O juiz vai lançar a moeda para decidir quem sai com a bola.
+                        </p>
+                        <p className="mt-2 text-xs text-amber-300/80">
+                          {modeConfig.emoji} Modo: {modeConfig.label}
+                          {modeConfig.durationMs > 0 && ` — ${modeConfig.durationMs / 60000} minutos`}
+                          {gameMode === 'QUICK_MATCH' && ` — Primeiro a ${modeConfig.goalsToWin} gols`}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <h2 className="text-2xl font-bold text-amber-400">⏳ Aguardando início...</h2>
+                        <p className="mt-1 text-sm text-gray-400">
+                          A moeda será lançada automaticamente quando o oponente estiver conectado.
+                        </p>
+                        <p className="mt-2 text-xs text-amber-300/80">
+                          {modeConfig.emoji} Modo: {modeConfig.label}
+                        </p>
+                      </>
+                    )}
                   </div>
-                  <Button
-                    onClick={handleCoinFlip}
-                    disabled={coinFlipping}
-                    size="lg"
-                    className="gap-2 bg-amber-500 text-black hover:bg-amber-400"
-                  >
-                    {coinFlipping ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
-                    Lançar Moeda
-                  </Button>
+                  {/* Only show "Lançar Moeda" button in offline mode */}
+                  {isOffline && (
+                    <Button
+                      onClick={handleCoinFlip}
+                      disabled={coinFlipping}
+                      size="lg"
+                      className="gap-2 bg-amber-500 text-black hover:bg-amber-400"
+                    >
+                      {coinFlipping ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                      Lançar Moeda
+                    </Button>
+                  )}
+                  {!isOffline && (
+                    <div className="flex items-center gap-2 text-sm text-gray-400">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Verificando...
+                    </div>
+                  )}
                 </div>
               ) : (
                 <CoinFlip
@@ -865,11 +1462,129 @@ export function MatchArena({
           </Card>
         )}
 
+        {/* ===== FASE: WAITING (esperando oponente) ===== */}
+        {phase === 'WAITING' && (
+          <Card className="border-amber-500/30 bg-gray-900/60">
+            <CardContent className="flex flex-col items-center gap-6 p-8">
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring' }}
+              >
+                <Users className="h-20 w-20 text-amber-400" />
+              </motion.div>
+              <div className="text-center">
+                <h2 className="text-3xl font-bold text-amber-400">⏳ Esperando oponente</h2>
+                <p className="mt-2 text-sm text-gray-400">
+                  Compartilhe o link com um amigo para jogar ao vivo!
+                </p>
+              </div>
+              <Button
+                onClick={() => setInviteDialogOpen(true)}
+                className="gap-2 bg-amber-500 text-black hover:bg-amber-400"
+                size="lg"
+              >
+                <Share2 className="h-5 w-5" />
+                Convide um jogador
+              </Button>
+              
+              {/* MatchInviteDialog */}
+              {inviteCode && (
+                <MatchInviteDialog
+                  inviteCode={inviteCode}
+                  matchId={matchId}
+                  gameMode={modeConfig.label}
+                  open={inviteDialogOpen}
+                  onClose={() => setInviteDialogOpen(false)}
+                  onOpponentJoined={() => {
+                    setInviteDialogOpen(false)
+                    // Refresh match state from server
+                    fetchMatchState()
+                  }}
+                />
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ===== FASE: PAUSED ===== */}
+        {phase === 'PAUSED' && (
+          <Card className="border-amber-500/40 bg-gray-900/60">
+            <CardContent className="flex flex-col items-center gap-6 p-8">
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring' }}
+              >
+                <Pause className="h-20 w-20 text-amber-400" />
+              </motion.div>
+              <div className="text-center">
+                <h2 className="text-3xl font-bold text-amber-400">⏸️ Partida Pausada</h2>
+                <p className="mt-2 text-sm text-gray-400">
+                  O cronômetro está parado. Clique em &quot;Retomar&quot; para continuar.
+                </p>
+                <p className="mt-1 text-xs text-gray-500">
+                  Placar: <strong className="text-emerald-400">{homeUser.username} {state.homeScore}</strong> ·{' '}
+                  <strong className="text-sky-400">{state.awayScore} {awayUser.username}</strong>
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <Button onClick={handleResume} disabled={resuming} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
+                  {resuming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  Retomar Partida
+                </Button>
+                <Button variant="outline" onClick={onExit} className="border-gray-600 text-gray-300">
+                  <ArrowLeft className="h-4 w-4" />
+                  Sair
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ===== FASE: HALFTIME ===== */}
+        {phase === 'HALFTIME' && (
+          <Card className="border-amber-500/40 bg-gray-900/60">
+            <CardContent className="flex flex-col items-center gap-6 p-8">
+              <motion.div
+                initial={{ scale: 0, rotate: -180 }}
+                animate={{ scale: 1, rotate: 0 }}
+                transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+              >
+                <Coffee className="h-20 w-20 text-amber-400" />
+              </motion.div>
+              <div className="text-center">
+                <h2 className="text-3xl font-bold text-amber-400">⚽ Intervalo</h2>
+                <p className="mt-2 text-sm text-gray-400">
+                  Fim do primeiro tempo! 45:00 — Intervalo de 15 minutos.
+                </p>
+                <p className="mt-1 text-sm text-gray-300">
+                  Placar: <strong className="text-emerald-400">{homeUser.username} {state.homeScore}</strong> ·{' '}
+                  <strong className="text-sky-400">{state.awayScore} {awayUser.username}</strong>
+                </p>
+                <p className="mt-2 text-xs text-gray-500">
+                  Clique em &quot;Iniciar 2º Tempo&quot; para continuar. O intervalo é opcional.
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <Button onClick={handleResume} disabled={resuming} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
+                  {resuming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  Iniciar 2º Tempo
+                </Button>
+                <Button variant="outline" onClick={handlePause} className="border-gray-600 text-gray-300">
+                  <Pause className="h-4 w-4" />
+                  Pausar
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* ===== FASE: PLAYER TURN ou OPPONENT TURN ===== */}
         {(phase === 'PLAYER_TURN' || phase === 'OPPONENT_TURN') && (
           <div className="space-y-4">
-            {/* Indicador de quem joga */}
-            <div className="flex items-center justify-center">
+            {/* Indicador de quem joga + turn timer */}
+            <div className="flex items-center justify-center gap-3">
               <motion.div
                 key={phase}
                 initial={{ opacity: 0, y: -10 }}
@@ -884,6 +1599,13 @@ export function MatchArena({
                   ? `🎯 Sua vez, ${myUser.username}!`
                   : `⏳ ${oppUser.username} está jogando...`}
               </motion.div>
+              {phase === 'PLAYER_TURN' && !isPaused && (
+                <div className={`rounded-full px-3 py-1 text-xs font-mono ${
+                  turnTimerSeconds <= 10 ? 'bg-red-500/20 text-red-400 animate-pulse' : 'bg-gray-800 text-gray-400'
+                }`}>
+                  ⏳ {turnTimerSeconds}s restantes
+                </div>
+              )}
             </div>
 
             {/* Dice Roll (se rolando ou com resultado) */}
@@ -901,6 +1623,17 @@ export function MatchArena({
                         <span className="text-2xl">{lastEvent.action.emoji}</span>{' '}
                         <strong className="text-white">{lastEvent.action.name}</strong>
                       </p>
+                      {/* Narrativa com nome do jogador */}
+                      {lastEvent.narrative && (
+                        <p className="mt-1 text-sm font-medium text-amber-200">
+                          {lastEvent.narrative}
+                        </p>
+                      )}
+                      {!lastEvent.narrative && lastEvent.playerName && (
+                        <p className="mt-1 text-xs text-gray-300">
+                          {lastEvent.playerName}{lastEvent.targetPlayerName ? ` para ${lastEvent.targetPlayerName}` : ''}
+                        </p>
+                      )}
                       <p className="mt-1 text-xs text-gray-400">
                         {lastEvent.isGoal ? (
                           <span className="text-amber-400">⚽ GOL! Progresso zerado, bola para o adversário.</span>
@@ -920,7 +1653,7 @@ export function MatchArena({
               </Card>
             )}
 
-            {/* Action cards (somente no PLAYER_TURN e se não estiver processando) */}
+            {/* Action cards */}
             {phase === 'PLAYER_TURN' && !processing && availableActions.length > 0 && (
               <Card className="border-emerald-500/30 bg-gray-900/60">
                 <CardHeader className="pb-3">
@@ -929,7 +1662,6 @@ export function MatchArena({
                       <Swords className="h-5 w-5" />
                       {turn === 1 ? 'Escolha sua saída de bola' : 'Escolha sua próxima jogada'}
                     </CardTitle>
-                    {/* Voluntary sub button */}
                     <Button
                       variant="outline"
                       size="sm"
@@ -962,12 +1694,30 @@ export function MatchArena({
               </Card>
             )}
 
-            {/* Loading do oponente */}
+            {/* ===== OPPONENT_TURN (esperando jogada do oponente) ===== */}
             {phase === 'OPPONENT_TURN' && (
               <Card className="border-sky-500/30 bg-gray-900/60">
-                <CardContent className="flex items-center justify-center gap-3 p-8">
-                  <Loader2 className="h-5 w-5 animate-spin text-sky-400" />
-                  <span className="text-sky-300">{oppUser.username} está pensando...</span>
+                <CardContent className="flex flex-col items-center gap-6 p-8">
+                  <motion.div
+                    animate={{ rotate: [0, 10, -10, 0] }}
+                    transition={{ duration: 2, repeat: Infinity }}
+                  >
+                    <Loader2 className="h-16 w-16 text-sky-400" />
+                  </motion.div>
+                  <div className="text-center">
+                    <h2 className="text-xl font-bold text-sky-400">
+                      🎲 {oppUser.username} está jogando...
+                    </h2>
+                    <p className="mt-1 text-sm text-gray-400">
+                      Esperando a jogada do oponente. A partida será atualizada automaticamente.
+                    </p>
+                    {lastEvent && (
+                      <div className="mt-3 rounded-lg bg-gray-800/50 p-3 text-xs text-gray-300">
+                        Última jogada: {lastEvent.action?.emoji} {lastEvent.action?.name} — 
+                        {lastEvent.roll?.success ? 'Sucesso!' : 'Falha!'}
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             )}
@@ -989,12 +1739,16 @@ export function MatchArena({
                 <h2 className="text-3xl font-bold text-amber-400">
                   {state.winner === 'DRAW' ? 'EMPATE!' : winnerIsMe ? 'VITÓRIA!' : 'DERROTA'}
                 </h2>
+                {state.matchEndReason && (
+                  <p className="mt-1 text-sm text-gray-400">{state.matchEndReason}</p>
+                )}
                 <p className="mt-2 text-sm text-gray-400">
                   Placar final: <strong className="text-emerald-400">{homeUser.username} {state.homeScore}</strong> ·{' '}
                   <strong className="text-sky-400">{state.awayScore} {awayUser.username}</strong>
                 </p>
                 <p className="mt-1 text-xs text-gray-500">
-                  {winnerIsMe ? '+50 XP' : state.winner === 'DRAW' ? '+20 XP' : '+10 XP'}
+                  {winnerIsMe ? `+${modeConfig.xpWin} XP` : state.winner === 'DRAW' ? `+${modeConfig.xpDraw} XP` : `+${modeConfig.xpLose} XP`}
+                  {' '}({modeConfig.emoji} {modeConfig.label})
                 </p>
               </div>
               <Button onClick={onExit} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
@@ -1030,7 +1784,16 @@ export function MatchArena({
                           <strong className={e.possession === 'HOME' ? 'text-emerald-400' : 'text-sky-400'}>
                             {scorer.username}
                           </strong>{' '}
-                          fez <strong>{e.action.name}</strong>
+                          {e.narrative ? (
+                            <span className="text-amber-200">{e.narrative}</span>
+                          ) : (
+                            <>
+                              {e.playerName && (
+                                <span className="text-amber-300">{e.playerName} </span>
+                              )}
+                              fez <strong>{e.action.name}</strong>
+                            </>
+                          )}
                         </span>
                         <span className="font-mono text-gray-400">
                           🎲{e.roll.dice}+{e.roll.bonus}={e.roll.total}
@@ -1067,7 +1830,7 @@ export function MatchArena({
         )}
       </main>
 
-      {/* ===== MODALS: VAR, Substitution, Free Kick ===== */}
+      {/* ===== MODALS ===== */}
       <VARReview
         open={varOpen}
         onClose={handleVARDecision}
@@ -1086,13 +1849,16 @@ export function MatchArena({
         isForced={subIsForced}
       />
 
+      {/* BUG FIX: Only render FreeKickDialog if it's my team's free kick.
+          Previously, this dialog was always rendered using myStarters regardless
+          of who was favored, causing the fouling player to select a kicker for
+          the opponent's free kick. */}
       <FreeKickDialog
         open={freeKickOpen}
-        onClose={() => { setFreeKickOpen(false); setFreeKickMultipliers([]); finishPenaltyAndContinue() }}
+        onClose={() => { setFreeKickOpen(false); finishPenaltyAndContinue() }}
         onPlayFreeKick={handleFreeKickPlay}
         fieldPlayers={myStarters}
         possession={freeKickPossession}
-        multipliers={freeKickMultipliers}
       />
     </div>
   )
@@ -1102,7 +1868,7 @@ export function MatchArena({
 // PlayerSide - Subcomponente: avatar + score + posse de bola
 // =====================================================================
 function PlayerSide({
-  user, isMe, hasPossession, score, progress, color,
+  user, isMe, hasPossession, score, progress, color, goalsToWin,
 }: {
   user: Player
   isMe: boolean
@@ -1110,6 +1876,7 @@ function PlayerSide({
   score: number
   progress: number
   color: 'emerald' | 'sky'
+  goalsToWin?: number
 }) {
   const initials = (user.displayName || user.username).slice(0, 2).toUpperCase()
   const colorClass = color === 'emerald' ? 'emerald' : 'sky'
@@ -1140,9 +1907,14 @@ function PlayerSide({
           {user.username}
           {isMe && <span className="ml-1 text-[10px] text-gray-500">(você)</span>}
         </p>
-        <p className={`text-3xl font-black ${color === 'emerald' ? 'text-emerald-400' : 'text-sky-400'}`}>
-          {score}
-        </p>
+        <div className="flex items-center justify-center gap-1">
+          <p className={`text-3xl font-black ${color === 'emerald' ? 'text-emerald-400' : 'text-sky-400'}`}>
+            {score}
+          </p>
+          {goalsToWin && goalsToWin > 0 && (
+            <span className="text-[10px] text-gray-500">/{goalsToWin}</span>
+          )}
+        </div>
       </div>
     </motion.div>
   )
