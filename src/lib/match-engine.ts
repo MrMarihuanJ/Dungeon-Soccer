@@ -373,6 +373,7 @@ export function generateFreeKickMultipliers(
       description,
     }
   })
+<<<<<<< HEAD
 }
 
 // =====================================================================
@@ -486,6 +487,8 @@ export function resolveDefensivePlay(
     playerName,
     critical,
   }
+=======
+>>>>>>> ff5ec2dd6be49bb4c90ea25f9e02da851b1c9bd1
 }
 
 // ===== PENALTY/FOUL EVENTS =====

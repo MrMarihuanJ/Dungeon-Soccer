@@ -39,7 +39,10 @@ import {
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
   type PenaltyEvent, type TeamMatchState, type GameMode, type FreeKickMultiplier,
+<<<<<<< HEAD
   type DefensivePlayResult,
+=======
+>>>>>>> ff5ec2dd6be49bb4c90ea25f9e02da851b1c9bd1
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
   pickPlayerForAction, shouldOfferDefensivePlay,
