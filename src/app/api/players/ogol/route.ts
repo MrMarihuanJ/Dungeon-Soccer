@@ -29,7 +29,7 @@ async function searchOgolProfile(playerName: string, team?: string | null): Prom
   try {
     // Dynamic import to avoid issues if SDK is not available
     const ZAI = (await import('z-ai-web-dev-sdk')).default
-    const zai = await ZAI.create()
+    const zai = new ZAI({})
 
     const query = team
       ? `site:ogol.com.br ${playerName} ${team}`
