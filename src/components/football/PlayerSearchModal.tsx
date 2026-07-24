@@ -9,6 +9,7 @@
 //   - Lista de sugestões com foto, nome e time
 //   - Filtro de posição (opcional) - default = posição do slot
 //   - Seleção do jogador fecha o modal e dispara callback
+//   - Fontes: API-Football, Transfermarkt, ZAI web, TheSportsDB, Local
 // =====================================================================
 
 import { useEffect, useState, useCallback, useRef } from 'react'
@@ -33,7 +34,7 @@ interface ApiPlayer {
   photoUrl: string
   nationality?: string | null
   shirtNumber?: number | null
-  source?: 'thesportsdb' | 'wikipedia' | 'local'
+  source?: 'api_football' | 'transfermarkt' | 'thesportsdb' | 'local'
   overall?: number
   age?: number
   pace?: number
@@ -51,7 +52,7 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   position: FieldPosition | null
-  selectedPlayerIds: string[] // IDs já selecionados (titulares + reservas)
+  selectedPlayerIds: string[]
   onSelect: (player: SelectedPlayer) => void
   gameMode?: 'DREAM_TEAM' | 'WORLD_CUP'
 }
@@ -70,7 +71,6 @@ export function PlayerSearchModal({
   const [error, setError] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Posição-alvo no banco (GK/DF/MF/FW) baseada no role tático do slot
   const targetPos = position ? ROLE_TO_POSITION[position.role] : null
 
   const runSearch = useCallback(
@@ -151,6 +151,22 @@ export function PlayerSearchModal({
     onOpenChange(false)
   }
 
+  // Source badge colors
+  const getSourceBadge = (source: string) => {
+    switch (source) {
+      case 'api_football':
+        return { label: 'API-Football', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', emoji: '⚽' }
+      case 'transfermarkt':
+        return { label: 'Transfermarkt', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300', emoji: '💰' }
+      case 'thesportsdb':
+        return { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300', emoji: '🔍' }
+      case 'local':
+        return { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', emoji: '🏠' }
+      default:
+        return { label: 'Web', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300', emoji: '🌐' }
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md sm:max-w-lg">
@@ -161,8 +177,8 @@ export function PlayerSearchModal({
           </DialogTitle>
           <DialogDescription>
             {position
-              ? `Busca mundial em tempo real via TheSportsDB + Wikipedia + banco local. Filtro automático: ${targetPos}.`
-              : 'Busca mundial em tempo real via TheSportsDB + Wikipedia + banco local. Digite o nome de qualquer jogador do mundo.'}
+              ? `Busca mundial em tempo real via API-Football + Transfermarkt + banco local. Filtro automático: ${targetPos}.`
+              : 'Busca mundial em tempo real via API-Football + Transfermarkt + banco local. Digite o nome de qualquer jogador do mundo.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -256,12 +272,7 @@ export function PlayerSearchModal({
                 <ul className="space-y-1">
                   {results.map((p) => {
                     const isSelected = selectedPlayerIds.includes(p.id)
-                    const sourceBadge = p.source === 'thesportsdb'
-                      ? { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
-                      : p.source === 'wikipedia'
-                        ? { label: 'Wikipedia', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
-                        : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
-                    // Overall badge estilo FIFA
+                    const sourceBadge = getSourceBadge(p.source || 'local')
                     const overall = p.overall ?? 0
                     const overallTier = overall >= 90 ? 'bg-gradient-to-br from-yellow-400 to-amber-600 text-amber-900'
                       : overall >= 84 ? 'bg-gradient-to-br from-purple-500 to-purple-700 text-white'
@@ -310,7 +321,7 @@ export function PlayerSearchModal({
                                 </span>
                               )}
                               <span className={`rounded px-1 text-[9px] font-medium ${sourceBadge.cls}`}>
-                                {sourceBadge.label}
+                                {sourceBadge.emoji} {sourceBadge.label}
                               </span>
                             </div>
                             <div className="truncate text-xs text-gray-500 dark:text-gray-400">
@@ -357,7 +368,7 @@ export function PlayerSearchModal({
           </ScrollArea>
 
           <p className="text-center text-[11px] text-gray-400">
-            🌍 Busca mundial em tempo real · TheSportsDB + Wikipedia + banco local + ogol.com.br
+            🌍 Busca mundial em tempo real · API-Football + Transfermarkt + banco local + ogol.com.br
           </p>
         </div>
       </DialogContent>
