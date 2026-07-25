@@ -4,12 +4,16 @@
 // Body:
 //   { matchId, outPlayerId, inPlayerId, isForced }
 //
-// Atualiza o teamStateJson (homeTeamStateJson ou awayTeamStateJson)
-// incrementando substitutionsUsed e removendo o jogador lesionado
-// da lista de injuredPlayers, se houver.
+// CORREÇÃO 1: Após todas as substituições terem sido usadas (5/5),
+//   nenhuma substituição adicional pode ocorrer, mesmo por lesão.
+//   Se um jogador se machucar e todas as 5 substituições já tenham
+//   sido feitas, o time deve ficar com um jogador a menos na partida.
+//   O jogador lesionado sai do campo, mas nenhum reserva entra.
 //
-// Isso garante que a contagem de substituições seja persistida corretamente
-// entre jogadas, inclusive quando a substituição é por lesão.
+// CORREÇÃO 2: A interface de substituição agora permite ao usuário
+//   selecionar explicitamente a posição e o jogador que sai, e
+//   escolher o reserva que entra. Os IDs outPlayerId e inPlayerId
+//   são passados de forma explícita pelo SubstitutionModal renovado.
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
