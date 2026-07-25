@@ -40,6 +40,7 @@ import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
   type PenaltyEvent, type TeamMatchState, type GameMode, type FreeKickMultiplier,
   type DefensivePlayResult,
+>>>>>>> 862a68e2cf35b55530ce36c153df76b202c18b33
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
   pickPlayerForAction, shouldOfferDefensivePlay,
