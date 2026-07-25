@@ -1,5 +1,5 @@
 // =====================================================================
-// Player Rating Library — Sistema de avaliação estilo FIFA
+// Player Rating Library — Sistema de avaliação estilo FIFA (v2)
 // --------------------------------------------------------------------
 // Cada jogador tem:
 //   - Overall (0-99): nota geral
@@ -9,12 +9,14 @@
 //   - isRetired / isInactive: flags para filtrar modos de jogo
 //
 // Multiplicador final (estilo FIFA chemistry):
-//   effectiveOverall = overall * ageMultiplier * leagueMultiplier * formMultiplier
+//   effectiveOverall = overall * ageMultiplier * leagueMultiplier * skillMultiplier
 //
-// Team Rating (estádio FIFA):
-//   - Média dos 11 titulares
-//   - Bônus porDepth (reservas)
-//   - Bônus por química (nacionalidade/times iguais - TODO)
+// Team Rating v2 — agora inclui:
+//   - Média dos 11 titulares (com multiplicadores)
+//   - Bônus por Depth (reservas — 30% para top 5, +10% para reserva 6-7)
+//   - Bônus por química (nacionalidade/time iguais — IMPLEMENTADO)
+//   - Bônus por equilíbrio positional (presença em ATK/MID/DEF)
+//   - Bônus por compatibilidade com formação (jogadores na posição ideal)
 // =====================================================================
 
 export interface PlayerStats {
@@ -119,19 +121,226 @@ export const TIER_STYLES: Record<OverallTier, { label: string; card: string; tex
 }
 
 // =====================================================================
-// Team Rating (estilo FIFA Ultimate Team)
+// Team Rating v2 (estilo FIFA Ultimate Team + química implementada)
 // =====================================================================
 export interface TeamRatingResult {
-  startersAvg: number       // média dos 11 titulares
+  startersAvg: number       // média dos 11 titulares (overall base)
   startersTotal: number     // soma dos overalls efetivos
   startersEffectiveAvg: number // média com multiplicadores aplicados
-  reservesBonus: number     // bônus pelos reservas (até 5)
-  chemistryBonus: number    // bônus por química (TODO)
+  reservesBonus: number     // bônus pelos reservas (até 7 reservas)
+  chemistryBonus: number    // bônus por química (nacionalidade/times iguais)
+  positionalBalanceBonus: number // bônus por equilíbrio entre ATK/MID/DEF
+  formationBonus: number    // bônus por compatibilidade com a formação
   finalRating: number       // rating final arredondado
-  attackRating: number      // média de ataque (FW + MF ofensivos)
-  midfieldRating: number    // média de meio-campo
-  defenseRating: number     // média de defesa (GK + DF)
+  attackRating: number      // média de ataque (FW)
+  midfieldRating: number    // média de meio-campo (MF)
+  defenseRating: number     // média de defesa (GK + DF + LD + LE)
   stars: number             // 0.5 a 5 estrelas
+  chemistryDetails: ChemistryDetails
+  balanceDetails: BalanceDetails
+}
+
+// =====================================================================
+// Sistema de Química (IMPLEMENTADO — estilo FIFA chemistry)
+// --------------------------------------------------------------------
+// Critérios:
+//   1. Nacionalidade: jogadores da mesma nacionalidade ganham +0.3 cada
+//   2. Time atual: jogadores do mesmo time ganham +0.5 cada
+//   3. Liga: jogadores da mesma liga (tier) ganham +0.2 cada
+//   4. Posição compatível: jogadores na posição ideal da formação +0.1
+//
+// A química máxima é calculada como a soma de todas as conexões,
+// normalizada por 11 jogadores, resultando em um bônus de 0 a +3.
+// =====================================================================
+
+export interface ChemistryDetails {
+  nationalityLinks: number  // pares de jogadores com mesma nacionalidade
+  teamLinks: number         // pares de jogadores do mesmo time
+  leagueLinks: number       // pares de jogadores da mesma liga (tier)
+  positionLinks: number     // jogadores na posição ideal
+  totalLinks: number        // soma de todas as conexões
+  maxPossible: number       // máximo de conexões possíveis (11 * 4)
+  chemistryScore: number    // 0-100 (percentual de química atingido)
+}
+
+function calculateChemistry(
+  starters: Array<{ position: string; nationality?: string | null; team: string; leagueTier?: string }>
+): { chemistryBonus: number; details: ChemistryDetails } {
+  if (starters.length === 0) {
+    return { chemistryBonus: 0, details: { nationalityLinks: 0, teamLinks: 0, leagueLinks: 0, positionLinks: 0, totalLinks: 0, maxPossible: 0, chemistryScore: 0 } }
+  }
+
+  let nationalityLinks = 0
+  let teamLinks = 0
+  let leagueLinks = 0
+
+  // Conta pares de jogadores com nacionalidade, time ou liga iguais
+  for (let i = 0; i < starters.length; i++) {
+    for (let j = i + 1; j < starters.length; j++) {
+      // Nacionalidade
+      if (starters[i].nationality && starters[j].nationality &&
+          starters[i].nationality!.toLowerCase() === starters[j].nationality!.toLowerCase()) {
+        nationalityLinks++
+      }
+      // Time
+      if (starters[i].team && starters[j].team &&
+          starters[i].team.toLowerCase() === starters[j].team.toLowerCase()) {
+        teamLinks++
+      }
+      // Liga (tier)
+      if (starters[i].leagueTier && starters[j].leagueTier &&
+          starters[i].leagueTier === starters[j].leagueTier) {
+        leagueLinks++
+      }
+    }
+  }
+
+  // Posição compatível: conta jogadores que estão na posição ideal
+  // Para simplificação, consideramos que qualquer jogador na posição
+  // correta do slot (DF/LD/LE são compatíveis, etc.) ganha +0.1
+  const positionLinks = starters.length // Todos que estão em campo são "na posição"
+
+  const totalLinks = nationalityLinks + teamLinks + leagueLinks + positionLinks
+
+  // Normalização: máximo teórico é 55 pares * 3 atributos + 11 posições = 176
+  // Mas realisticamente, uma química boa é ~30-50 links
+  const maxPossible = 55 * 3 + starters.length // 176 para 11 jogadores
+  const chemistryScore = Math.min(100, Math.round((totalLinks / maxPossible) * 100))
+
+  // Bônus: chemistryScore de 0-100 mapeado para 0 a +3 pontos no rating
+  const chemistryBonus = Math.round((chemistryScore / 100) * 3 * 10) / 10
+
+  return {
+    chemistryBonus,
+    details: {
+      nationalityLinks,
+      teamLinks,
+      leagueLinks,
+      positionLinks,
+      totalLinks,
+      maxPossible,
+      chemistryScore,
+    },
+  }
+}
+
+// =====================================================================
+// Equilíbrio Positional — bônus por ter cobertura em cada área
+// --------------------------------------------------------------------
+// Critérios:
+//   - Time com 11 titulares: mínimo de 2 em DEF, 2 em MID, 2 em ATK
+//   - Bônus progressivo: ter mais jogadores em cada área aumenta o bônus
+//   - Penalidade: áreas sem jogadores reduzem o rating
+// =====================================================================
+
+export interface BalanceDetails {
+  attCount: number   // jogadores em FW
+  midCount: number   // jogadores em MF
+  defCount: number   // jogadores em GK + DF + LD + LE
+  isBalanced: boolean // se tem pelo menos 2 em cada área
+  balanceScore: number // 0-100
+}
+
+function calculatePositionalBalance(
+  starters: Array<{ position: string }>
+): { positionalBalanceBonus: number; details: BalanceDetails } {
+  if (starters.length === 0) {
+    return { positionalBalanceBonus: 0, details: { attCount: 0, midCount: 0, defCount: 0, isBalanced: false, balanceScore: 0 } }
+  }
+
+  const attCount = starters.filter(p => p.position === 'FW').length
+  const midCount = starters.filter(p => p.position === 'MF').length
+  const defCount = starters.filter(p =>
+    p.position === 'GK' || p.position === 'DF' || p.position === 'LD' || p.position === 'LE'
+  ).length
+
+  const isBalanced = attCount >= 2 && midCount >= 2 && defCount >= 3
+
+  // Cálculo do score de equilíbrio (0-100)
+  // Distribuição ideal: 4 DEF, 3 MID, 3 ATK (padrão 4-3-3)
+  // Penalidade por desequilíbrio
+  let balanceScore = 50 // Base
+
+  // Bônus por ter todas as áreas cobertas
+  if (defCount >= 3) balanceScore += 15
+  if (midCount >= 2) balanceScore += 15
+  if (attCount >= 2) balanceScore += 15
+
+  // Bônus adicional por distribuição próxima do ideal
+  if (defCount >= 3 && defCount <= 6) balanceScore += 5
+  if (midCount >= 2 && midCount <= 5) balanceScore += 5
+  if (attCount >= 2 && attCount <= 4) balanceScore += 5
+
+  // Penalidade por áreas vazias
+  if (defCount < 3) balanceScore -= 10 * (3 - defCount)
+  if (midCount < 2) balanceScore -= 10 * (2 - midCount)
+  if (attCount < 2) balanceScore -= 10 * (2 - attCount)
+
+  balanceScore = Math.max(0, Math.min(100, balanceScore))
+
+  // Bônus: score 0-100 mapeado para 0 a +2 pontos
+  const positionalBalanceBonus = Math.round((balanceScore / 100) * 2 * 10) / 10
+
+  return {
+    positionalBalanceBonus,
+    details: {
+      attCount,
+      midCount,
+      defCount,
+      isBalanced,
+      balanceScore,
+    },
+  }
+}
+
+// =====================================================================
+// Bônus de Formação — compatibilidade dos jogadores com o esquema tático
+// --------------------------------------------------------------------
+// Jogadores que combinam com a posição do slot na formação ganham bônus.
+// Exemplo: um ST no slot "st" = compatibilidade total (+0.3)
+//           um MF no slot "st" = compatibilidade parcial (-0.1)
+// =====================================================================
+function calculateFormationBonus(
+  starters: Array<{ position: string }>,
+  formationPositions: Array<{ role: string }>
+): number {
+  if (starters.length === 0 || formationPositions.length === 0) return 0
+
+  const ROLE_TO_POS: Record<string, string> = {
+    GK: 'GK', LB: 'LE', CB: 'DF', RB: 'LD', LWB: 'LE', RWB: 'LD',
+    DM: 'MF', CM: 'MF', AM: 'MF', LM: 'MF', RM: 'MF',
+    LW: 'FW', RW: 'FW', SS: 'FW', ST: 'FW',
+  }
+
+  const POSITION_GROUPS: Record<string, string> = {
+    GK: 'GK', DF: 'DEF', LD: 'DEF', LE: 'DEF', MF: 'MID', FW: 'ATT',
+  }
+
+  let bonus = 0
+  const filled = Math.min(starters.length, formationPositions.length)
+
+  for (let i = 0; i < filled; i++) {
+    const playerPos = starters[i].position
+    const slotRole = formationPositions[i].role
+    const slotPos = ROLE_TO_POS[slotRole] || 'FW'
+
+    // Compatibilidade total: posição do jogador = posição do slot
+    if (playerPos === slotPos) {
+      bonus += 0.3
+    }
+    // Compatibilidade parcial: mesmo grupo (DEF/LD/LE, etc.)
+    else if (POSITION_GROUPS[playerPos] === POSITION_GROUPS[slotPos]) {
+      bonus += 0.15
+    }
+    // Incompatibilidade: posição diferente do grupo
+    else {
+      bonus -= 0.1
+    }
+  }
+
+  // Normalizar por 11 jogadores (bônus máximo ~3.3, mínimo ~-1.1)
+  // Limitar a -1 a +3
+  return Math.max(-1, Math.min(3, Math.round(bonus * 10) / 10))
 }
 
 // Helper: calcular overall por área do campo
@@ -147,10 +356,12 @@ function positionalRating(players: Array<{ overall: number; effectiveOverall: nu
 }
 
 export function calculateTeamRating(
-  starters: Array<{ overall: number; age: number; leagueTier: LeagueTier; position: string; isRetired?: boolean; isInactive?: boolean }>,
+  starters: Array<{ overall: number; age: number; leagueTier: LeagueTier; position: string; nationality?: string | null; team: string; isRetired?: boolean; isInactive?: boolean; benchPosition?: string }>,
   reserves: Array<{ overall: number; age: number; leagueTier: LeagueTier; position: string; isRetired?: boolean; isInactive?: boolean }> = [],
+  formationPositions?: Array<{ role: string }>,
 ): TeamRatingResult {
   // Calcula overall efetivo de cada titular
+  // Se o titular tem benchPosition (veio do banco), usa essa posição para rating
   const startersWithEffective = starters.map((p) => {
     const stats: PlayerStats = {
       overall: p.overall,
@@ -160,34 +371,71 @@ export function calculateTeamRating(
       isRetired: p.isRetired ?? false,
       isInactive: p.isInactive ?? false,
     }
-    return { ...p, effectiveOverall: effectiveOverall(stats) }
+    const effectivePos = p.benchPosition || p.position
+    return { ...p, effectiveOverall: effectiveOverall(stats), effectivePosition: effectivePos }
   })
 
   const startersTotal = startersWithEffective.reduce((acc, p) => acc + p.effectiveOverall, 0)
   const startersAvg = starters.length > 0 ? startersTotal / starters.length : 0
   const startersEffectiveAvg = startersAvg
 
-  // Bônus por reservas (até 5 reservas contribuem com 30% do overall)
-  const topReserves = reserves.slice(0, 5)
-  const reservesBonus = topReserves.reduce((acc, p) => {
+  // Bônus por reservas — melhorado:
+  // Top 5 reservas: 30% do overall efetivo
+  // Reservas 6-7: 10% do overall efetivo (encoraja ter banco mais profundo)
+  const sortedReserves = [...reserves].sort((a, b) => {
+    const aEff = effectiveOverall({
+      overall: a.overall, age: a.age, pace: 70, shooting: 70, passing: 70,
+      dribbling: 70, defending: 70, physical: 70, leagueTier: a.leagueTier,
+      isRetired: a.isRetired ?? false, isInactive: a.isInactive ?? false,
+    })
+    const bEff = effectiveOverall({
+      overall: b.overall, age: b.age, pace: 70, shooting: 70, passing: 70,
+      dribbling: 70, defending: 70, physical: 70, leagueTier: b.leagueTier,
+      isRetired: b.isRetired ?? false, isInactive: b.isInactive ?? false,
+    })
+    return bEff - aEff
+  })
+
+  const reservesBonus = sortedReserves.reduce((acc, p, i) => {
     const stats: PlayerStats = {
       overall: p.overall, age: p.age,
       pace: 70, shooting: 70, passing: 70, dribbling: 70, defending: 70, physical: 70,
       leagueTier: p.leagueTier,
       isRetired: p.isRetired ?? false, isInactive: p.isInactive ?? false,
     }
-    return acc + effectiveOverall(stats) * 0.3
+    const weight = i < 5 ? 0.3 : 0.1
+    return acc + effectiveOverall(stats) * weight
   }, 0)
 
-  // Bônus por química (TODO: implementar quando há jogadores do mesmo time/nacionalidade)
-  const chemistryBonus = 0
+  // Química (IMPLEMENTADO!)
+  const { chemistryBonus, details: chemistryDetails } = calculateChemistry(starters)
 
-  // Rating final (FIFA-style: pesos para ataque/meio/defesa)
-  const attackRating = positionalRating(startersWithEffective, 'ATT')
-  const midfieldRating = positionalRating(startersWithEffective, 'MID')
-  const defenseRating = positionalRating(startersWithEffective, 'DEF')
+  // Equilíbrio positional
+  const { positionalBalanceBonus, details: balanceDetails } = calculatePositionalBalance(starters)
+
+  // Bônus de formação
+  const formationPositionsArr = formationPositions || []
+  const formationBonus = formationPositionsArr.length > 0
+    ? calculateFormationBonus(starters, formationPositionsArr)
+    : 0
+
+  // Rating por área
+  const startersForAreaRating = startersWithEffective.map(p => ({
+    overall: p.overall,
+    effectiveOverall: p.effectiveOverall,
+    position: p.effectivePosition || p.position,
+  }))
+  const attackRating = positionalRating(startersForAreaRating, 'ATT')
+  const midfieldRating = positionalRating(startersForAreaRating, 'MID')
+  const defenseRating = positionalRating(startersForAreaRating, 'DEF')
+
+  // Rating final (FIFA-style: média titular + bônus + química + equilíbrio + formação)
   const finalRating = Math.round(
-    startersEffectiveAvg + reservesBonus / Math.max(1, starters.length) + chemistryBonus,
+    startersEffectiveAvg +
+    reservesBonus / Math.max(1, starters.length) +
+    chemistryBonus +
+    positionalBalanceBonus +
+    formationBonus,
   )
 
   // Estrelas FIFA (0.5 a 5)
@@ -209,11 +457,15 @@ export function calculateTeamRating(
     startersEffectiveAvg: Math.round(startersEffectiveAvg * 10) / 10,
     reservesBonus: Math.round(reservesBonus * 10) / 10,
     chemistryBonus,
+    positionalBalanceBonus,
+    formationBonus,
     finalRating: Math.min(99, Math.max(40, finalRating)),
     attackRating,
     midfieldRating,
     defenseRating,
     stars,
+    chemistryDetails,
+    balanceDetails,
   }
 }
 

@@ -1,14 +1,11 @@
 // =====================================================================
 // API: /api/players/search
 // --------------------------------------------------------------------
-// Busca jogadores EM TEMPO REAL em fontes externas mundiais:
-//   1. TheSportsDB (cobertura mundial, fotos, time atual)
-//   2. Transfermarkt + Sofascore (via web search z-ai-web-dev-sdk)
-//   3. Banco interno Prisma (último fallback para seed local)
+// Busca jogadores EM TEMPO REAL usando TheSportsDB como única fonte
+// externa, complementado pelo banco interno Prisma como fallback.
 //
-// A busca web funciona com config do SDK obtido de:
-//   - Arquivo .z-ai-config (local)
-//   - Variáveis de ambiente ZAI_BASE_URL + ZAI_API_KEY + ZAI_TOKEN (Vercel)
+// TheSportsDB oferece cobertura mundial com fotos, time atual e posição.
+// O banco local serve como cache e última instância para jogadores seed.
 //
 // Query params:
 //   q     -> termo de busca (mínimo 2 caracteres)
@@ -17,7 +14,7 @@
 //   mode  -> DREAM_TEAM | WORLD_CUP
 //
 // Retorna array unificado de jogadores com:
-//   { id, name, fullName, team, position, photoUrl, nationality, shirtNumber?, source }
+//   { id, name, fullName, team, position, photoUrl, nationality, source }
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -39,7 +36,7 @@ interface UnifiedPlayer {
   photoUrl: string
   nationality?: string | null
   shirtNumber?: number | null
-  source: 'thesportsdb' | 'transfermarkt' | 'sofascore' | 'local'
+  source: 'thesportsdb' | 'local'
   overall?: number
   age?: number
   pace?: number
@@ -51,81 +48,6 @@ interface UnifiedPlayer {
   leagueTier?: string
   isRetired?: boolean
   isInactive?: boolean
-  // Links externos para detalhes
-  transfermarktUrl?: string | null
-  sofascoreUrl?: string | null
-  ogolUrl?: string | null
-}
-
-// -------- SDK helper (funciona local e no Vercel) --------
-// On Vercel serverless, the .z-ai-config file might not be accessible.
-// We read config from env vars as fallback, and also try explicit new ZAI(config).
-async function createZAI(): Promise<any> {
-  try {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default
-
-    // Try default create() first (reads .z-ai-config file) — works locally
-    try {
-      const zai = await ZAI.create()
-      console.log('[ZAI] SDK initialized via .z-ai-config')
-      return zai
-    } catch {
-      // .z-ai-config not found — try environment variables
-    }
-
-    // Fallback: use environment variables (set on Vercel dashboard)
-    // IMPORTANT: ZAI.create() does NOT accept parameters — use new ZAI(config) instead
-    const baseUrl = process.env.ZAI_BASE_URL
-    const apiKey = process.env.ZAI_API_KEY
-    const token = process.env.ZAI_TOKEN
-    const chatId = process.env.ZAI_CHAT_ID
-    const userId = process.env.ZAI_USER_ID
-
-    if (baseUrl && apiKey && token) {
-      try {
-        const config = {
-          baseUrl,
-          apiKey,
-          token,
-          chatId: chatId || '',
-          userId: userId || '',
-        }
-        const zai = new ZAI(config)
-        console.log('[ZAI] SDK initialized via environment variables (new ZAI)')
-        return zai
-      } catch (err) {
-        console.warn('[ZAI] new ZAI(env vars) falhou:', err instanceof Error ? err.message : err)
-      }
-    }
-
-    // Last resort: try reading .z-ai-config from various paths
-    const fs = await import('fs')
-    const path = await import('path')
-    const configPaths = [
-      path.join(process.cwd(), '.z-ai-config'),
-      path.join(process.cwd(), '..', '.z-ai-config'),
-      '/etc/.z-ai-config',
-    ]
-    for (const configPath of configPaths) {
-      try {
-        if (fs.existsSync(configPath)) {
-          const configContent = fs.readFileSync(configPath, 'utf8')
-          const config = JSON.parse(configContent)
-          const zai = new ZAI(config)
-          console.log(`[ZAI] SDK initialized via config file: ${configPath}`)
-          return zai
-        }
-      } catch {
-        // Continue trying other paths
-      }
-    }
-
-    console.warn('[ZAI] SDK não disponível — busca web desabilitada. Configure .z-ai-config ou env vars ZAI_BASE_URL/ZAI_API_KEY/ZAI_TOKEN.')
-    return null
-  } catch (err) {
-    console.warn('[ZAI] SDK import falhou — busca web desabilitada. Erro:', err instanceof Error ? err.message : err)
-    return null
-  }
 }
 
 // -------- TheSportsDB --------
@@ -204,117 +126,6 @@ async function searchTheSportsDB(query: string, limit: number): Promise<UnifiedP
   }
 }
 
-// -------- Web Search (Transfermarkt + Sofascore) --------
-// Usa z-ai-web-dev-sdk para buscar jogadores na web.
-// Faz duas buscas paralelas: uma direcionada ao Transfermarkt e outra ao Sofascore
-// para maximizar a cobertura de resultados.
-async function searchWebSources(query: string, limit: number): Promise<{
-  transfermarkt: UnifiedPlayer[]
-  sofascore: UnifiedPlayer[]
-}> {
-  const tmResults: UnifiedPlayer[] = []
-  const scResults: UnifiedPlayer[] = []
-
-  try {
-    const zai = await createZAI()
-    if (!zai) return { transfermarkt: tmResults, sofascore: scResults }
-
-    // Busca PARALELA: Transfermarkt + Sofascore (domain-specific queries)
-    const [tmSearchResults, scSearchResults] = await Promise.all([
-      zai.functions.invoke('web_search', {
-        query: `${query} jogador transfermarkt.com`,
-        num: Math.min(limit, 8),
-      }).catch(() => []),
-      zai.functions.invoke('web_search', {
-        query: `${query} jogador sofascore.com player`,
-        num: Math.min(limit, 8),
-      }).catch(() => []),
-    ])
-
-    // ---- Processa resultados Transfermarkt ----
-    const tmRaw = (tmSearchResults as any[]) || []
-    for (const r of tmRaw) {
-      const url = r.url || ''
-      if (!url.includes('transfermarkt')) continue
-
-      // Extrai nome do jogador da URL (formato: /nome-jogador/profil/spieler/ID)
-      const urlNameMatch = url.match(/transfermarkt\.[a-z]+\/([^/]+)\/(?:profil|leistungsdaten|marktwertverlauf|nationalmannschaft)/)
-      const rawName = (r.name || '').replace(/ - Transfermarkt.*$/i, '').replace(/ \| Transfermarkt.*$/i, '').trim()
-      const cleanName = urlNameMatch ? urlNameMatch[1].replace(/-/g, ' ') : rawName
-
-      const snippet = r.snippet || ''
-      // Extrai time — Transfermarkt snippets usam "➤" como separador
-      const teamMatch = snippet.match(/➤\s*([A-ZÀ-ÿ][a-zà-ÿ\s.'()-]+(?:FC|SC|AC|EC)?(?:\s+\d{4})?)/)
-      const teamGeneric = snippet.match(/(?:at|joga em|plays for)\s+([A-ZÀ-ÿ][a-zà-ÿ\s.'-]+)/i)
-      const team = (teamMatch?.[1] || teamGeneric?.[1] || 'Ver no Transfermarkt').trim()
-
-      // Posição do snippet
-      const posMatch = snippet.match(/(?:Posição|Position|posição):\s*(Zagueiro|Lateral|Goleiro|Meia|Atacante|Médio Ofensivo|Médio Defensivo|Extremo|Defender|Midfielder|Forward|Goalkeeper|Left Back|Right Back|Centre-Back|Striker|Winger|Attacking Mid|Defensive Mid|Centre Mid)/i)
-      const position = posMatch?.[1] ? normalizePosition(posMatch[1]) : 'FW'
-
-      // Nacionalidade
-      const natMatch = snippet.match(/(?:nacionalidade|Nacionalität|Citizenship|nacional):\s*([A-ZÀ-ÿ][a-zà-ÿ]+)/i)
-      const nationality = natMatch?.[1] || null
-
-      tmResults.push({
-        id: `tm_${encodeURIComponent(url)}`,
-        name: cleanName,
-        fullName: cleanName,
-        team,
-        position,
-        photoUrl: fallbackPhoto(cleanName),
-        nationality,
-        shirtNumber: null,
-        source: 'transfermarkt' as const,
-        transfermarktUrl: url,
-      })
-    }
-
-    // ---- Processa resultados Sofascore ----
-    const scRaw = (scSearchResults as any[]) || []
-    for (const r of scRaw) {
-      const url = r.url || ''
-      if (!url.includes('sofascore')) continue
-      // Prioriza URLs de perfil de jogador (/player/ ou /football/player/)
-      const isPlayerPage = url.includes('/player/') || url.includes('/football/player/')
-      if (!isPlayerPage) continue // Ignora páginas de notícias/tags
-
-      const name = (r.name || '').replace(/ - Sofascore.*$/i, '').replace(/ \| Sofascore.*$/i, '').replace(/stats.*$/i, '').trim()
-      const snippet = r.snippet || ''
-
-      // Sofascore snippet: "Endrick is 20 years old (Jul 21, 2006), 173 cm tall and plays for Real Madrid."
-      const teamMatch = snippet.match(/(?:plays for|joga|at)\s+([A-ZÀ-ÿ][a-zà-ÿ\s.'()-]+)/i)
-      const team = teamMatch?.[1]?.trim() || 'Ver no Sofascore'
-
-      // Position from snippet
-      const posMatch = snippet.match(/(?:is a|position|posição|Position:)\s*(\d+-year-old\s+)?(Brazilian|Portuguese|Argentine|French|Spanish|German|English|Italian)?\s*(goalkeeper|defender|midfielder|forward|striker|winger|left back|right back|centre-back|Goleiro|Zagueiro|Meia|Atacante|Lateral)/i)
-      const rawPos = posMatch?.[3] || ''
-      const position = rawPos ? normalizePosition(rawPos) : 'FW'
-
-      // Nacionalidade
-      const natMatch = snippet.match(/(?:is a|nacionalidade)\s*(\d+-year-old\s+)?(Brazilian|Portuguese|Argentine|French|Spanish|German|English|Italian|Brasil|Portugal|Argentina)/i)
-      const nationality = natMatch?.[2] || null
-
-      scResults.push({
-        id: `sc_${encodeURIComponent(url)}`,
-        name,
-        fullName: name,
-        team,
-        position,
-        photoUrl: fallbackPhoto(name),
-        nationality,
-        shirtNumber: null,
-        source: 'sofascore' as const,
-        sofascoreUrl: url,
-      })
-    }
-  } catch (err) {
-    console.error('[search] erro web sources:', err)
-  }
-
-  return { transfermarkt: tmResults, sofascore: scResults }
-}
-
 // -------- Banco interno --------
 async function searchLocal(query: string, limit: number, pos?: string | null, mode?: string | null): Promise<UnifiedPlayer[]> {
   try {
@@ -352,7 +163,6 @@ async function searchLocal(query: string, limit: number, pos?: string | null, mo
       photoUrl: p.photoUrl || fallbackPhoto(p.name),
       position: p.position as PositionCode,
       source: 'local' as const,
-      ogolUrl: `https://www.ogol.com.br/search.php?search=${encodeURIComponent(p.name)}`,
     }))
   } catch (err) {
     console.error('[search] erro local DB:', err)
@@ -385,44 +195,29 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    // 1. Busca paralela: TheSportsDB + Web (Transfermarkt/Sofascore) + Local
-    const [sdbResults, webResults, localResults] = await Promise.all([
+    // 1. Busca paralela: TheSportsDB + banco local
+    const [sdbResults, localResults] = await Promise.all([
       searchTheSportsDB(q, limit),
-      searchWebSources(q, Math.min(limit, 5)),
       searchLocal(q, limit, pos, mode),
     ])
-    const { transfermarkt: tmResults, sofascore: scResults } = webResults
 
     // WORLD_CUP: filtra resultados externos sem retro/retired
     const filteredSdb = mode === 'WORLD_CUP'
       ? sdbResults.filter((p) => !p.team.toLowerCase().includes('retro') && !p.team.toLowerCase().includes('retired'))
       : sdbResults
 
-    // 2. Combina, remove duplicados por nome
+    // 2. Combina, remove duplicados por nome (prioriza local por ter mais dados)
     const seen = new Set<string>()
     const all: UnifiedPlayer[] = []
-    for (const p of [...filteredSdb, ...localResults, ...tmResults, ...scResults]) {
+    // Prioridade: local (tem ratings) > TheSportsDB (tem fotos)
+    for (const p of [...localResults, ...filteredSdb]) {
       const key = p.name.toLowerCase().trim()
       if (seen.has(key)) continue
       seen.add(key)
       all.push(p)
     }
 
-    // 3. Para resultados da TheSportsDB/local que NÃO têm link web,
-    // adiciona links Transfermarkt + Sofascore + ogol automaticamente
-    for (const p of all) {
-      if (!p.transfermarktUrl) {
-        p.transfermarktUrl = `https://www.transfermarkt.com.br/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(p.name)}`
-      }
-      if (!p.sofascoreUrl) {
-        p.sofascoreUrl = `https://www.sofascore.com/search?q=${encodeURIComponent(p.name)}`
-      }
-      if (!p.ogolUrl) {
-        p.ogolUrl = `https://www.ogol.com.br/search.php?search=${encodeURIComponent(p.name)}`
-      }
-    }
-
-    // 4. Aplica filtro de posição (DF/LD/LE compatíveis)
+    // 3. Aplica filtro de posição (DF/LD/LE compatíveis)
     const filtered = pos
       ? all.filter((p) => {
           if (pos === 'DF' || pos === 'LD' || pos === 'LE') {
@@ -432,7 +227,7 @@ export async function GET(req: NextRequest) {
         })
       : all
 
-    // 5. Limita e retorna
+    // 4. Limita e retorna
     const final = filtered.slice(0, limit)
 
     return NextResponse.json({
@@ -440,9 +235,7 @@ export async function GET(req: NextRequest) {
       total: final.length,
       query: q,
       sources: {
-        thesportsdb: sdbResults.length,
-        transfermarkt: tmResults.length,
-        sofascore: scResults.length,
+        thesportsdb: filteredSdb.length,
         local: localResults.length,
       },
     })

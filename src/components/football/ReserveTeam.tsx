@@ -2,6 +2,11 @@
 
 // =====================================================================
 // ReserveTeam - Painel do time reserva (modo técnico) - com tema
+// --------------------------------------------------------------------
+// NOVO: Cada reserva agora tem um seletor de posição (benchPosition)
+// que permite ao usuário definir qual posição o jogador irá desempenhar
+// quando entrar em campo. Por exemplo, um meia pode ser designado
+// como atacante reserva, ou um zagueiro como lateral.
 // =====================================================================
 
 import { motion, AnimatePresence } from 'framer-motion'
@@ -10,14 +15,17 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { ArrowLeftRight, Trash2, UserCircle2, Shirt } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ArrowLeftRight, Trash2, UserCircle2, Shirt, MapPin } from 'lucide-react'
 import type { SelectedPlayer } from '@/lib/football/store'
+import type { SimplifiedPosition } from '@/lib/football/formations'
 
 interface Props {
   reserves: SelectedPlayer[]
   startersCount: number
   onSubstitute: (reserve: SelectedPlayer) => void
   onRemove: (id: string) => void
+  onSetBenchPosition: (reserveId: string, benchPosition: SimplifiedPosition) => void
 }
 
 const POS_LABEL: Record<string, string> = {
@@ -38,7 +46,9 @@ const POS_COLOR: Record<string, string> = {
   FW: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300',
 }
 
-export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove }: Props) {
+const BENCH_POSITION_OPTIONS: SimplifiedPosition[] = ['GK', 'DF', 'LD', 'LE', 'MF', 'FW']
+
+export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, onSetBenchPosition }: Props) {
   return (
     <Card className="border-emerald-500/30 bg-card/95 backdrop-blur">
       <CardHeader className="pb-3">
@@ -50,7 +60,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove }:
           <Badge className="bg-emerald-600 text-white">{reserves.length} no banco</Badge>
         </CardTitle>
         <CardDescription>
-          Atue como técnico: convoque reservas e faça substituições no time titular.
+          Atue como técnico: convoque reservas, defina posições e faça substituições.
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-0">
@@ -63,74 +73,116 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove }:
             </p>
           </div>
         ) : (
-          <ScrollArea className="h-[380px] pr-2">
+          <ScrollArea className="h-[420px] pr-2">
             <ul className="space-y-2">
               <AnimatePresence>
-                {reserves.map((r) => (
-                  <motion.li
-                    key={r.id}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 20, height: 0 }}
-                    layout
-                  >
-                    <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-2 transition-shadow hover:shadow-md">
-                      <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border-2 border-emerald-500/50 bg-muted">
-                        <Image
-                          src={r.photoUrl}
-                          alt={r.name}
-                          fill
-                          sizes="48px"
-                          className="object-cover"
-                          unoptimized
-                        />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate text-sm font-semibold text-foreground">
-                            {r.name}
+                {reserves.map((r) => {
+                  // benchPosition é a posição designada; se não definida, usa a posição natural
+                  const effectivePosition = (r.benchPosition || r.position) as SimplifiedPosition
+                  const hasCustomPosition = r.benchPosition && r.benchPosition !== r.position
+
+                  return (
+                    <motion.li
+                      key={r.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 20, height: 0 }}
+                      layout
+                    >
+                      <div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-2 transition-shadow hover:shadow-md">
+                        {/* Linha principal: foto + nome + ações */}
+                        <div className="flex items-center gap-3">
+                          <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border-2 border-emerald-500/50 bg-muted">
+                            <Image
+                              src={r.photoUrl}
+                              alt={r.name}
+                              fill
+                              sizes="48px"
+                              className="object-cover"
+                              unoptimized
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate text-sm font-semibold text-foreground">
+                                {r.name}
+                              </span>
+                              {r.shirtNumber && (
+                                <span className="rounded bg-muted px-1 text-[10px] font-bold text-muted-foreground">
+                                  #{r.shirtNumber}
+                                </span>
+                              )}
+                              {/* Badge da posição natural */}
+                              <Badge
+                                variant="secondary"
+                                className={`px-1.5 py-0 text-[10px] ${POS_COLOR[r.position] ?? ''}`}
+                              >
+                                {POS_LABEL[r.position] ?? r.position}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                              <span className="truncate">{r.team}</span>
+                              {r.overall && (
+                                <span className="font-bold text-emerald-600">{r.overall} OVR</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col gap-1">
+                            <Button
+                              size="sm"
+                              variant="default"
+                              className="h-7 gap-1 bg-emerald-600 px-2 text-[11px] hover:bg-emerald-700"
+                              onClick={() => onSubstitute(r)}
+                              disabled={startersCount === 0}
+                            >
+                              <ArrowLeftRight className="h-3 w-3" />
+                              Entrar
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 gap-1 px-2 text-[11px] text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                              onClick={() => onRemove(r.id)}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              Remover
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* Seletor de posição designada no banco */}
+                        <div className="flex items-center gap-2 rounded-lg border border-dashed border-emerald-500/20 bg-emerald-50/50 px-2 py-1.5 dark:bg-emerald-950/20">
+                          <MapPin className="h-3 w-3 shrink-0 text-emerald-500" />
+                          <span className="text-[10px] font-medium text-muted-foreground shrink-0">
+                            Posição no banco:
                           </span>
-                          {r.shirtNumber && (
-                            <span className="rounded bg-muted px-1 text-[10px] font-bold text-muted-foreground">
-                              #{r.shirtNumber}
-                            </span>
+                          <Select
+                            value={effectivePosition}
+                            onValueChange={(value: string) => {
+                              onSetBenchPosition(r.id, value as SimplifiedPosition)
+                            }}
+                          >
+                            <SelectTrigger className="h-6 flex-1 border-emerald-500/30 text-[11px] bg-transparent">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {BENCH_POSITION_OPTIONS.map((pos) => (
+                                <SelectItem key={pos} value={pos} className="text-[11px]">
+                                  {POS_LABEL[pos]} ({pos})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {hasCustomPosition && (
+                            <Badge className={`px-1 py-0 text-[9px] ${POS_COLOR[effectivePosition] ?? ''}`}>
+                              Designado: {POS_LABEL[effectivePosition]}
+                            </Badge>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span className="truncate">{r.team}</span>
-                          <span>·</span>
-                          <Badge
-                            variant="secondary"
-                            className={`px-1.5 py-0 text-[10px] ${POS_COLOR[r.position] ?? ''}`}
-                          >
-                            {POS_LABEL[r.position] ?? r.position}
-                          </Badge>
-                        </div>
                       </div>
-                      <div className="flex shrink-0 flex-col gap-1">
-                        <Button
-                          size="sm"
-                          variant="default"
-                          className="h-7 gap-1 bg-emerald-600 px-2 text-[11px] hover:bg-emerald-700"
-                          onClick={() => onSubstitute(r)}
-                          disabled={startersCount === 0}
-                        >
-                          <ArrowLeftRight className="h-3 w-3" />
-                          Entrar
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 gap-1 px-2 text-[11px] text-red-500 hover:bg-red-500/10 hover:text-red-600"
-                          onClick={() => onRemove(r.id)}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                          Remover
-                        </Button>
-                      </div>
-                    </div>
-                  </motion.li>
-                ))}
+                    </motion.li>
+                  )
+                })}
               </AnimatePresence>
             </ul>
           </ScrollArea>

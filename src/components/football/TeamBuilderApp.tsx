@@ -3,7 +3,7 @@
 // =====================================================================
 // TeamBuilderApp - Aplicação principal do montador de times
 // Inclui: tema dark/light, easter eggs, salvar time por usuário,
-//         compartilhar time, ver estatísticas no ogol.com.br
+//         compartilhar time, ver estatísticas via TheSportsDB
 //         + modo RPG com convite/join flow
 // =====================================================================
 
@@ -57,6 +57,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
     removeStarter,
     addReserve,
     removeReserve,
+    setReserveBenchPosition,
     substitute,
     clearTeam,
     initStarters,
@@ -578,10 +579,11 @@ export function TeamBuilderApp({ inviteCode }: Props) {
               startersCount={startersCount}
               onSubstitute={handleSubstitute}
               onRemove={removeReserve}
+              onSetBenchPosition={setReserveBenchPosition}
             />
             {/* Team Rating Card + Stats/Share buttons */}
             <div className="mt-4 space-y-3">
-              <TeamRatingCard starters={starters} reserves={reserves} />
+              <TeamRatingCard starters={starters} reserves={reserves} formationId={formationId} />
 
               {/* Quick action buttons */}
               {startersCount > 0 && (
@@ -632,7 +634,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
                         setStatsOpen(true)
                       }}
                       className="absolute -top-1 -right-1 hidden h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white group-hover:flex"
-                      title="Ver estatísticas no ogol.com.br"
+                      title="Ver estatísticas na TheSportsDB"
                     >
                       <BarChart3 className="h-3 w-3" />
                     </button>

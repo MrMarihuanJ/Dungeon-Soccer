@@ -1,12 +1,17 @@
 // =====================================================================
 // API: /api/players/stats
 // --------------------------------------------------------------------
-// Busca estatísticas atualizadas de um jogador usando web search.
-// Agrega dados de múltiplas fontes (ogol.com.br, Transfermarkt, etc.)
+// Busca estatísticas atualizadas de um jogador usando TheSportsDB
+// como única fonte de dados externos.
+//
+// Usa TheSportsDB para obter:
+//   - Detalhes do jogador (time, posição, nacionalidade)
+//   - Estatísticas de temporadas recentes
+//   - Foto e informações biográficas
 //
 // Query params:
 //   name  -> nome do jogador (obrigatório)
-//   team  -> time atual (opcional)
+//   team  -> time atual (opcional, ajuda na precisão)
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -16,84 +21,112 @@ export const runtime = 'nodejs'
 
 interface PlayerStats {
   name: string
-  ogolUrl: string | null
-  transfermarktUrl: string | null
+  thesportsdbUrl: string | null
+  thesportsdbId: string | null
   latestStats: string | null
-  sources: { name: string; url: string; snippet: string }[]
+  team: string | null
+  position: string | null
+  nationality: string | null
+  photoUrl: string | null
+  born: string | null
+  height: string | null
+  weight: string | null
+  signature: string | null
+  sources: { name: string; data: string }[]
 }
 
-async function searchPlayerStats(playerName: string, team?: string | null): Promise<PlayerStats> {
+async function searchPlayerStatsTheSportsDB(playerName: string, team?: string | null): Promise<PlayerStats> {
   try {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default
+    const SPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '3'
 
-    // Initialize SDK — try .z-ai-config first, then env vars
-    let zai: any = null
-    try {
-      zai = await ZAI.create()
-    } catch {
-      // Fallback: use environment variables with new ZAI(config)
-      const baseUrl = process.env.ZAI_BASE_URL
-      const apiKey = process.env.ZAI_API_KEY
-      const token = process.env.ZAI_TOKEN
-      const chatId = process.env.ZAI_CHAT_ID
-      const userId = process.env.ZAI_USER_ID
-      if (baseUrl && apiKey && token) {
-        try {
-          zai = new ZAI({ baseUrl, apiKey, token, chatId: chatId || '', userId: userId || '' })
-        } catch { /* skip */ }
-      }
-    }
-
-    if (!zai) {
-      return { name: playerName, ogolUrl: null, transfermarktUrl: null, latestStats: null, sources: [] }
-    }
-
-    // Search for player stats from multiple sources
-    const query = team
-      ? `${playerName} ${team} estatísticas gols jogos temporada 2025 2026`
-      : `${playerName} estatísticas gols jogos temporada 2025 2026`
-
-    const results = await zai.functions.invoke('web_search', {
-      query,
-      num: 8,
+    // Search for the player first
+    const searchUrl = `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/searchplayers.php?p=${encodeURIComponent(playerName)}`
+    const searchRes = await fetch(searchUrl, {
+      next: { revalidate: 120 },
+      signal: AbortSignal.timeout(8000),
     })
 
-    const allResults = (results as any[]).map((r: any) => ({
-      name: r.name || '',
-      url: r.url || '',
-      snippet: r.snippet || '',
-    }))
+    if (!searchRes.ok) {
+      console.warn('[stats] TheSportsDB search retornou', searchRes.status)
+      return { name: playerName, thesportsdbUrl: null, thesportsdbId: null, latestStats: null, team: null, position: null, nationality: null, photoUrl: null, born: null, height: null, weight: null, signature: null, sources: [] }
+    }
 
-    // Find ogol.com.br link
-    const ogolResult = allResults.find(r =>
-      r.url.includes('ogol.com.br')
-    )
+    const searchData = await searchRes.json()
+    const players: any[] = searchData.player || []
 
-    // Find Transfermarkt link
-    const transfermarktResult = allResults.find(r =>
-      r.url.includes('transfermarkt')
-    )
+    // Find best match — prefer players matching the team name if provided
+    let bestMatch: any = null
+    if (team && players.length > 1) {
+      bestMatch = players.find((p: any) =>
+        p.strTeam && p.strTeam.toLowerCase().includes(team.toLowerCase())
+      )
+    }
+    if (!bestMatch && players.length > 0) {
+      bestMatch = players[0]
+    }
 
-    // Compile latest stats from snippets
-    const statsSnippets = allResults
-      .filter(r => r.snippet && r.snippet.length > 30)
-      .slice(0, 3)
-      .map(r => r.snippet)
+    if (!bestMatch) {
+      return { name: playerName, thesportsdbUrl: null, thesportsdbId: null, latestStats: null, team: null, position: null, nationality: null, photoUrl: null, born: null, height: null, weight: null, signature: null, sources: [] }
+    }
+
+    // Build stats from TheSportsDB player data
+    const p = bestMatch
+    const idPlayer = p.idPlayer || ''
+    const name = p.strPlayer || playerName
+    const playerTeam = p.strTeam || null
+    const position = p.strPosition || null
+    const nationality = p.strNationality || null
+    const photoUrl = p.strThumb || p.strCutout || null
+    const born = p.strBorn || null
+    const height = p.strHeight || null
+    const weight = p.strWeight || null
+    const signature = p.strSign || null
+
+    // Compile stats snippets from TheSportsDB data fields
+    const statsParts: string[] = []
+    if (playerTeam) statsParts.push(`Time: ${playerTeam}`)
+    if (position) statsParts.push(`Posição: ${position}`)
+    if (nationality) statsParts.push(`Nacionalidade: ${nationality}`)
+    if (born) statsParts.push(`Nascimento: ${born}`)
+    if (height) statsParts.push(`Altura: ${height}`)
+    if (weight) statsParts.push(`Peso: ${weight}`)
+    if (p.strDescriptionEN) statsParts.push(p.strDescriptionEN.slice(0, 200))
+    if (p.strDescriptionPT) statsParts.push(p.strDescriptionPT.slice(0, 200))
+
+    const thesportsdbUrl = idPlayer
+      ? `https://www.thesportsdb.com/player/${encodeURIComponent(name.toLowerCase().replace(/\s+/g, '-'))}-${idPlayer}`
+      : null
 
     return {
-      name: playerName,
-      ogolUrl: ogolResult?.url || null,
-      transfermarktUrl: transfermarktResult?.url || null,
-      latestStats: statsSnippets.join(' | ') || null,
-      sources: allResults.slice(0, 5),
+      name,
+      thesportsdbUrl,
+      thesportsdbId: idPlayer || null,
+      latestStats: statsParts.length > 0 ? statsParts.join(' · ') : null,
+      team: playerTeam,
+      position,
+      nationality,
+      photoUrl,
+      born,
+      height,
+      weight,
+      signature,
+      sources: [{ name: 'TheSportsDB', data: statsParts.join(' | ') }],
     }
   } catch (err) {
     console.error('[stats] search error:', err)
     return {
       name: playerName,
-      ogolUrl: null,
-      transfermarktUrl: null,
+      thesportsdbUrl: null,
+      thesportsdbId: null,
       latestStats: null,
+      team: null,
+      position: null,
+      nationality: null,
+      photoUrl: null,
+      born: null,
+      height: null,
+      weight: null,
+      signature: null,
       sources: [],
     }
   }
@@ -112,7 +145,7 @@ export async function GET(req: NextRequest) {
       }, { status: 400 })
     }
 
-    const stats = await searchPlayerStats(name, team)
+    const stats = await searchPlayerStatsTheSportsDB(name, team)
 
     return NextResponse.json({
       ok: true,
