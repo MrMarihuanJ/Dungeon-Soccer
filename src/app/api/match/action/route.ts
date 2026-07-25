@@ -15,7 +15,7 @@ import {
   flipCoin, coinToPossession, resolveAction, applyActionToState,
   createInitialMatchState, GAME_MODE_CONFIG,
   checkMatchEndCondition, isHalftimeReached, isTimeExpired,
-  type MatchState, type CoinResult, type TeamMatchState, type GameMode, type FreeKickMultiplier,
+  type MatchState, type CoinResult, type TeamMatchState, type GameMode,
 } from '@/lib/match-engine'
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
@@ -222,7 +222,7 @@ export async function POST(req: NextRequest) {
     // Reconstrói o estado a partir do banco
     const defaultTeamState: TeamMatchState = {
       substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
-      injuredPlayers: [], sentOffPlayers: [],
+      injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
     }
 
     let homeTeamState = defaultTeamState
@@ -270,11 +270,8 @@ export async function POST(req: NextRequest) {
     const playerName = body.playerName ? String(body.playerName) : undefined
     const targetPlayerName = body.targetPlayerName ? String(body.targetPlayerName) : undefined
 
-    // Multiplicador de cobrança de falta (enviado pelo cliente quando é free kick)
-    const freeKickMultiplier: FreeKickMultiplier | undefined = body.freeKickMultiplier as FreeKickMultiplier | undefined
-
-    // Processa a jogada — passa multiplicador se for cobrança de falta
-    const roll = resolveAction(action, 0, freeKickMultiplier)
+    // Processa a jogada
+    const roll = resolveAction(action)
     const newState = applyActionToState(state, action, roll, playerName, targetPlayerName)
     const lastEvent = newState.events[newState.events.length - 1]
 

@@ -259,12 +259,9 @@ export function sampleActions(category: ActionCategory, count: number): Football
 export function sampleMixedActions(count: number, excludeDefend = false): FootballAction[] {
   // Prioriza ações que fazem sentido no meio do jogo (não KICKOFF)
   // If the team has the ball, also exclude DEFEND (they're attacking, not defending)
-  // BUG FIX: Also exclude FREE_KICK — cobrança de falta só aparece quando uma falta
-  // realmente ocorre durante o jogo, não em jogadas normais.
   const pool = ALL_ACTIONS.filter((a) => {
     if (a.category === 'KICKOFF') return false
     if (excludeDefend && a.category === 'DEFEND') return false
-    if (a.category === 'FREE_KICK') return false  // Só aparece via FreeKickDialog
     return true
   })
   const shuffled = [...pool].sort(() => Math.random() - 0.5)
