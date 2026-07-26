@@ -2,7 +2,7 @@
 
 // =====================================================================
 // PositionBall - Bola flutuante com foto do jogador (com tema + animação)
-// Agora inclui botão de ver estatísticas no ogol.com.br
+// Agora inclui botão de ver estatísticas via TheSportsDB
 // =====================================================================
 
 import { motion, AnimatePresence } from 'framer-motion'
