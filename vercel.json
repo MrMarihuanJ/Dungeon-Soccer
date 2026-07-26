@@ -40,6 +40,9 @@
     },
     "src/app/api/players/stats/route.ts": {
       "maxDuration": 30
+    },
+    "src/app/api/players/ogol/route.ts": {
+      "maxDuration": 30
     }
   }
 }
