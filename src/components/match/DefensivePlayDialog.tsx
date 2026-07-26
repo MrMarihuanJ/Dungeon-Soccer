@@ -3,18 +3,32 @@
 // =====================================================================
 // DefensivePlayDialog - Diálogo de jogada defensiva
 // --------------------------------------------------------------------
-// CORREÇÃO 3: Em momentos aleatórios durante a vez do oponente,
-//   o jogador pode ter a opção de lançar um dado para uma jogada
-//   defensiva. Se bem-sucedida, o jogador recupera a posse de bola
-//   e pode jogar novamente, interrompendo a vez do oponente.
+// ATUALIZAÇÃO: em momentos aleatórios durante a vez do oponente
+//   (quando a bola está com o adversário), o usuário recebe 3 opções
+//   defensivas distintas para tentar recuperar a posse de bola:
 //
-// Fases:
-//   1. SELECT_PLAYER — jogador escolhe qual de seus titulares
-//      fará a jogada defensiva (cada posição tem skillBonus diferente)
-//   2. DICE_RESULT — resultado do d20 + skillBonus vs DC 14
+//   1. Carrinho Agressivo (Alto Risco)     — DC 16, rouba + reduz 20%
+//   2. Interceptação de Passe (Médio Risco)— DC 14, rouba bola
+//   3. Marcação Pressiva (Baixo Risco)     — DC 12, só reduz 10%
+//
+// Fluxo:
+//   FASE 1: SELECT_OPTION
+//     - Mostra os 3 cards de opções defensivas com risco/bônus/efeito
+//     - Usuário escolhe UMA opção
+//   FASE 2: SELECT_PLAYER
+//     - Lista os titulares em campo para executar a jogada escolhida
+//     - Mostra o bônus esperado por posição (cada opção tem sua tabela)
+//   FASE 3: DICE_RESULT
+//     - Animação do d20 + bônus vs DC da opção escolhida
+//     - Resultado: sucesso (roubo/pressão) ou falha
+//
+// Após o resultado:
+//   - Se roubou a bola → turno do oponente ENCERRA, usuário joga
+//   - Se só fez pressão → turno do oponente CONTINUA, mas progresso cai
+//   - Se falhou → turno do oponente CONTINUA normalmente
 // =====================================================================
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -23,28 +37,56 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
-import { Shield, Swords, ArrowRight, ChevronLeft, Zap, Target, SkipForward } from 'lucide-react'
+import {
+  Shield, Swords, ArrowRight, ChevronLeft, Zap, Target, SkipForward,
+  AlertTriangle, TrendingUp, TrendingDown, Footprints, Hand, Activity,
+} from 'lucide-react'
 import type { SelectedPlayer } from '@/lib/football/store'
-import type { DefensivePlayResult } from '@/lib/match-engine'
-import { resolveDefensivePlay } from '@/lib/match-engine'
+import type { DefensivePlayResult, DefensiveOption } from '@/lib/match-engine'
+import {
+  resolveDefensivePlay, sampleDefensiveOptions, DEFENSIVE_OPTIONS,
+} from '@/lib/match-engine'
 
-type DefPhase = 'SELECT_PLAYER' | 'DICE_RESULT'
+type DefPhase = 'SELECT_OPTION' | 'SELECT_PLAYER' | 'DICE_RESULT'
 
-// Mapeamento de posição para emoji, label e bônus esperado
-const POSITION_DEF_META: Record<string, { emoji: string; label: string; bonusRange: string }> = {
-  GK:  { emoji: '🧤', label: 'Goleiro',        bonusRange: '+4 a +6' },
-  DF:  { emoji: '🛡️', label: 'Zagueiro',       bonusRange: '+4 a +6' },
-  LD:  { emoji: '🛡️', label: 'Lateral Dir.',   bonusRange: '+4 a +6' },
-  LE:  { emoji: '🛡️', label: 'Lateral Esq.',   bonusRange: '+4 a +6' },
-  CB:  { emoji: '🛡️', label: 'Zagueiro Central', bonusRange: '+4 a +6' },
-  DM:  { emoji: '🛡️', label: 'Volante',         bonusRange: '+4 a +6' },
-  MF:  { emoji: '🎯', label: 'Meio-campo',     bonusRange: '+2 a +4' },
-  AM:  { emoji: '🎯', label: 'Meio-atacante',  bonusRange: '+2 a +4' },
-  FW:  { emoji: '⚡', label: 'Atacante',       bonusRange: '+1 a +3' },
-  ST:  { emoji: '⚡', label: 'Centroavante',   bonusRange: '+1 a +3' },
-  CF:  { emoji: '⚡', label: 'Centroavante',   bonusRange: '+1 a +3' },
-  RW:  { emoji: '⚡', label: 'Ponta Direita',  bonusRange: '+1 a +3' },
-  LW:  { emoji: '⚡', label: 'Ponta Esquerda', bonusRange: '+1 a +3' },
+// Mapeamento de posição para emoji e label (para exibição)
+const POSITION_DEF_META: Record<string, { emoji: string; label: string }> = {
+  GK:  { emoji: '🧤', label: 'Goleiro' },
+  DF:  { emoji: '🛡️', label: 'Zagueiro' },
+  LD:  { emoji: '🛡️', label: 'Lateral Dir.' },
+  LE:  { emoji: '🛡️', label: 'Lateral Esq.' },
+  CB:  { emoji: '🛡️', label: 'Zagueiro Central' },
+  DM:  { emoji: '🛡️', label: 'Volante' },
+  MF:  { emoji: '🎯', label: 'Meio-campo' },
+  AM:  { emoji: '🎯', label: 'Meio-atacante' },
+  FW:  { emoji: '⚡', label: 'Atacante' },
+  ST:  { emoji: '⚡', label: 'Centroavante' },
+  CF:  { emoji: '⚡', label: 'Centroavante' },
+  RW:  { emoji: '⚡', label: 'Ponta Direita' },
+  LW:  { emoji: '⚡', label: 'Ponta Esquerda' },
+}
+
+// Metadados visuais por opção (espelha DEFENSIVE_OPTIONS do engine)
+const OPTION_VISUAL: Record<DefensiveOption['id'], {
+  Icon: typeof Shield
+  riskColor: string
+  riskBadgeClass: string
+}> = {
+  AGGRESSIVE_TACKLE: {
+    Icon: Swords,
+    riskColor: 'text-rose-400',
+    riskBadgeClass: 'bg-rose-600 text-white',
+  },
+  PASS_INTERCEPTION: {
+    Icon: Hand,
+    riskColor: 'text-sky-400',
+    riskBadgeClass: 'bg-sky-600 text-white',
+  },
+  PRESSING_MARK: {
+    Icon: Footprints,
+    riskColor: 'text-amber-400',
+    riskBadgeClass: 'bg-amber-600 text-white',
+  },
 }
 
 interface Props {
@@ -64,11 +106,27 @@ export function DefensivePlayDialog({
   starters,
   opponentProgress,
 }: Props) {
-  const [phase, setPhase] = useState<DefPhase>('SELECT_PLAYER')
+  const [phase, setPhase] = useState<DefPhase>('SELECT_OPTION')
+  const [selectedOption, setSelectedOption] = useState<DefensiveOption | null>(null)
   const [selectedPlayer, setSelectedPlayer] = useState<SelectedPlayer | null>(null)
   const [defResult, setDefResult] = useState<DefensivePlayResult | null>(null)
   const [rolling, setRolling] = useState(false)
   const [displayFace, setDisplayFace] = useState(1)
+  // Ordem aleatória das 3 opções (sorteada quando o diálogo abre)
+  const [shuffledOptions, setShuffledOptions] = useState<DefensiveOption[]>(DEFENSIVE_OPTIONS)
+
+  // Reset quando o diálogo abre
+  useEffect(() => {
+    if (open) {
+      setPhase('SELECT_OPTION')
+      setSelectedOption(null)
+      setSelectedPlayer(null)
+      setDefResult(null)
+      setRolling(false)
+      setDisplayFace(1)
+      setShuffledOptions(sampleDefensiveOptions())
+    }
+  }, [open])
 
   // Titulares disponíveis (filtrar nulls)
   const availableStarters = useMemo(() =>
@@ -79,7 +137,13 @@ export function DefensivePlayDialog({
   // Faces do d20 para animação
   const RANDOM_FACES = [3, 17, 8, 14, 5, 19, 11, 2, 16, 7, 12, 18, 4, 9, 13, 6, 20, 1, 15, 10]
 
+  const handleSelectOption = (option: DefensiveOption) => {
+    setSelectedOption(option)
+    setPhase('SELECT_PLAYER')
+  }
+
   const handleSelectPlayer = (player: SelectedPlayer) => {
+    if (!selectedOption) return
     setSelectedPlayer(player)
     setPhase('DICE_RESULT')
     setRolling(true)
@@ -95,7 +159,7 @@ export function DefensivePlayDialog({
     // Após 1.8s, resolver jogada defensiva e mostrar resultado
     setTimeout(() => {
       clearInterval(interval)
-      const result = resolveDefensivePlay(player.position, player.name)
+      const result = resolveDefensivePlay(selectedOption, player.position, player.name)
       setDefResult(result)
       setDisplayFace(result.dice)
       setRolling(false)
@@ -114,7 +178,10 @@ export function DefensivePlayDialog({
 
   const getPosLabel = (pos: string) => POSITION_DEF_META[pos]?.label ?? pos
   const getPosEmoji = (pos: string) => POSITION_DEF_META[pos]?.emoji ?? '⚽'
-  const getPosBonusRange = (pos: string) => POSITION_DEF_META[pos]?.bonusRange ?? '+2'
+  const getPosBonusRange = (pos: string, option: DefensiveOption) => {
+    const range = option.bonusByPosition[pos]
+    return range ? `+${range[0]} a +${range[1]}` : '+2 a +4'
+  }
 
   // Cor do resultado do dado
   const getResultColor = (result: DefensivePlayResult) => {
@@ -133,46 +200,133 @@ export function DefensivePlayDialog({
 
   return (
     <Dialog open={open} onOpenChange={() => {}}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-sky-400">
             <Shield className="h-5 w-5" />
-            Jogada Defensiva
+            Oportunidade Defensiva!
           </DialogTitle>
           <DialogDescription>
-            {phase === 'SELECT_PLAYER'
-              ? 'O oponente está jogando, mas você tem a chance de interceptar! Selecione um jogador para tentar a jogada defensiva.'
-              : rolling
-                ? 'Rolando o d20...'
-                : defResult?.success
-                  ? 'Jogada defensiva bem-sucedida! Você recuperou a posse!'
-                  : 'Jogada defensiva falhou. A vez do oponente continua.'}
+            {phase === 'SELECT_OPTION'
+              ? 'A bola está com o oponente! Escolha uma das 3 opções defensivas para tentar recuperar a posse.'
+              : phase === 'SELECT_PLAYER'
+                ? `Opção escolhida: ${selectedOption?.name}. Selecione o jogador para executar a jogada.`
+                : rolling
+                  ? 'Rolando o d20...'
+                  : defResult?.ballStolen
+                    ? '🎉 Roubo de bola! Você recuperou a posse!'
+                    : defResult?.success
+                      ? 'Marcação bem-sucedida! O oponente foi atrasado.'
+                      : 'Jogada defensiva falhou. A vez do oponente continua.'}
           </DialogDescription>
         </DialogHeader>
 
+        {/* ===== Status do oponente (banner superior) ===== */}
+        <div className="rounded-lg border border-amber-800/40 bg-amber-950/30 p-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1 text-amber-300 font-semibold">
+              <Activity className="h-3 w-3" />
+              Progresso do oponente
+            </span>
+            <span className="text-amber-400 font-bold">
+              {opponentProgress}%
+              {opponentProgress >= 60 && (
+                <span className="ml-2 text-rose-300">⚠ Perto do gol!</span>
+              )}
+            </span>
+          </div>
+          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-amber-900/60">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-amber-500 to-rose-500 transition-all"
+              style={{ width: `${opponentProgress}%` }}
+            />
+          </div>
+        </div>
+
         <AnimatePresence mode="wait">
-          {/* ===== FASE 1: Selecionar jogador ===== */}
-          {phase === 'SELECT_PLAYER' && (
+          {/* ===== FASE 1: Selecionar opção defensiva ===== */}
+          {phase === 'SELECT_OPTION' && (
             <motion.div
-              key="select-player"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
+              key="select-option"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
               className="space-y-3"
             >
-              {/* Info sobre jogada defensiva */}
-              <div className="rounded-lg border border-sky-800/30 bg-sky-950/20 p-3 text-xs text-sky-300">
-                <p className="font-semibold mb-1">🛡️ Sistema de Jogada Defensiva</p>
-                <p className="text-sky-400/80">
-                  Lance um d20 + skillBonus vs DC 14. Se bem-sucedido, você <strong className="text-emerald-400">recupera a posse de bola</strong> e
-                  interrompe a vez do oponente! Defensores têm bônus maior (+4 a +6), atacantes menor (+1 a +3).
+              {/* Banner explicativo */}
+              <div className="rounded-lg border border-sky-800/30 bg-sky-950/20 p-2 text-[11px] text-sky-300">
+                <p className="font-semibold flex items-center gap-1">
+                  <Zap className="h-3 w-3" /> Como funciona
                 </p>
-                <p className="text-sky-400/60 mt-1">
-                  Progresso do oponente: <strong className="text-amber-400">{opponentProgress}%</strong> — {opponentProgress >= 60 ? 'Perto do gol, chance defensiva aumentada!' : 'Chance base de interceptação.'}
+                <p className="text-sky-400/80 mt-0.5">
+                  Cada opção tem DC, bônus por posição e efeito diferente. Escolha
+                  conforme a estratégia: arriscar para roubar a bola, ou pressionar
+                  para apenas atrasar o oponente. <strong className="text-emerald-400">Verde = rouba bola</strong>,{' '}
+                  <span className="text-amber-400">âmbar = só atrasa</span>.
                 </p>
               </div>
 
-              {/* Botão para pular (não tentar) */}
+              {/* As 3 opções defensivas */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {shuffledOptions.map((option, idx) => {
+                  const visual = OPTION_VISUAL[option.id]
+                  const OptIcon = visual.Icon
+                  return (
+                    <motion.button
+                      key={option.id}
+                      type="button"
+                      onClick={() => handleSelectOption(option)}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.1 }}
+                      whileHover={{ scale: 1.03, y: -3 }}
+                      whileTap={{ scale: 0.97 }}
+                      className={`relative flex flex-col gap-2 rounded-xl border border-white/10 bg-gradient-to-br ${option.color} p-3 text-left shadow-lg`}
+                    >
+                      {/* Emoji e risco */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-3xl drop-shadow">{option.emoji}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${visual.riskBadgeClass}`}>
+                          {option.riskLabel}
+                        </span>
+                      </div>
+
+                      {/* Nome */}
+                      <h3 className="text-sm font-bold leading-tight text-white drop-shadow">
+                        {option.name}
+                      </h3>
+
+                      {/* Descrição */}
+                      <p className="text-[11px] leading-tight text-white/85">
+                        {option.description}
+                      </p>
+
+                      {/* Stats: DC, efeito */}
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-white/90">
+                        <span className="flex items-center gap-1 rounded bg-black/30 px-1.5 py-0.5">
+                          <Shield className="h-3 w-3" /> DC {option.dc}
+                        </span>
+                        {option.stealBall ? (
+                          <span className="flex items-center gap-1 rounded bg-emerald-700/60 px-1.5 py-0.5 font-bold">
+                            <Swords className="h-3 w-3" /> Rouba Bola
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 rounded bg-amber-700/60 px-1.5 py-0.5 font-bold">
+                            <Activity className="h-3 w-3" /> Atrasa
+                          </span>
+                        )}
+                        {option.progressReduction > 0 && (
+                          <span className="flex items-center gap-1 rounded bg-black/40 px-1.5 py-0.5 font-bold text-yellow-200">
+                            <TrendingDown className="h-3 w-3" /> -{option.progressReduction}%
+                          </span>
+                        )}
+                      </div>
+                    </motion.button>
+                  )
+                })}
+              </div>
+
+              {/* Botão pular */}
               <Button
                 variant="outline"
                 onClick={handleSkip}
@@ -181,14 +335,48 @@ export function DefensivePlayDialog({
                 <SkipForward className="h-4 w-4" />
                 Não tentar — deixar oponente continuar
               </Button>
+            </motion.div>
+          )}
+
+          {/* ===== FASE 2: Selecionar jogador ===== */}
+          {phase === 'SELECT_PLAYER' && selectedOption && (
+            <motion.div
+              key="select-player"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-3"
+            >
+              {/* Resumo da opção escolhida */}
+              <div className={`rounded-lg border border-white/10 bg-gradient-to-br ${selectedOption.color} p-3`}>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">{selectedOption.emoji}</span>
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-white">{selectedOption.name}</p>
+                    <p className="text-[11px] text-white/80">
+                      DC {selectedOption.dc} · {selectedOption.stealBall ? 'Rouba bola' : 'Só atrasa'}
+                      {selectedOption.progressReduction > 0 && ` · Reduz ${selectedOption.progressReduction}%`}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => { setPhase('SELECT_OPTION'); setSelectedOption(null) }}
+                    className="text-white/80 hover:text-white hover:bg-white/10 text-xs"
+                  >
+                    <ChevronLeft className="h-3 w-3 mr-1" /> Trocar opção
+                  </Button>
+                </div>
+              </div>
 
               <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
-                Selecione o jogador para a jogada defensiva:
+                Selecione o jogador para executar a jogada:
               </p>
-              <div className="max-h-[320px] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4b5563 transparent' }}>
+              <div className="max-h-[280px] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4b5563 transparent' }}>
                 <ul className="space-y-2">
                   {availableStarters.map((player) => {
-                    const meta = POSITION_DEF_META[player.position] ?? { emoji: '⚽', label: player.position, bonusRange: '+2' }
+                    const meta = POSITION_DEF_META[player.position] ?? { emoji: '⚽', label: player.position }
+                    const bonusRange = getPosBonusRange(player.position, selectedOption)
                     return (
                       <motion.li
                         key={player.id}
@@ -213,9 +401,9 @@ export function DefensivePlayDialog({
                               <span>· {player.team}</span>
                               {player.overall ? <span>· OVR {player.overall}</span> : null}
                             </p>
-                            {/* Mostrar bônus esperado baseado na posição */}
+                            {/* Mostrar bônus esperado baseado na posição E na opção */}
                             <Badge className="text-[10px] px-1.5 py-0.5 bg-sky-600 text-white mt-1">
-                              🛡️ Bônus: {meta.bonusRange}
+                              🛡️ Bônus: {bonusRange}
                             </Badge>
                           </div>
                           <Shield className="h-4 w-4 text-sky-400" />
@@ -228,7 +416,7 @@ export function DefensivePlayDialog({
             </motion.div>
           )}
 
-          {/* ===== FASE 2: Resultado do dado ===== */}
+          {/* ===== FASE 3: Resultado do dado ===== */}
           {phase === 'DICE_RESULT' && (
             <motion.div
               key="dice-result"
@@ -237,8 +425,8 @@ export function DefensivePlayDialog({
               exit={{ opacity: 0, x: 20 }}
               className="space-y-4"
             >
-              {/* Selected player info */}
-              {selectedPlayer && (
+              {/* Opção + jogador selecionado */}
+              {selectedOption && selectedPlayer && (
                 <Card className="border-sky-800/50 bg-sky-950/30">
                   <CardContent className="flex items-center gap-3 p-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20">
@@ -249,6 +437,9 @@ export function DefensivePlayDialog({
                       <p className="text-xs text-sky-400/70">
                         {getPosEmoji(selectedPlayer.position)} {getPosLabel(selectedPlayer.position)}
                         {selectedPlayer.overall ? ` · OVR ${selectedPlayer.overall}` : ''}
+                      </p>
+                      <p className="text-[11px] text-teal-300 mt-0.5">
+                        {selectedOption.emoji} {selectedOption.name} · DC {selectedOption.dc}
                       </p>
                     </div>
                     <Badge className="bg-sky-600">DEFENSOR</Badge>
@@ -297,9 +488,11 @@ export function DefensivePlayDialog({
                         ? '🎲 CRITICAL HIT! Interceptação espetacular!'
                         : defResult.critical === 'crit_fail'
                           ? '💀 CRITICAL FAIL! Falha automática!'
-                          : defResult.success
-                            ? '✅ Jogada defensiva bem-sucedida!'
-                            : '❌ Jogada defensiva falhou.'}
+                          : defResult.ballStolen
+                            ? '✅ Bola roubada! Sua vez de jogar!'
+                            : defResult.success
+                              ? '🟡 Marcação bem-sucedida — oponente atrasado!'
+                              : '❌ Jogada defensiva falhou.'}
                     </div>
                     <div className="text-sm text-gray-400">
                       🎲 d20: <strong className="text-white">{defResult.dice}</strong> + skillBonus{' '}
@@ -312,6 +505,22 @@ export function DefensivePlayDialog({
                         {defResult.narrative}
                       </p>
                     </div>
+
+                    {/* Indicador de efeito */}
+                    {defResult.success && (
+                      <div className="mt-1 flex items-center gap-2 text-xs">
+                        {defResult.ballStolen && (
+                          <span className="rounded-full bg-emerald-600/30 px-2 py-0.5 font-bold text-emerald-300">
+                            ⚽ Posse recuperada
+                          </span>
+                        )}
+                        {defResult.progressReduction > 0 && (
+                          <span className="rounded-full bg-amber-600/30 px-2 py-0.5 font-bold text-amber-300">
+                            📉 Progresso do oponente: -{defResult.progressReduction}%
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </motion.div>
                 )}
               </div>
@@ -322,12 +531,12 @@ export function DefensivePlayDialog({
                   <Button
                     onClick={handleConfirmResult}
                     className={`flex-1 ${
-                      defResult.success
+                      defResult.ballStolen
                         ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                         : 'bg-gray-700 hover:bg-gray-800 text-gray-300'
                     }`}
                   >
-                    {defResult.success ? (
+                    {defResult.ballStolen ? (
                       <><Swords className="h-4 w-4 mr-2" /> Continuar — minha vez!</>
                     ) : (
                       <><SkipForward className="h-4 w-4 mr-2" /> Continuar — vez do oponente</>

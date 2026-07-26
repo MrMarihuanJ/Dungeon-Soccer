@@ -46,7 +46,7 @@ import {
   pickPlayerForAction,
   generateFreeKickMultiplier, applyMultiplierToGoalChance,
   pickKickerAvoidingRepeat,
-  resolveDefensivePlay, shouldOfferDefensivePlay,
+  resolveDefensivePlay, shouldOfferDefensivePlay, nextDefensiveOfferDelayMs,
   computeXpLevelInfo, getMaxSubstitutionsForLevel, getXpMultiplierForLevel,
   XP_BENEFITS,
 } from '@/lib/match-engine'
@@ -163,8 +163,15 @@ export function MatchArena({
   // `defensivePlayOpen` controla a abertura do DefensivePlayDialog durante
   // a vez do oponente. `lastTurnStoleBall` impede roubadas consecutivas
   // (regra anti-repetição exigida pelo usuário).
+  //
+  // ATUALIZAÇÃO: agora a oferta é feita periodicamente (a cada 4-8s) durante
+  // o OPPONENT_TURN, em "momentos aleatórios do jogo", conforme exigido pelo
+  // usuário. `defensiveAttemptInTurn` conta quantas tentativas já fizemos
+  // neste turno — quanto mais tentativas, maior a chance (cap 90%).
   const [defensivePlayOpen, setDefensivePlayOpen] = useState(false)
   const [lastTurnStoleBall, setLastTurnStoleBall] = useState(false)
+  const defensiveOfferTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const defensiveAttemptInTurnRef = useRef(0)
 
   // ===== CORREÇÃO 3: Histórico de multiplicadores da partida =====
   // Guarda o último batedor e o último sinal para evitar repetições
@@ -1129,12 +1136,14 @@ export function MatchArena({
   // `handleDefensivePlayResult`: chamado quando o usuário conclui a jogada
   //   defensiva (sucesso ou falha). Se a bola foi roubada, o usuário ganha
   //   a posse e joga novamente — interrompendo a vez do oponente.
+  //   Se foi apenas "pressão bem-sucedida" (opção Marcação Pressiva),
+  //   o turno do oponente CONTINUA mas seu progresso é reduzido.
   //   Em qualquer caso, o diálogo SOME IMEDIATAMENTE (regra anti-repetição).
   const handleDefensivePlayResult = (result: DefensivePlayResult) => {
     setDefensivePlayOpen(false)
 
     if (result.ballStolen) {
-      // Sucesso: o usuário recuperou a posse de bola
+      // ===== Roubo de bola: posse passa para o usuário =====
       // Marca que houve roubada neste turno para bloquear a próxima oferta
       setLastTurnStoleBall(true)
 
@@ -1147,22 +1156,53 @@ export function MatchArena({
       // Como o oponente perdeu a posse, atualizamos localmente para o
       // turno do usuário. O servidor já terá sido atualizado pela ação
       // do oponente (que falhou). Aqui apenas refletimos na UI.
-      setState((s) => ({
-        ...s,
-        currentPossession: mySide,
-      }))
+      // Também aplicamos redução de progresso (se houver) ao oponente.
+      setState((s) => {
+        const opponentProgressKey = isHome ? 'awayProgress' : 'homeProgress'
+        const currentOppProgress = s[opponentProgressKey]
+        const newOppProgress = Math.max(0, currentOppProgress - result.progressReduction)
+        return {
+          ...s,
+          currentPossession: mySide,
+          [opponentProgressKey]: newOppProgress,
+        }
+      })
       setPhase('PLAYER_TURN')
       drawMixedActions()
       setTurn((t) => t + 1)
       setProcessing(false)
+
+      // Limpa qualquer timer pendente do bot (offline)
+      if (botAutoPlayRef.current) {
+        clearTimeout(botAutoPlayRef.current)
+        botAutoPlayRef.current = null
+      }
+    } else if (result.success) {
+      // ===== Pressão bem-sucedida: oponente continua, mas perde progresso =====
+      toast('🟡 Marcação pressiva bem-sucedida!', {
+        description: `${result.narrative} Progresso do oponente reduzido em ${result.progressReduction}%.`,
+        duration: 3500,
+      })
+      // Reduz o progresso do oponente
+      setState((s) => {
+        const opponentProgressKey = isHome ? 'awayProgress' : 'homeProgress'
+        const currentOppProgress = s[opponentProgressKey]
+        const newOppProgress = Math.max(0, currentOppProgress - result.progressReduction)
+        return {
+          ...s,
+          [opponentProgressKey]: newOppProgress,
+        }
+      })
+      // Não marca lastTurnStoleBall (não houve roubo)
+      // Mantém phase OPPONENT_TURN — bot/polling continua
     } else {
-      // Falha: a vez do oponente continua
+      // ===== Falha: a vez do oponente continua normalmente =====
       toast.warning('Jogada defensiva falhou.', {
         description: result.narrative,
         duration: 3500,
       })
       // Não marca lastTurnStoleBall (não houve roubada)
-      // Mantém phase OPPONENT_TURN — polling continua
+      // Mantém phase OPPONENT_TURN — polling/bot continua
     }
   }
 
@@ -1218,11 +1258,18 @@ export function MatchArena({
   // ===== BOT AUTO-PLAY (offline mode) =====
   // In offline mode, when it's OPPONENT_TURN, the bot plays automatically
   // after a short delay to simulate "thinking".
+  //
+  // CORREÇÃO 7: o bot SÓ joga se o DefensivePlayDialog NÃO estiver aberto.
+  // Caso contrário, o usuário está escolhendo uma jogada defensiva e o
+  // bot não deve "jogar por cima" da decisão. O timer é limpo e recriado
+  // quando o diálogo fecha.
   const botAutoPlayRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     // Only auto-play bot when offline and it's the bot's turn
-    if (!isOffline || phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS' || processing || diceRolling) {
+    // Also pause if a defensive play dialog is open (user is deciding)
+    if (!isOffline || phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS'
+        || processing || diceRolling || defensivePlayOpen || subOpen || freeKickOpen || varOpen) {
       if (botAutoPlayRef.current) {
         clearTimeout(botAutoPlayRef.current)
         botAutoPlayRef.current = null
@@ -1233,6 +1280,8 @@ export function MatchArena({
     // Bot "thinks" for 1.5-2.5 seconds before playing
     const thinkDelay = 1500 + Math.random() * 1000
     botAutoPlayRef.current = setTimeout(() => {
+      // Double-check that no dialog opened during the thinking delay
+      if (defensivePlayOpen || subOpen || freeKickOpen || varOpen) return
       const actions = sampleMixedActions(1, true)
       const action = actions[0]
       if (action) {
@@ -1247,7 +1296,7 @@ export function MatchArena({
         botAutoPlayRef.current = null
       }
     }
-  }, [isOffline, phase, state.status, processing, diceRolling])
+  }, [isOffline, phase, state.status, processing, diceRolling, defensivePlayOpen, subOpen, freeKickOpen, varOpen])
 
   // ===== POLL FOR OPPONENT ACTIONS (online multiplayer only) =====
   const opponentPollRef = useRef<NodeJS.Timeout | null>(null)
@@ -1361,48 +1410,83 @@ export function MatchArena({
     }
   }, [phase, state.status, matchId, mySide, gameMode, modeConfig.goalsToWin])
 
-  // ===== CORREÇÃO 7: Oferece jogada defensiva em momentos aleatórios =====
-  // Sempre que entramos no OPPONENT_TURN, há uma chance (30-60%) de
-  // oferecer ao usuário a opção de jogar um dado para tentar roubar a bola.
-  // A oferta some automaticamente após o uso (defensivePlayOpen=false),
-  // e a próxima oferta é bloqueada se a última resultou em roubo
-  // (regra anti-repetição).
+  // ===== CORREÇÃO 7: Oferece jogada defensiva em MOMENTOS ALEATÓRIOS =====
+  // -----------------------------------------------------------------
+  // ATUALIZAÇÃO: Em vez de oferecer apenas uma vez no início do OPPONENT_TURN,
+  // agora sorteamos periodicamente (a cada 4-8s) enquanto durar o turno do
+  // oponente. Isto atende ao requisito do usuário de que as opções defensivas
+  // "apareçam em momentos aleatórios do jogo, independentemente do estado
+  // geral da partida".
+  //
+  // Funciona tanto em modo online (polling) quanto offline (bot auto-play).
+  // Em ambos os casos, o timer periódico rola a chance de oferta.
+  //
+  // Quando oferecida, o usuário vê 3 opções defensivas distintas no
+  // DefensivePlayDialog. Após o resultado (roubo/pressão/falha), o diálogo
+  // SOME IMEDIATAMENTE — não há repetição consecutiva.
+  //
+  // REGRA ANTI-REPETIÇÃO: se a última jogada defensiva resultou em roubo de
+  // bola, a próxima oferta é bloqueada no turno imediatamente seguinte.
   useEffect(() => {
     // Só oferece se for vez do oponente E partida em andamento
     if (phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS') {
       setDefensivePlayOpen(false)
+      // Limpa o timer e reseta o contador de tentativas
+      if (defensiveOfferTimerRef.current) {
+        clearTimeout(defensiveOfferTimerRef.current)
+        defensiveOfferTimerRef.current = null
+      }
       return
     }
+
     // Não oferece se já está aberto ou se há outro modal em uso
     if (defensivePlayOpen || subOpen || freeKickOpen || varOpen) return
-    // Não oferece em modo offline (bot joga rápido demais)
-    if (isOffline) return
 
-    // Progresso do oponente (quanto mais perto do gol, maior a chance)
-    const oppProgress = isHome ? state.awayProgress : state.homeProgress
+    // ===== Função que tenta oferecer a jogada defensiva =====
+    const tryOfferDefensivePlay = () => {
+      // Re-checa guards (podem ter mudado desde o agendamento)
+      if (defensivePlayOpen || subOpen || freeKickOpen || varOpen) return
+      if (phase !== 'OPPONENT_TURN') return
 
-    // Decide se oferece neste turno
-    const shouldOffer = shouldOfferDefensivePlay(
-      oppProgress,
-      lastTurnStoleBall,
-      state.turnCount,
-    )
+      // Progresso do oponente (quanto mais perto do gol, maior a chance)
+      const oppProgress = isHome ? state.awayProgress : state.homeProgress
 
-    if (shouldOffer) {
-      // Pequeno delay para não atrapalhar a transição de fase
-      const t = setTimeout(() => {
+      // Decide se oferece neste momento
+      const shouldOffer = shouldOfferDefensivePlay(
+        oppProgress,
+        lastTurnStoleBall,
+        defensiveAttemptInTurnRef.current,
+        state.turnCount,
+      )
+
+      if (shouldOffer) {
         setDefensivePlayOpen(true)
-      }, 800)
-      return () => clearTimeout(t)
-    } else {
-      // Se não ofereceu, reseta o flag de "último turno roubado"
-      // para que a próxima oferta possa ocorrer normalmente
-      if (lastTurnStoleBall) {
-        setLastTurnStoleBall(false)
+      } else {
+        // Se não ofereceu, reseta o flag de "último turno roubado"
+        // para que a próxima oferta possa ocorrer normalmente
+        if (lastTurnStoleBall) {
+          setLastTurnStoleBall(false)
+        }
+        // Agenda a próxima tentativa em 4-8s
+        defensiveAttemptInTurnRef.current += 1
+        defensiveOfferTimerRef.current = setTimeout(tryOfferDefensivePlay, nextDefensiveOfferDelayMs())
+      }
+    }
+
+    // ===== Inicia o ciclo de ofertas com um pequeno delay inicial =====
+    // Reset do contador de tentativas quando entramos num novo OPPONENT_TURN
+    defensiveAttemptInTurnRef.current = 0
+    const initialDelay = 800 + Math.random() * 1200  // 0.8-2.0s inicial
+    defensiveOfferTimerRef.current = setTimeout(tryOfferDefensivePlay, initialDelay)
+
+    return () => {
+      if (defensiveOfferTimerRef.current) {
+        clearTimeout(defensiveOfferTimerRef.current)
+        defensiveOfferTimerRef.current = null
       }
     }
   }, [phase, state.status, state.turnCount, state.homeProgress, state.awayProgress,
-      isHome, defensivePlayOpen, subOpen, freeKickOpen, varOpen, isOffline, lastTurnStoleBall])
+      isHome, defensivePlayOpen, subOpen, freeKickOpen, varOpen, lastTurnStoleBall])
 
   // ===== Poll for opponent joining (WAITING phase) =====
   useEffect(() => {

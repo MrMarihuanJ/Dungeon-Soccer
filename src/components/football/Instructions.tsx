@@ -5,8 +5,8 @@
 // --------------------------------------------------------------------
 // CORREÇÃO 10: Atualizado para incluir as novas regras de:
 //   - Substituições (limite de 5/6, contagem por lesão, interface clara)
-//   - Cobrança de falta (apenas em infrações + multiplicadores dinâmicos)
-//   - Jogadas defensivas (roubo de bola, anti-repetição)
+//   - Cobrança de falta (APENAS em infrações reais + multiplicadores dinâmicos)
+//   - Jogadas defensivas (3 opções estratégicas, gatilho aleatório periódico)
 //   - Sistema de XP / nível / benefícios desbloqueáveis
 //   - Punições automáticas (cartão vermelho remove do campo)
 // =====================================================================
@@ -56,13 +56,13 @@ const STEPS: Step[] = [
   },
   {
     icon: Target,
-    title: '6. Cobrança de falta com multiplicador',
-    text: 'Quando ocorre uma falta real (infração), o time favorecido pode cobrar. Cada batedor recebe um multiplicador aleatório: 🔥 BÔNUS (+5% a +30%), 💀 PENALIDADE (-5% a -25%), ou ⚖️ NEUTRO. A chance de gol exibida já inclui o multiplicador. O sistema evita repetições consecutivas do mesmo batedor e do mesmo sinal.',
+    title: '6. Cobrança de falta (só em infrações reais)',
+    text: 'As opções de cobrança de falta NUNCA aparecem no menu de jogadas normais — só quando o juiz marca uma falta real (infração). Cada batedor recebe um multiplicador aleatório: 🔥 BÔNUS (+5% a +30%), 💀 PENALIDADE (-5% a -25%), ou ⚖️ NEUTRO. A chance de gol exibida já inclui o multiplicador. O sistema evita repetições consecutivas do mesmo batedor e do mesmo sinal.',
   },
   {
     icon: TrendingUp,
-    title: '7. Jogada defensiva (roubo de bola)',
-    text: 'Durante a vez do oponente (modo online), pode aparecer uma chance de jogada defensiva! Escolha um defensor e role um d20 + skillBonus vs DC 14. Se acertar, você rouba a bola e joga novamente. Após uma roubada bem-sucedida, a próxima jogada defensiva NÃO é oferecida (anti-repetição).',
+    title: '7. Jogada defensiva (3 opções estratégicas)',
+    text: 'Em momentos aleatórios do jogo quando a bola está com o oponente (online e offline), surge uma oportunidade defensiva com 3 opções: ⚔️ Carrinho Agressivo (DC 16, alto risco, rouba bola E reduz 20% do progresso), 🛡️ Interceptação de Passe (DC 14, médio risco, roubo normal), 🏃 Marcação Pressiva (DC 12, baixo risco, só atrasa reduzindo 10%). Escolha conforme a estratégia! Após uma roubada bem-sucedida, a próxima jogada defensiva NÃO é oferecida (anti-repetição).',
   },
   {
     icon: AlertTriangle,
