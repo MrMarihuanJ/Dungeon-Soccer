@@ -268,8 +268,8 @@ export function AdminDashboard({ username, onLogout, onBack }: Props) {
                 <Globe className="h-6 w-6 text-sky-400" />
               </div>
               <div>
-                <div className="text-2xl font-bold text-white">3 fontes</div>
-                <div className="text-xs text-gray-400">TheSportsDB + Transfermarkt + Sofascore + Local</div>
+                <div className="text-2xl font-bold text-white">TheSportsDB</div>
+                <div className="text-xs text-gray-400">Fonte externa única + banco local</div>
               </div>
             </CardContent>
           </Card>
@@ -573,8 +573,8 @@ export function AdminDashboard({ username, onLogout, onBack }: Props) {
           <div>
             <strong className="text-emerald-300">Busca em tempo real ativa.</strong> Os usuários do
             site podem buscar <strong>qualquer jogador do mundo</strong> — os resultados vêm da
-            TheSportsDB + Transfermarkt + Sofascore + banco local. Os registros que você adicionar aqui
-            aparecerão junto com os externos.
+            TheSportsDB como fonte externa única, complementada pelo banco local. Os registros que você adicionar aqui
+            aparecerão junto com os resultados da TheSportsDB.
           </div>
         </div>
       </main>

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 
@@ -18,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Dungeon and Soccer · Monte seu Time dos Sonhos",
   description:
-    "Dungeon and Soccer: monte seu time de futebol com jogadores do mundo inteiro. Busca em tempo real, formações táticas, gestão de reservas, login de usuários e painel administrativo.",
+    "Dungeon and Soccer: monte seu time de futebol com jogadores do mundo inteiro. Busca em tempo real via TheSportsDB, formações táticas, gestão de reservas, login de usuários e painel administrativo.",
   keywords: [
     "Dungeon and Soccer",
     "montador de time",
@@ -26,6 +25,7 @@ export const metadata: Metadata = {
     "escalacao",
     "jogadores mundiais",
     "tempo real",
+    "TheSportsDB",
     "Next.js",
     "Prisma",
     "Neon",
@@ -61,7 +61,6 @@ export default function RootLayout({
       >
         <ThemeProvider>
           {children}
-          <Toaster />
           <SonnerToaster position="top-right" richColors closeButton />
         </ThemeProvider>
       </body>

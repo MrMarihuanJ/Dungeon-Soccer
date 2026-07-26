@@ -1,11 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  // Vercel handles deployment natively — remove "standalone" to avoid conflicts
   typescript: {
-    ignoreBuildErrors: true,
+    // Enable TS checking to catch type errors at build time
+    ignoreBuildErrors: false,
   },
-  reactStrictMode: false,
+  reactStrictMode: true,
   // Permite carregar fotos de jogadores de CDNs externos
   images: {
     remotePatterns: [
@@ -20,10 +21,6 @@ const nextConfig: NextConfig = {
       {
         protocol: "https",
         hostname: "ui-avatars.com",
-      },
-      {
-        protocol: "https",
-        hostname: "media.api-sports.io",
       },
       {
         protocol: "https",
