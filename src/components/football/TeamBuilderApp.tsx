@@ -2,8 +2,7 @@
 
 // =====================================================================
 // TeamBuilderApp - Aplicação principal do montador de times
-// Inclui: tema dark/light, easter eggs, salvar time por usuário,
-//         compartilhar time, ver estatísticas no ogol.com.br
+// Fonte única: TheSportsDB + banco local
 //         + modo RPG com convite/join flow
 // =====================================================================
 
@@ -62,6 +61,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
     initStarters,
     loadFromObject,
     setGameMode,
+    setBenchPosition,
   } = useTeamStore()
 
   const formation = getFormation(formationId)
@@ -99,6 +99,11 @@ export function TeamBuilderApp({ inviteCode }: Props) {
         if (data?.ok && data?.user) setCurrentUser(data.user)
       })
       .catch(() => {})
+  }, [])
+
+  // ===== Zustand persist: rehydrate no client =====
+  useEffect(() => {
+    useTeamStore.persist.rehydrate()
   }, [])
 
   useEffect(() => {
@@ -166,10 +171,10 @@ export function TeamBuilderApp({ inviteCode }: Props) {
   // ===== Auto-join when inviteCode is present and user is logged in =====
   useEffect(() => {
     if (inviteCode && joinState === 'joining' && currentUser) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       handleJoinMatch(inviteCode)
     }
-  }, [inviteCode, currentUser])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inviteCode, currentUser, joinState])
 
   const selectedIds = [
     ...Object.values(starters).map((p) => p?.id).filter(Boolean),
@@ -578,6 +583,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
               startersCount={startersCount}
               onSubstitute={handleSubstitute}
               onRemove={removeReserve}
+              onSetBenchPosition={setBenchPosition}
             />
             {/* Team Rating Card + Stats/Share buttons */}
             <div className="mt-4 space-y-3">
@@ -632,7 +638,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
                         setStatsOpen(true)
                       }}
                       className="absolute -top-1 -right-1 hidden h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white group-hover:flex"
-                      title="Ver estatísticas no ogol.com.br"
+                      title="Ver estatísticas na TheSportsDB"
                     >
                       <BarChart3 className="h-3 w-3" />
                     </button>

@@ -32,6 +32,8 @@ export interface SelectedPlayer {
   isRetired?: boolean
   isInactive?: boolean
   source?: string
+  // Posição designada no banco (opcional — permite reservas com posição diferente da natural)
+  benchPosition?: string
 }
 
 // Map: positionId -> SelectedPlayer | null
@@ -57,6 +59,8 @@ interface TeamState {
   loadFromObject: (team: { formation: string; starters: any; reserves: any }) => void
   // Define o modo de jogo (Dream Team / World Cup)
   setGameMode: (mode: 'DREAM_TEAM' | 'WORLD_CUP') => void
+  // Define a posição designada no banco para um reserva
+  setBenchPosition: (reserveId: string, benchPosition: string) => void
 }
 
 const buildEmptyStarters = (formationId: string): StartersMap => {
@@ -199,10 +203,19 @@ export const useTeamStore = create<TeamState>()(
           // Dream Team permite todos
           return { gameMode: mode }
         }),
+
+      setBenchPosition: (reserveId, benchPosition) =>
+        set((state) => {
+          const newReserves = state.reserves.map((r) =>
+            r.id === reserveId ? { ...r, benchPosition } : r
+          )
+          return { reserves: newReserves }
+        }),
     }),
     {
       name: 'cartoleiro-fc-team',
       version: 1,
+      skipHydration: true, // Fix: evita hydration mismatch no SSR (Vercel)
     },
   ),
 )
