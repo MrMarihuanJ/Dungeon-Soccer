@@ -38,9 +38,11 @@ import {
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
   type PenaltyEvent, type TeamMatchState, type GameMode,
+  type DefensivePlayResult, type XPLevel,
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
-  pickPlayerForAction,
+  pickPlayerForAction, shouldOfferDefensivePlay, resolveDefensivePlay,
+  getXPLevel, getXPProgress,
 } from '@/lib/match-engine'
 import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
@@ -88,8 +90,8 @@ export function MatchArena({
     maxTurns: modeConfig.maxTurns > 0 ? modeConfig.maxTurns : 999,
     events: [],
     winner: null,
-    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
-    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
+    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
     gameMode,
     matchStartedAt: null,
     pausedAt: null,
@@ -151,6 +153,13 @@ export function MatchArena({
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
 
+  // ===== Defensive play state (ball steal during opponent's turn) =====
+  // This state is reset every time possession changes, ensuring the
+  // opportunity appears only ONCE per turn cycle and does NOT persist.
+  const [defensivePlayOffered, setDefensivePlayOffered] = useState(false)
+  const [defensivePlayResult, setDefensivePlayResult] = useState<DefensivePlayResult | null>(null)
+  const [defensivePlayPending, setDefensivePlayPending] = useState(false)
+
   // Refs for timers
   const matchTimerRef = useRef<NodeJS.Timeout | null>(null)
   const turnTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -169,6 +178,23 @@ export function MatchArena({
   const mySide: Possession = isHome ? 'HOME' : 'AWAY'
   const myUser = isHome ? homeUser : awayUser
   const oppUser = isHome ? awayUser : homeUser
+
+  // ===== Filtered active players (exclude sent-off, substituted-out, injured) =====
+  // This computed list is used for display and action selection, ensuring
+  // that departed/red-carded/injured players do NOT appear as still playing.
+  const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+  const activePlayers = useMemo(() => {
+    return myStarters.filter(p =>
+      !myTeamState.sentOffPlayers.includes(p.id) &&
+      !myTeamState.substitutedOut.includes(p.id) &&
+      !myTeamState.injuredPlayers.includes(p.id)
+    )
+  }, [myStarters, myTeamState.sentOffPlayers, myTeamState.substitutedOut, myTeamState.injuredPlayers])
+
+  // ===== XP Level display =====
+  const myXP = myUser.xp ?? 0
+  const xpProgress = useMemo(() => getXPProgress(myXP), [myXP])
+  const xpLevel = xpProgress.currentLevel
 
   // ===== Transition after coin animation (unified mechanism) =====
   // This SINGLE effect handles ALL coin flip transitions:
@@ -629,12 +655,13 @@ export function MatchArena({
     setLastEvent(null)
 
     // Seleciona jogador para narrativa
+    // BUG FIX: Use activePlayers (excluding sent-off/substituted-out) instead of
+    // raw storeStarters, so narratives don't reference departed players
     let playerName = forcedPlayerName
     let targetPlayerName: string | undefined
     if (!playerName) {
-      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
       const { player, target } = pickPlayerForAction(
-        startersList.map(p => ({ name: p.name, position: p.position })),
+        activePlayers.map(p => ({ name: p.name, position: p.position })),
         action.category,
       )
       playerName = player
@@ -898,19 +925,66 @@ export function MatchArena({
   }
 
   // Substitution callback
+  // BUG FIX: Previously, this only updated TeamMatchState counters but never
+  // updated myStarters/myReserves local state. The departed player remained
+  // in myStarters and still appeared on the field. Now we properly:
+  // 1. Remove the departed player from myStarters
+  // 2. Add the reserve player to myStarters
+  // 3. Remove the reserve from myReserves
+  // 4. Track the departed player in substitutedOut (cannot return)
   const handleSubstitution = (outPlayerId: string, inPlayerId: string) => {
     setSubOpen(false)
-    const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+    const myTeamStateLocal = isHome ? state.homeTeamState : state.awayTeamState
+
+    // Find the actual player objects
+    const outPlayer = myStarters.find(p => p.id === outPlayerId) || (outPlayerId ? myStarters[Math.floor(Math.random() * myStarters.length)] : null)
+    const inPlayer = myReserves.find(p => p.id === inPlayerId)
+
+    if (!inPlayer) {
+      // No reserve available — team plays with fewer players
+      toast.warning('⚠️ Sem reserva disponível! Time joga com menos jogadores.')
+      // Still mark the injured player as out
+      const updatedTeamState: TeamMatchState = {
+        ...myTeamStateLocal,
+        substitutionsUsed: myTeamStateLocal.substitutionsUsed + 1,
+        injuredPlayers: outPlayerId ? myTeamStateLocal.injuredPlayers.filter((id) => id !== outPlayerId) : myTeamStateLocal.injuredPlayers,
+        substitutedOut: outPlayerId ? [...myTeamStateLocal.substitutedOut, outPlayerId] : myTeamStateLocal.substitutedOut,
+      }
+      setState((s) => ({
+        ...s,
+        homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
+        awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
+      }))
+      // Remove departed player from myStarters (they don't return)
+      if (outPlayerId) {
+        setMyStarters(prev => prev.filter(p => p.id !== outPlayerId))
+      }
+      finishPenaltyAndContinue()
+      return
+    }
+
+    // Normal substitution: swap players
     const updatedTeamState: TeamMatchState = {
-      ...myTeamState,
-      substitutionsUsed: myTeamState.substitutionsUsed + 1,
-      injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
+      ...myTeamStateLocal,
+      substitutionsUsed: myTeamStateLocal.substitutionsUsed + 1,
+      injuredPlayers: outPlayerId ? myTeamStateLocal.injuredPlayers.filter((id) => id !== outPlayerId) : myTeamStateLocal.injuredPlayers,
+      substitutedOut: outPlayerId ? [...myTeamStateLocal.substitutedOut, outPlayerId] : myTeamStateLocal.substitutedOut,
     }
     setState((s) => ({
       ...s,
       homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
       awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
     }))
+
+    // Update local starters/reserves lists
+    // Remove departed player from starters, add reserve to starters
+    setMyStarters(prev => {
+      const filtered = outPlayerId ? prev.filter(p => p.id !== outPlayerId) : prev
+      return [...filtered, inPlayer]
+    })
+    // Remove the reserve from reserves list
+    setMyReserves(prev => prev.filter(p => p.id !== inPlayerId))
+
     toast.success('✅ Substituição realizada!')
     finishPenaltyAndContinue()
   }
@@ -1025,6 +1099,110 @@ export function MatchArena({
       }
     }
   }, [isOffline, phase, state.status, processing, diceRolling])
+
+  // ===== DEFENSIVE PLAY OPPORTUNITY (ball steal during opponent's turn) =====
+  // BUG FIX: The defensive play must disappear when returning to the opponent's
+  // turn — it should NOT persist across multiple turn cycles. This effect:
+  // 1. Resets defensive play state whenever possession changes to my side
+  // 2. Offers a defensive play opportunity once during OPPONENT_TURN
+  // 3. After the opportunity is used (accept or decline), it does NOT reappear
+  //    until a new OPPONENT_TURN cycle begins
+  useEffect(() => {
+    // Clear defensive play when it becomes MY turn (possession changed)
+    if (phase === 'PLAYER_TURN' || state.currentPossession === mySide) {
+      setDefensivePlayOffered(false)
+      setDefensivePlayResult(null)
+      setDefensivePlayPending(false)
+      return
+    }
+
+    // Only offer during OPPONENT_TURN, not during other phases
+    if (phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS') {
+      return
+    }
+
+    // Don't offer if already offered this turn cycle or if already processing/rolling
+    if (defensivePlayOffered || defensivePlayPending || processing || diceRolling) {
+      return
+    }
+
+    // Don't offer if there's a penalty event being processed
+    if (currentPenalty || pendingPenalty) {
+      return
+    }
+
+    // Don't offer if there are no active defenders left
+    if (activePlayers.length === 0) {
+      return
+    }
+
+    // Check if defensive play should be offered (random chance)
+    const shouldOffer = shouldOfferDefensivePlay(state, mySide)
+    if (shouldOffer) {
+      setDefensivePlayOffered(true)
+    }
+  }, [phase, state.currentPossession, state.status, mySide, defensivePlayOffered, defensivePlayPending, processing, diceRolling, currentPenalty, pendingPenalty, activePlayers.length])
+
+  // Handle defensive play: player accepts the steal opportunity
+  const handleDefensivePlayAccept = () => {
+    if (!defensivePlayOffered || defensivePlayPending) return
+    setDefensivePlayPending(true)
+
+    // Pick a defender from active players (prefer DF position)
+    const defenders = activePlayers.filter(p => p.position === 'DF' || p.position === 'LD' || p.position === 'LE' || p.position === 'GK')
+    const defender = defenders.length > 0
+      ? defenders[Math.floor(Math.random() * defenders.length)]
+      : activePlayers[Math.floor(Math.random() * activePlayers.length)]
+
+    const result = resolveDefensivePlay(state, defender.name)
+    setDefensivePlayResult(result)
+
+    if (result.stolen) {
+      // Ball stolen! Possession changes to my side
+      toast.success(`🛡️ ${result.description}`, { duration: 4000 })
+      setState((s) => ({
+        ...s,
+        currentPossession: mySide,
+      }))
+      setTimeout(() => {
+        setPhase('PLAYER_TURN')
+        drawMixedActions()
+        setTurn((t) => t + 1)
+        setProcessing(false)
+        setDefensivePlayPending(false)
+        setDefensivePlayOffered(false)
+        setDefensivePlayResult(null)
+      }, 2000)
+    } else {
+      // Failed steal — opponent keeps possession
+      toast.info(`🛡️ ${result.description}`, { duration: 3000 })
+      // On crit fail, attacker gains bonus progress
+      if (result.diceRoll?.critical === 'crit_fail') {
+        setState((s) => {
+          const oppProgress = state.currentPossession === 'HOME' ? s.homeProgress : s.awayProgress
+          return {
+            ...s,
+            homeProgress: state.currentPossession === 'HOME' ? Math.min(100, s.homeProgress + 10) : s.homeProgress,
+            awayProgress: state.currentPossession === 'AWAY' ? Math.min(100, s.awayProgress + 10) : s.awayProgress,
+          }
+        })
+      }
+      // Clear the offer — it does NOT persist, opponent continues their turn
+      setTimeout(() => {
+        setDefensivePlayPending(false)
+        setDefensivePlayOffered(false)
+        setDefensivePlayResult(null)
+      }, 1500)
+    }
+  }
+
+  // Handle defensive play: player declines the steal opportunity
+  const handleDefensivePlayDecline = () => {
+    setDefensivePlayOffered(false)
+    setDefensivePlayResult(null)
+    setDefensivePlayPending(false)
+    toast.info('🛡️ Jogada defensiva ignorada.', { duration: 2000 })
+  }
 
   // ===== POLL FOR OPPONENT ACTIONS (online multiplayer only) =====
   const opponentPollRef = useRef<NodeJS.Timeout | null>(null)
@@ -1304,6 +1482,21 @@ export function MatchArena({
             <Badge variant="outline" className="border-emerald-700 text-emerald-300 text-[10px]">
               🔄 {isHome ? state.homeTeamState.substitutionsUsed : state.awayTeamState.substitutionsUsed}/5
             </Badge>
+            {/* XP Level badge */}
+            <Badge variant="outline" className="border-purple-700 text-purple-300 text-[10px]">
+              ⭐ Lv.{xpLevel.level} {xpLevel.title}
+            </Badge>
+            {/* Punishment warning: team has fewer players */}
+            {myTeamState.sentOffPlayers.length > 0 && (
+              <Badge variant="outline" className="border-red-800 text-red-400 text-[10px] animate-pulse">
+                ⚠️ {myTeamState.sentOffPlayers.length} expulso(s)
+              </Badge>
+            )}
+            {(11 - activePlayers.length) > 0 && (
+              <Badge variant="outline" className="border-amber-700 text-amber-400 text-[10px]">
+                👥 {activePlayers.length}/11 em campo
+              </Badge>
+            )}
           </div>
           {/* Pause/Resume button */}
           {(phase === 'PLAYER_TURN' || phase === 'OPPONENT_TURN' || phase === 'PAUSED') && (
@@ -1718,6 +1911,75 @@ export function MatchArena({
                       </div>
                     )}
                   </div>
+
+                  {/* ===== Defensive play prompt (ball steal opportunity) ===== */}
+                  {/* BUG FIX: This only appears ONCE per OPPONENT_TURN cycle and
+                      disappears immediately after: (1) player accepts, (2) player
+                      declines, or (3) possession changes to my side. It does NOT
+                      persist across multiple turn cycles. */}
+                  <AnimatePresence>
+                    {defensivePlayOffered && !defensivePlayPending && !defensivePlayResult && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                        className="mt-4 rounded-xl border border-amber-500/40 bg-amber-950/20 p-4 text-center"
+                      >
+                        <div className="flex items-center justify-center gap-2 mb-2">
+                          <Zap className="h-5 w-5 text-amber-400" />
+                          <span className="text-sm font-bold text-amber-300">Jogada Defensiva!</span>
+                        </div>
+                        <p className="text-xs text-amber-200 mb-3">
+                          Oportunidade de roubar a bola! Role o dado para tentar interceptar.
+                          Se falhar, o adversário continua com a posse.
+                        </p>
+                        <div className="flex items-center justify-center gap-3">
+                          <Button
+                            onClick={handleDefensivePlayAccept}
+                            className="bg-amber-500 text-black hover:bg-amber-400 gap-1"
+                            size="sm"
+                          >
+                            <Zap className="h-3 w-3" />
+                            Tentar Roubo!
+                          </Button>
+                          <Button
+                            onClick={handleDefensivePlayDecline}
+                            variant="outline"
+                            className="border-gray-600 text-gray-400 hover:bg-gray-800"
+                            size="sm"
+                          >
+                            Ignorar
+                          </Button>
+                        </div>
+                      </motion.div>
+                    )}
+
+                    {/* Show defensive play result */}
+                    {defensivePlayResult && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="mt-4 rounded-xl border p-4 text-center ${
+                          defensivePlayResult.stolen
+                            ? 'border-emerald-500/40 bg-emerald-950/20'
+                            : 'border-red-500/40 bg-red-950/20'
+                        }"
+                      >
+                        <p className="text-sm font-bold ${
+                          defensivePlayResult.stolen ? 'text-emerald-300' : 'text-red-300'
+                        }">
+                          {defensivePlayResult.stolen ? '🛡️ Bola Roubada!' : '🛡️ Roubo Falhou!'}
+                        </p>
+                        <p className="text-xs text-gray-300 mt-1">{defensivePlayResult.description}</p>
+                        {defensivePlayResult.diceRoll && (
+                          <p className="text-xs text-gray-400 mt-1">
+                            d20={defensivePlayResult.diceRoll.dice} +2 vs DC 14 = {defensivePlayResult.diceRoll.total}
+                          </p>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </CardContent>
               </Card>
             )}
@@ -1750,6 +2012,34 @@ export function MatchArena({
                   {winnerIsMe ? `+${modeConfig.xpWin} XP` : state.winner === 'DRAW' ? `+${modeConfig.xpDraw} XP` : `+${modeConfig.xpLose} XP`}
                   {' '}({modeConfig.emoji} {modeConfig.label})
                 </p>
+                {/* XP Level progress */}
+                <div className="mt-3 rounded-lg bg-gray-800/60 p-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-purple-300 font-bold">⭐ Lv.{xpProgress.currentLevel.level} {xpProgress.currentLevel.title}</span>
+                    <span className="text-gray-400">{myXP} XP</span>
+                  </div>
+                  {xpProgress.nextLevel && (
+                    <div className="mt-1">
+                      <div className="h-2 overflow-hidden rounded-full bg-gray-700">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${xpProgress.progressPercent}%` }}
+                          className="h-full bg-gradient-to-r from-purple-500 to-purple-400"
+                        />
+                      </div>
+                      <p className="mt-1 text-[10px] text-gray-500">
+                        {xpProgress.progressPercent}% para Lv.{xpProgress.nextLevel.level} {xpProgress.nextLevel.title} ({xpProgress.nextLevel.minXP} XP)
+                      </p>
+                    </div>
+                  )}
+                  {!xpProgress.nextLevel && (
+                    <p className="mt-1 text-[10px] text-purple-400">Nível máximo alcançado!</p>
+                  )}
+                  {/* Level bonuses */}
+                  <p className="mt-1 text-[10px] text-gray-500">
+                    Bônus: +{xpProgress.currentLevel.bonusSkill} skill | +{xpProgress.currentLevel.bonusGoalChance * 100}% gol
+                  </p>
+                </div>
               </div>
               <Button onClick={onExit} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
                 <ArrowLeft className="h-4 w-4" />
@@ -1843,7 +2133,7 @@ export function MatchArena({
         onConfirm={handleSubstitution}
         injuredPlayer={subInjuredPlayer}
         reserves={myReserves}
-        starters={myStarters}
+        starters={activePlayers}
         substitutionsUsed={isHome ? state.homeTeamState.substitutionsUsed : state.awayTeamState.substitutionsUsed}
         maxSubstitutions={5}
         isForced={subIsForced}
@@ -1857,7 +2147,7 @@ export function MatchArena({
         open={freeKickOpen}
         onClose={() => { setFreeKickOpen(false); finishPenaltyAndContinue() }}
         onPlayFreeKick={handleFreeKickPlay}
-        fieldPlayers={myStarters}
+        fieldPlayers={activePlayers}
         possession={freeKickPossession}
       />
     </div>

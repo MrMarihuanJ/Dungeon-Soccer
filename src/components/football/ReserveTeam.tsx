@@ -1,8 +1,12 @@
 'use client'
 
 // =====================================================================
-// ReserveTeam - Painel do time reserva (modo técnico)
-// NOVO: Seletor de posição designada (benchPosition) para cada reserva
+// ReserveTeam - Painel do time reserva (modo técnico) - com tema
+// --------------------------------------------------------------------
+// NOVO: Cada reserva agora tem um seletor de posição (benchPosition)
+// que permite ao usuário definir qual posição o jogador irá desempenhar
+// quando entrar em campo. Por exemplo, um meia pode ser designado
+// como atacante reserva, ou um zagueiro como lateral.
 // =====================================================================
 
 import { motion, AnimatePresence } from 'framer-motion'
@@ -73,6 +77,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
             <ul className="space-y-2">
               <AnimatePresence>
                 {reserves.map((r) => {
+                  // benchPosition é a posição designada; se não definida, usa a posição natural
                   const effectivePosition = (r.benchPosition || r.position) as SimplifiedPosition
                   const hasCustomPosition = r.benchPosition && r.benchPosition !== r.position
 
@@ -107,6 +112,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
                                   #{r.shirtNumber}
                                 </span>
                               )}
+                              {/* Badge da posição natural */}
                               <Badge
                                 variant="secondary"
                                 className={`px-1.5 py-0 text-[10px] ${POS_COLOR[r.position] ?? ''}`}

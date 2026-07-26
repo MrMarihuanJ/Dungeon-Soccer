@@ -2,7 +2,7 @@
 
 // =====================================================================
 // PlayerStatsDialog - Exibe estatísticas atualizadas de um jogador
-// Fonte única: TheSportsDB
+// Busca dados exclusivamente da TheSportsDB
 // =====================================================================
 
 import { useState, useEffect } from 'react'
@@ -12,6 +12,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   BarChart3, ExternalLink, Loader2, Search, Globe,
 } from 'lucide-react'
@@ -28,6 +29,7 @@ interface PlayerStatsData {
   born: string | null
   height: string | null
   weight: string | null
+  signature: string | null
   sources: { name: string; data: string }[]
 }
 
@@ -96,17 +98,30 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
               </p>
               {player.overall && (
                 <div className="mt-1 flex gap-1">
-                  <Badge variant="outline" className="border-emerald-700 text-[9px] text-emerald-300">PAC {player.pace || '—'}</Badge>
-                  <Badge variant="outline" className="border-rose-700 text-[9px] text-rose-300">SHO {player.shooting || '—'}</Badge>
-                  <Badge variant="outline" className="border-blue-700 text-[9px] text-blue-300">PAS {player.passing || '—'}</Badge>
-                  <Badge variant="outline" className="border-purple-700 text-[9px] text-purple-300">DRI {player.dribbling || '—'}</Badge>
-                  <Badge variant="outline" className="border-amber-700 text-[9px] text-amber-300">DEF {player.defending || '—'}</Badge>
-                  <Badge variant="outline" className="border-orange-700 text-[9px] text-orange-300">PHY {player.physical || '—'}</Badge>
+                  <Badge variant="outline" className="border-emerald-700 text-[9px] text-emerald-300">
+                    PAC {player.pace || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-rose-700 text-[9px] text-rose-300">
+                    SHO {player.shooting || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-blue-700 text-[9px] text-blue-300">
+                    PAS {player.passing || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-purple-700 text-[9px] text-purple-300">
+                    DRI {player.dribbling || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-amber-700 text-[9px] text-amber-300">
+                    DEF {player.defending || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-orange-700 text-[9px] text-orange-300">
+                    PHY {player.physical || '—'}
+                  </Badge>
                 </div>
               )}
             </div>
           </div>
 
+          {/* Loading state */}
           {loading && (
             <div className="flex flex-col items-center gap-3 py-8">
               <Loader2 className="h-8 w-8 animate-spin text-emerald-400" />
@@ -114,12 +129,14 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
             </div>
           )}
 
+          {/* Error state */}
           {error && !loading && (
             <div className="rounded-lg border border-red-800/50 bg-red-950/20 p-4 text-center">
               <p className="text-sm text-red-400">{error}</p>
             </div>
           )}
 
+          {/* Stats results */}
           {stats && !loading && (
             <AnimatePresence>
               <motion.div
@@ -127,7 +144,7 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
                 animate={{ opacity: 1, y: 0 }}
                 className="space-y-3"
               >
-                {/* TheSportsDB link */}
+                {/* Quick link to TheSportsDB */}
                 <div className="flex gap-2">
                   {stats.thesportsdbUrl && (
                     <Button
@@ -155,30 +172,55 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
                   )}
                 </div>
 
+                {/* TheSportsDB detailed info */}
                 {stats.latestStats && (
                   <div className="rounded-lg border border-gray-700/50 bg-gray-800/30 p-3">
-                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-gray-400">Dados recentes:</p>
+                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-gray-400">
+                      Dados recentes:
+                    </p>
                     <p className="text-xs text-gray-300">{stats.latestStats}</p>
                   </div>
                 )}
 
-                {/* Personal info */}
+                {/* Additional details from TheSportsDB */}
                 {(stats.born || stats.height || stats.weight) && (
                   <div className="rounded-lg border border-emerald-700/30 bg-emerald-950/20 p-3">
-                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-emerald-400">Informações pessoais:</p>
+                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-emerald-400">
+                      Informações pessoais:
+                    </p>
                     <div className="grid grid-cols-3 gap-2 text-xs text-gray-300">
-                      {stats.born && <div><span className="text-gray-500">Nascimento:</span> <span className="ml-1">{stats.born}</span></div>}
-                      {stats.height && <div><span className="text-gray-500">Altura:</span> <span className="ml-1">{stats.height}</span></div>}
-                      {stats.weight && <div><span className="text-gray-500">Peso:</span> <span className="ml-1">{stats.weight}</span></div>}
+                      {stats.born && (
+                        <div>
+                          <span className="text-gray-500">Nascimento:</span>
+                          <span className="ml-1">{stats.born}</span>
+                        </div>
+                      )}
+                      {stats.height && (
+                        <div>
+                          <span className="text-gray-500">Altura:</span>
+                          <span className="ml-1">{stats.height}</span>
+                        </div>
+                      )}
+                      {stats.weight && (
+                        <div>
+                          <span className="text-gray-500">Peso:</span>
+                          <span className="ml-1">{stats.weight}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
 
+                {/* No results */}
                 {!stats.latestStats && !stats.thesportsdbUrl && (
                   <div className="rounded-lg border border-amber-800/50 bg-amber-950/20 p-4 text-center">
                     <Search className="mx-auto mb-2 h-6 w-6 text-amber-400" />
-                    <p className="text-sm text-amber-300">Nenhuma estatística encontrada na TheSportsDB.</p>
-                    <p className="mt-1 text-xs text-gray-400">Tente buscar manualmente no site da TheSportsDB.</p>
+                    <p className="text-sm text-amber-300">
+                      Nenhuma estatística encontrada na TheSportsDB.
+                    </p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      Tente buscar manualmente no site da TheSportsDB.
+                    </p>
                   </div>
                 )}
               </motion.div>

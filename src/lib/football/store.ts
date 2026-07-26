@@ -1,21 +1,27 @@
 // =====================================================================
 // Store Zustand - Estado do time do Cartoleiro FC
 // ---------------------------------------------------------------------
-// Mantém estado de titulares, reservas, formação selecionada e操作
-// de substituição. Persiste em localStorage para não perder o time
-// ao recarregar a página.
+// Mantém estado de titulares, reservas, formação selecionada e
+// operações de substituição. Persiste em localStorage para não perder
+// o time ao recarregar a página.
+//
+// NOVO: Reservas agora têm campo `benchPosition` que permite ao
+// usuário definir qual posição o reserva irá desempenhar quando
+// entrar em campo. Isso permite, por exemplo, que um meia seja
+// designado como atacante reserva, ou um zagueiro como lateral.
 // =====================================================================
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { getFormation, type FieldPosition } from './formations'
+import { getFormation, type FieldPosition, type SimplifiedPosition } from './formations'
 
 export interface SelectedPlayer {
   id: string          // ID no banco
   name: string        // Nome curto
   fullName: string    // Nome completo
   team: string        // Time atual
-  position: string    // GK | DF | LD | LE | MF | FW
+  position: string    // GK | DF | LD | LE | MF | FW — posição natural do jogador
+  benchPosition?: string  // GK | DF | LD | LE | MF | FW — posição designada no banco (se diferente da natural)
   photoUrl: string    // URL da foto
   nationality?: string | null
   shirtNumber?: number | null
@@ -32,8 +38,6 @@ export interface SelectedPlayer {
   isRetired?: boolean
   isInactive?: boolean
   source?: string
-  // Posição designada no banco (opcional — permite reservas com posição diferente da natural)
-  benchPosition?: string
 }
 
 // Map: positionId -> SelectedPlayer | null
@@ -50,6 +54,8 @@ interface TeamState {
   removeStarter: (positionId: string) => void
   addReserve: (player: SelectedPlayer) => void
   removeReserve: (id: string) => void
+  // Altera a posição designada de um reserva no banco
+  setReserveBenchPosition: (reserveId: string, benchPosition: SimplifiedPosition) => void
   // Substitui titular por reserva: reserva entra na posição e titular vai ao banco
   substitute: (positionId: string, reserveId: string) => void
   clearTeam: () => void
@@ -59,8 +65,6 @@ interface TeamState {
   loadFromObject: (team: { formation: string; starters: any; reserves: any }) => void
   // Define o modo de jogo (Dream Team / World Cup)
   setGameMode: (mode: 'DREAM_TEAM' | 'WORLD_CUP') => void
-  // Define a posição designada no banco para um reserva
-  setBenchPosition: (reserveId: string, benchPosition: string) => void
 }
 
 const buildEmptyStarters = (formationId: string): StartersMap => {
@@ -133,14 +137,27 @@ export const useTeamStore = create<TeamState>()(
           reserves: state.reserves.filter((r) => r.id !== id),
         })),
 
+      // Nova ação: alterar a posição designada de um reserva no banco
+      // benchPosition define qual posição o jogador vai desempenhar quando
+      // for substituído, mesmo que seja diferente de sua posição natural
+      setReserveBenchPosition: (reserveId, benchPosition) =>
+        set((state) => ({
+          reserves: state.reserves.map((r) =>
+            r.id === reserveId ? { ...r, benchPosition } : r
+          ),
+        })),
+
       substitute: (positionId, reserveId) =>
         set((state) => {
           const current = state.starters[positionId]
           const reserve = state.reserves.find((r) => r.id === reserveId)
           if (!reserve) return state
+          // Quando o reserva entra, sua posição no campo é a do slot (positionId)
+          // Se ele tem benchPosition definido, usamos essa posição para o rating
           const newStarters = { ...state.starters, [positionId]: reserve }
           let newReserves = state.reserves.filter((r) => r.id !== reserveId)
           if (current) {
+            // Titular que sai vai para o banco, mantendo sua posição natural
             newReserves = [...newReserves, current]
           }
           return { starters: newStarters, reserves: newReserves }
@@ -203,19 +220,10 @@ export const useTeamStore = create<TeamState>()(
           // Dream Team permite todos
           return { gameMode: mode }
         }),
-
-      setBenchPosition: (reserveId, benchPosition) =>
-        set((state) => {
-          const newReserves = state.reserves.map((r) =>
-            r.id === reserveId ? { ...r, benchPosition } : r
-          )
-          return { reserves: newReserves }
-        }),
     }),
     {
       name: 'cartoleiro-fc-team',
-      version: 1,
-      skipHydration: true, // Fix: evita hydration mismatch no SSR (Vercel)
+      version: 2,  // Versão 2 — adicionado benchPosition
     },
   ),
 )

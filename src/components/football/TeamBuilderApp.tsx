@@ -2,7 +2,8 @@
 
 // =====================================================================
 // TeamBuilderApp - Aplicação principal do montador de times
-// Fonte única: TheSportsDB + banco local
+// Inclui: tema dark/light, easter eggs, salvar time por usuário,
+//         compartilhar time, ver estatísticas via TheSportsDB
 //         + modo RPG com convite/join flow
 // =====================================================================
 
@@ -56,12 +57,12 @@ export function TeamBuilderApp({ inviteCode }: Props) {
     removeStarter,
     addReserve,
     removeReserve,
+    setReserveBenchPosition,
     substitute,
     clearTeam,
     initStarters,
     loadFromObject,
     setGameMode,
-    setBenchPosition,
   } = useTeamStore()
 
   const formation = getFormation(formationId)
@@ -99,11 +100,6 @@ export function TeamBuilderApp({ inviteCode }: Props) {
         if (data?.ok && data?.user) setCurrentUser(data.user)
       })
       .catch(() => {})
-  }, [])
-
-  // ===== Zustand persist: rehydrate no client =====
-  useEffect(() => {
-    useTeamStore.persist.rehydrate()
   }, [])
 
   useEffect(() => {
@@ -171,10 +167,10 @@ export function TeamBuilderApp({ inviteCode }: Props) {
   // ===== Auto-join when inviteCode is present and user is logged in =====
   useEffect(() => {
     if (inviteCode && joinState === 'joining' && currentUser) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       handleJoinMatch(inviteCode)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inviteCode, currentUser, joinState])
+  }, [inviteCode, currentUser])
 
   const selectedIds = [
     ...Object.values(starters).map((p) => p?.id).filter(Boolean),
@@ -583,11 +579,11 @@ export function TeamBuilderApp({ inviteCode }: Props) {
               startersCount={startersCount}
               onSubstitute={handleSubstitute}
               onRemove={removeReserve}
-              onSetBenchPosition={setBenchPosition}
+              onSetBenchPosition={setReserveBenchPosition}
             />
             {/* Team Rating Card + Stats/Share buttons */}
             <div className="mt-4 space-y-3">
-              <TeamRatingCard starters={starters} reserves={reserves} />
+              <TeamRatingCard starters={starters} reserves={reserves} formationId={formationId} />
 
               {/* Quick action buttons */}
               {startersCount > 0 && (

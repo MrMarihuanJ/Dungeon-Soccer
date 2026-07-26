@@ -304,6 +304,7 @@ export interface TeamMatchState {
   yellowCards: number
   injuredPlayers: string[]   // IDs dos jogadores lesionados
   sentOffPlayers: string[]   // IDs dos jogadores expulsos
+  substitutedOut: string[]   // IDs dos jogadores que saíram por substituição (não podem voltar)
 }
 
 export interface MatchEvent {
@@ -678,8 +679,8 @@ export function createInitialMatchState(matchId: string, gameMode: GameMode = 'Q
     maxTurns: maxTurns ?? (config.maxTurns > 0 ? config.maxTurns : 999),
     events: [],
     winner: null,
-    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
-    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
+    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
     gameMode,
     matchStartedAt: null,
     pausedAt: null,
@@ -883,8 +884,8 @@ export function applyActionToState(
   const newState: MatchState = {
     ...state,
     events: [...state.events],
-    homeTeamState: { ...state.homeTeamState, injuredPlayers: [...state.homeTeamState.injuredPlayers], sentOffPlayers: [...state.homeTeamState.sentOffPlayers] },
-    awayTeamState: { ...state.awayTeamState, injuredPlayers: [...state.awayTeamState.injuredPlayers], sentOffPlayers: [...state.awayTeamState.sentOffPlayers] },
+    homeTeamState: { ...state.homeTeamState, injuredPlayers: [...state.homeTeamState.injuredPlayers], sentOffPlayers: [...state.homeTeamState.sentOffPlayers], substitutedOut: [...state.homeTeamState.substitutedOut] },
+    awayTeamState: { ...state.awayTeamState, injuredPlayers: [...state.awayTeamState.injuredPlayers], sentOffPlayers: [...state.awayTeamState.sentOffPlayers], substitutedOut: [...state.awayTeamState.substitutedOut] },
   }
   const possession = newState.currentPossession!
   const event: MatchEvent = {
@@ -1125,6 +1126,137 @@ export function applyActionToState(
   }
 
   return newState
+}
+
+// =====================================================================
+// Sistema de Jogada Defensiva — roubo de bola durante turno adversário
+// =====================================================================
+export interface DefensivePlayResult {
+  offered: boolean
+  defenderPlayerName?: string
+  diceRoll?: DiceRollResult
+  stolen: boolean      // true = bola roubada com sucesso
+  description?: string
+}
+
+/**
+ * Decide se uma jogada defensiva (tentativa de roubo) deve ser oferecida.
+ * Chamado apenas durante OPPONENT_TURN. A chance aumenta conforme:
+ *   - progresso do adversário (mais chance quando adversário está avançado)
+ *   - jogadores defensores disponíveis
+ *   - não deve persistir — só é oferecida UMA vez por ciclo de turnos
+ */
+export function shouldOfferDefensivePlay(
+  state: MatchState,
+  defendingSide: Possession,
+): boolean {
+  // Não oferece se o jogo não está em progresso
+  if (state.status !== 'IN_PROGRESS') return false
+  // Não oferece para o lado que tem a posse (ataque)
+  if (state.currentPossession === defendingSide) return false
+  // Chance base: 20%, aumenta conforme progresso do atacante
+  const attackerProgress = state.currentPossession === 'HOME' ? state.homeProgress : state.awayProgress
+  const chance = 0.20 + (attackerProgress / 100) * 0.30 // 20%-50%
+  return Math.random() < chance
+}
+
+/**
+ * Executa a jogada defensiva (roubo de bola).
+ * Se sucesso, muda posse; se falha, adversário mantém posse.
+ */
+export function resolveDefensivePlay(
+  state: MatchState,
+  defenderPlayerName: string,
+): DefensivePlayResult {
+  const dc = 14 // DC base para roubo
+  const dice = rollD20()
+  const bonus = 2 // bônus de defensor
+  const total = dice + bonus
+  const margin = total - dc
+
+  let stolen = false
+  let critical: DefensivePlayResult['diceRoll'] = undefined
+
+  if (dice === 20) {
+    stolen = true // crit hit = roubo automático
+  } else if (dice === 1) {
+    stolen = false // crit fail = falha automática, adversário ganha +10 progresso
+  } else {
+    stolen = margin >= 0
+  }
+
+  const descriptions = stolen
+    ? [
+        `${defenderPlayerName} rouba a bola com uma interceptação perfeita!`,
+        `${defenderPlayerName} faz o carrinho e recupera a posse!`,
+        `${defenderPlayerName} antecipa o passe e rouba a bola!`,
+      ]
+    : [
+        `${defenderPlayerName} tenta roubar mas o adversário mantém a bola!`,
+        `${defenderPlayerName} falha na interceptação, bola continua com o adversário.`,
+        `Tentativa de roubo de ${defenderPlayerName} não funciona!`,
+      ]
+
+  return {
+    offered: true,
+    defenderPlayerName,
+    diceRoll: {
+      dice,
+      bonus,
+      total,
+      dc,
+      margin,
+      success: stolen,
+      critical: dice === 20 ? 'crit_hit' : dice === 1 ? 'crit_fail' : 'none',
+      exceptional: margin >= 5,
+    },
+    stolen,
+    description: descriptions[Math.floor(Math.random() * descriptions.length)],
+  }
+}
+
+// =====================================================================
+// Sistema de XP / Progressão
+// =====================================================================
+export interface XPLevel {
+  level: number
+  title: string
+  minXP: number
+  bonusSkill: number   // bônus de skillBonus extra por nível
+  bonusGoalChance: number  // aumento na chance de gol por nível
+}
+
+const XP_LEVELS: XPLevel[] = [
+  { level: 1,  title: 'Novato',        minXP: 0,    bonusSkill: 0,    bonusGoalChance: 0 },
+  { level: 2,  title: 'Amador',        minXP: 50,   bonusSkill: 0.5,  bonusGoalChance: 0.02 },
+  { level: 3,  title: 'Semi-Pro',      minXP: 150,  bonusSkill: 1,    bonusGoalChance: 0.03 },
+  { level: 4,  title: 'Profissional',  minXP: 300,  bonusSkill: 1.5,  bonusGoalChance: 0.05 },
+  { level: 5,  title: 'Elite',         minXP: 600,  bonusSkill: 2,    bonusGoalChance: 0.07 },
+  { level: 6,  title: 'Lenda',         minXP: 1000, bonusSkill: 3,    bonusGoalChance: 0.10 },
+]
+
+export function getXPLevel(xp: number): XPLevel {
+  let level = XP_LEVELS[0]
+  for (const l of XP_LEVELS) {
+    if (xp >= l.minXP) level = l
+    else break
+  }
+  return level
+}
+
+export function getXPProgress(xp: number): { currentLevel: XPLevel; nextLevel: XPLevel | null; progressPercent: number } {
+  const currentLevel = getXPLevel(xp)
+  const nextLevelIdx = XP_LEVELS.findIndex(l => l.level === currentLevel.level) + 1
+  const nextLevel = nextLevelIdx < XP_LEVELS.length ? XP_LEVELS[nextLevelIdx] : null
+
+  let progressPercent = 100
+  if (nextLevel) {
+    const range = nextLevel.minXP - currentLevel.minXP
+    const progress = xp - currentLevel.minXP
+    progressPercent = Math.min(100, Math.round((progress / range) * 100))
+  }
+
+  return { currentLevel, nextLevel, progressPercent }
 }
 
 // =====================================================================
