@@ -5,10 +5,14 @@
 *.jsx text eol=lf
 *.json text eol=lf
 *.css text eol=lf
-*.html text eol=lf
 *.md text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+*.prisma text eol=lf
+*.env text eol=lf
+*.sql text eol=lf
+*.sh text eol=lf
+*.lock text eol=lf
 *.png binary
 *.jpg binary
 *.jpeg binary
@@ -17,3 +21,5 @@
 *.ico binary
 *.woff binary
 *.woff2 binary
+*.ttf binary
+*.eot binary

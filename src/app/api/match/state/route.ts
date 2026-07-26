@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
   // Parse team states from JSON
   const defaultTeamState: TeamMatchState = {
     substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
-    injuredPlayers: [], sentOffPlayers: [],
+    injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
   }
 
   let homeTeamState = defaultTeamState
@@ -66,6 +66,9 @@ export async function GET(req: NextRequest) {
       awayProgress: match.awayProgress ?? 0,
       homeTeamState,
       awayTeamState,
+      matchEndReason: match.status === 'FINISHED'
+        ? (match.winner === 'DRAW' ? 'Empate!' : `Vitória de ${match.winner === 'HOME' ? match.homeUser?.username || 'Home' : match.awayUser?.username || 'Away'}!`)
+        : '',
     },
   })
 }

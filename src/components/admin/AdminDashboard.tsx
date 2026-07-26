@@ -574,7 +574,7 @@ export function AdminDashboard({ username, onLogout, onBack }: Props) {
             <strong className="text-emerald-300">Busca em tempo real ativa.</strong> Os usuários do
             site podem buscar <strong>qualquer jogador do mundo</strong> — os resultados vêm da
             TheSportsDB como fonte externa única, complementada pelo banco local. Os registros que você adicionar aqui
-            aparecerão junto com os resultados da TheSportsDB.
+            aparecerão junto com os externos.
           </div>
         </div>
       </main>

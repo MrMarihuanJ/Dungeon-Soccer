@@ -4,6 +4,9 @@
 // Mantém estado de titulares, reservas, formação selecionada e操作
 // de substituição. Persiste em localStorage para não perder o time
 // ao recarregar a página.
+//
+// FIX: skipHydration=true prevents SSR/client mismatch.
+// Call hydrateTeamStore() on client mount to load localStorage data.
 // =====================================================================
 
 import { create } from 'zustand'
@@ -32,8 +35,6 @@ export interface SelectedPlayer {
   isRetired?: boolean
   isInactive?: boolean
   source?: string
-  // Posição designada no banco (opcional — permite reservas com posição diferente da natural)
-  benchPosition?: string
 }
 
 // Map: positionId -> SelectedPlayer | null
@@ -44,6 +45,7 @@ interface TeamState {
   starters: StartersMap
   reserves: SelectedPlayer[] // lista simples de reservas
   gameMode: 'DREAM_TEAM' | 'WORLD_CUP'
+  _hasHydrated: boolean  // internal flag — true after localStorage data loaded
 
   setFormation: (id: string) => void
   setStarter: (positionId: string, player: SelectedPlayer) => void
@@ -59,8 +61,7 @@ interface TeamState {
   loadFromObject: (team: { formation: string; starters: any; reserves: any }) => void
   // Define o modo de jogo (Dream Team / World Cup)
   setGameMode: (mode: 'DREAM_TEAM' | 'WORLD_CUP') => void
-  // Define a posição designada no banco para um reserva
-  setBenchPosition: (reserveId: string, benchPosition: string) => void
+  setHasHydrated: (value: boolean) => void
 }
 
 const buildEmptyStarters = (formationId: string): StartersMap => {
@@ -79,6 +80,7 @@ export const useTeamStore = create<TeamState>()(
       starters: buildEmptyStarters('4-3-3'),
       reserves: [],
       gameMode: 'DREAM_TEAM',
+      _hasHydrated: false,
 
       setFormation: (id) =>
         set((state) => {
@@ -204,18 +206,21 @@ export const useTeamStore = create<TeamState>()(
           return { gameMode: mode }
         }),
 
-      setBenchPosition: (reserveId, benchPosition) =>
-        set((state) => {
-          const newReserves = state.reserves.map((r) =>
-            r.id === reserveId ? { ...r, benchPosition } : r
-          )
-          return { reserves: newReserves }
-        }),
+      setHasHydrated: (value) => set({ _hasHydrated: value }),
     }),
     {
       name: 'cartoleiro-fc-team',
       version: 1,
-      skipHydration: true, // Fix: evita hydration mismatch no SSR (Vercel)
+      // FIX: skip hydration during SSR to prevent mismatch.
+      // Call hydrateTeamStore() on client mount instead.
+      skipHydration: true,
     },
   ),
 )
+
+// ===== Hydration helper — call on client mount =====
+export async function hydrateTeamStore(): Promise<void> {
+  if (useTeamStore.getState()._hasHydrated) return
+  await useTeamStore.persist.rehydrate()
+  useTeamStore.setState({ _hasHydrated: true })
+}

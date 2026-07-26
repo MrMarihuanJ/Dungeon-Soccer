@@ -2,7 +2,14 @@
 
 // =====================================================================
 // PlayerSearchModal - Modal de busca com autocomplete em tempo real
+// --------------------------------------------------------------------
 // Fonte única: TheSportsDB + banco local
+// Funcionalidades:
+//   - Input de texto com debounce de 200ms
+//   - Consulta /api/players/search em tempo real
+//   - Lista de sugestões com foto, nome e time
+//   - Filtro de posição (opcional) - default = posição do slot
+//   - Seleção do jogador fecha o modal e dispara callback
 // =====================================================================
 
 import { useEffect, useState, useCallback, useRef } from 'react'
@@ -39,13 +46,14 @@ interface ApiPlayer {
   leagueTier?: string
   isRetired?: boolean
   isInactive?: boolean
+  thesportsdbUrl?: string | null
 }
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   position: FieldPosition | null
-  selectedPlayerIds: string[]
+  selectedPlayerIds: string[] // IDs já selecionados (titulares + reservas)
   onSelect: (player: SelectedPlayer) => void
   gameMode?: 'DREAM_TEAM' | 'WORLD_CUP'
 }
@@ -62,16 +70,18 @@ export function PlayerSearchModal({
   const [results, setResults] = useState<ApiPlayer[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [resultCount, setResultCount] = useState(0)
   const [sourcesInfo, setSourcesInfo] = useState<{ thesportsdb: number; local: number } | null>(null)
-  const [resultCount, setResultCount] = useState<number>(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Posição-alvo no banco (GK/DF/MF/FW) baseada no role tático do slot
   const targetPos = position ? ROLE_TO_POSITION[position.role] : null
 
   const runSearch = useCallback(
     async (q: string) => {
       if (!q || q.length < 1) {
         setResults([])
+        setResultCount(0)
         setError(null)
         setLoading(false)
         return
@@ -88,8 +98,8 @@ export function PlayerSearchModal({
         if (!res.ok) throw new Error('Falha na busca')
         const data = await res.json()
         setResults(data.players ?? [])
-        setSourcesInfo(data.sources ?? null)
         setResultCount(data.total ?? 0)
+        setSourcesInfo(data.sources ?? null)
       } catch (e) {
         console.error(e)
         setError('Não foi possível buscar jogadores. Tente novamente.')
@@ -101,6 +111,7 @@ export function PlayerSearchModal({
     [targetPos, gameMode],
   )
 
+  // Debounce
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
@@ -111,11 +122,13 @@ export function PlayerSearchModal({
     }
   }, [query, runSearch])
 
+  // Limpa ao abrir
   useEffect(() => {
     if (open) {
       setQuery('')
       setResults([])
       setError(null)
+      setResultCount(0)
     }
   }, [open])
 
@@ -156,12 +169,13 @@ export function PlayerSearchModal({
           </DialogTitle>
           <DialogDescription>
             {position
-              ? `Busca em tempo real via TheSportsDB. Filtro automático: ${targetPos}.`
-              : 'Busca em tempo real via TheSportsDB. Digite o nome de qualquer jogador do mundo.'}
+              ? `Busca em tempo real via TheSportsDB + banco local. Filtro automático: ${targetPos}.`
+              : 'Busca em tempo real via TheSportsDB + banco local. Digite o nome de qualquer jogador do mundo.'}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
+          {/* Input com ícone */}
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <Input
@@ -184,35 +198,41 @@ export function PlayerSearchModal({
             )}
           </div>
 
+          {/* Filtro de posição ativo + indicadores de fontes */}
           {targetPos && (
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <Badge variant="secondary" className="bg-emerald-100 text-emerald-700">
                 Posição: {targetPos}
               </Badge>
               <span>·</span>
-              <span>{results.length} resultado(s)</span>
+              <span>{resultCount} resultado(s)</span>
             </div>
           )}
-          {!targetPos && results.length > 0 && (
+          {!targetPos && resultCount > 0 && (
             <div className="flex items-center gap-2 text-xs text-gray-500">
-              <span>{results.length} resultado(s)</span>
+              <span>{resultCount} resultado(s)</span>
             </div>
           )}
+          {/* Source indicators */}
           {resultCount > 0 && !loading && sourcesInfo && (
             <div className="flex items-center gap-2 text-xs text-gray-400">
-              <Badge variant="outline" className="text-[9px] border-sky-500/30 text-sky-600 dark:text-sky-400">
-                TheSportsDB ({sourcesInfo.thesportsdb})
-              </Badge>
+              <span>Fontes:</span>
+              {sourcesInfo.thesportsdb > 0 && (
+                <Badge variant="outline" className="text-[9px] border-sky-500/30 text-sky-600 dark:text-sky-400">SportsDB ({sourcesInfo.thesportsdb})</Badge>
+              )}
               {sourcesInfo.local > 0 && (
-                <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
-                  Banco local ({sourcesInfo.local})
-                </Badge>
+                <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">Local ({sourcesInfo.local})</Badge>
+              )}
+              {sourcesInfo.thesportsdb + sourcesInfo.local === 0 && (
+                <span className="text-amber-500">Nenhuma fonte retornou resultados</span>
               )}
             </div>
           )}
 
+          {/* Resultados */}
           <ScrollArea className="h-[320px] rounded-lg border">
             <div className="p-2">
+              {/* Loading */}
               {loading && (
                 <div className="space-y-2 p-2">
                   {Array.from({ length: 5 }).map((_, i) => (
@@ -227,6 +247,7 @@ export function PlayerSearchModal({
                 </div>
               )}
 
+              {/* Erro */}
               {!loading && error && (
                 <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-red-600">
                   <AlertCircle className="h-6 w-6" />
@@ -237,6 +258,7 @@ export function PlayerSearchModal({
                 </div>
               )}
 
+              {/* Lista vazia (sem busca) */}
               {!loading && !error && query.length === 0 && (
                 <div className="flex flex-col items-center gap-2 p-8 text-center text-gray-400">
                   <Search className="h-8 w-8" />
@@ -244,6 +266,7 @@ export function PlayerSearchModal({
                 </div>
               )}
 
+              {/* Lista vazia (sem resultados) */}
               {!loading && !error && query.length > 0 && results.length === 0 && (
                 <div className="flex flex-col items-center gap-2 p-8 text-center text-gray-500">
                   <AlertCircle className="h-8 w-8" />
@@ -256,13 +279,15 @@ export function PlayerSearchModal({
                 </div>
               )}
 
+              {/* Resultados */}
               {!loading && !error && results.length > 0 && (
                 <ul className="space-y-1">
                   {results.map((p) => {
                     const isSelected = selectedPlayerIds.includes(p.id)
                     const sourceBadge = p.source === 'thesportsdb'
-                      ? { label: 'TheSportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
+                      ? { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
                       : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+                    // Overall badge estilo FIFA
                     const overall = p.overall ?? 0
                     const overallTier = overall >= 90 ? 'bg-gradient-to-br from-yellow-400 to-amber-600 text-amber-900'
                       : overall >= 84 ? 'bg-gradient-to-br from-purple-500 to-purple-700 text-white'
@@ -307,7 +332,7 @@ export function PlayerSearchModal({
                               )}
                               {p.isRetired && (
                                 <span className="rounded bg-purple-100 px-1 text-[9px] font-bold text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
-                                  LENDA
+                                  👑 LENDA
                                 </span>
                               )}
                               <span className={`rounded px-1 text-[9px] font-medium ${sourceBadge.cls}`}>
@@ -320,6 +345,7 @@ export function PlayerSearchModal({
                               {p.age ? ` · ${p.age}a` : ''}
                             </div>
                           </div>
+                          {/* Overall badge estilo FIFA */}
                           {overall > 0 && (
                             <div className={`flex h-9 w-9 shrink-0 flex-col items-center justify-center rounded-lg ${overallTier}`}>
                               <span className="text-sm font-black leading-none">{overall}</span>
@@ -345,7 +371,7 @@ export function PlayerSearchModal({
           </ScrollArea>
 
           <p className="text-center text-[11px] text-gray-400">
-            Busca em tempo real via TheSportsDB
+            🌍 Busca em tempo real via TheSportsDB + banco local
           </p>
         </div>
       </DialogContent>

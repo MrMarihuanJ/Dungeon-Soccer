@@ -2,7 +2,8 @@
 
 // =====================================================================
 // TeamBuilderApp - Aplicação principal do montador de times
-// Fonte única: TheSportsDB + banco local
+// Inclui: tema dark/light, easter eggs, salvar time por usuário,
+//         compartilhar time, ver estatísticas no TheSportsDB
 //         + modo RPG com convite/join flow
 // =====================================================================
 
@@ -31,7 +32,7 @@ import { MatchArena } from '@/components/match/MatchArena'
 import { InviteCodeEntryDialog } from '@/components/match/InviteCodeEntryDialog'
 import { TeamRatingCard } from '@/components/football/TeamRatingCard'
 import { GameModeSelector } from '@/components/football/GameModeSelector'
-import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
+import { useTeamStore, hydrateTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { getFormation, type FieldPosition } from '@/lib/football/formations'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -61,8 +62,14 @@ export function TeamBuilderApp({ inviteCode }: Props) {
     initStarters,
     loadFromObject,
     setGameMode,
-    setBenchPosition,
+    _hasHydrated,
   } = useTeamStore()
+
+  // Hydration guard — load localStorage data on client mount
+  const [storeReady, setStoreReady] = useState(false)
+  useEffect(() => {
+    hydrateTeamStore().then(() => setStoreReady(true))
+  }, [])
 
   const formation = getFormation(formationId)
 
@@ -101,14 +108,9 @@ export function TeamBuilderApp({ inviteCode }: Props) {
       .catch(() => {})
   }, [])
 
-  // ===== Zustand persist: rehydrate no client =====
   useEffect(() => {
-    useTeamStore.persist.rehydrate()
-  }, [])
-
-  useEffect(() => {
-    initStarters()
-  }, [initStarters])
+    if (storeReady) initStarters()
+  }, [initStarters, storeReady])
 
   // ===== Join Match via Invite Code =====
   const handleJoinMatch = async (code: string) => {
@@ -171,10 +173,10 @@ export function TeamBuilderApp({ inviteCode }: Props) {
   // ===== Auto-join when inviteCode is present and user is logged in =====
   useEffect(() => {
     if (inviteCode && joinState === 'joining' && currentUser) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       handleJoinMatch(inviteCode)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inviteCode, currentUser, joinState])
+  }, [inviteCode, currentUser])
 
   const selectedIds = [
     ...Object.values(starters).map((p) => p?.id).filter(Boolean),
@@ -476,6 +478,15 @@ export function TeamBuilderApp({ inviteCode }: Props) {
     )
   }
 
+  // Show loading spinner while store hydrates from localStorage
+  if (!storeReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-950 via-emerald-950/30 to-gray-950">
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-400" />
+      </div>
+    )
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-gradient-to-br from-emerald-50 via-background to-emerald-50 dark:from-gray-950 dark:via-background dark:to-emerald-950/30">
       <EasterEggs onSecretTeam={handleSecretTeam} />
@@ -583,7 +594,6 @@ export function TeamBuilderApp({ inviteCode }: Props) {
               startersCount={startersCount}
               onSubstitute={handleSubstitute}
               onRemove={removeReserve}
-              onSetBenchPosition={setBenchPosition}
             />
             {/* Team Rating Card + Stats/Share buttons */}
             <div className="mt-4 space-y-3">
@@ -638,7 +648,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
                         setStatsOpen(true)
                       }}
                       className="absolute -top-1 -right-1 hidden h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white group-hover:flex"
-                      title="Ver estatísticas na TheSportsDB"
+                      title="Ver estatísticas no TheSportsDB"
                     >
                       <BarChart3 className="h-3 w-3" />
                     </button>

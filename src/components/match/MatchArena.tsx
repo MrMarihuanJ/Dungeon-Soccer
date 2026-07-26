@@ -42,7 +42,7 @@ import {
   checkMatchEndCondition, isHalftimeReached,
   pickPlayerForAction,
 } from '@/lib/match-engine'
-import { useTeamStore, type SelectedPlayer } from '@/lib/football/store'
+import { useTeamStore, hydrateTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
 
 interface Player {
@@ -157,13 +157,19 @@ export function MatchArena({
   const autoPlayRef = useRef(false)
 
   // Populate starters/reserves from the Zustand store (use useMemo to avoid setState in effect)
-  const { starters: storeStarters, reserves: storeReserves } = useTeamStore()
-  const startersList = useMemo(() => Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null), [storeStarters])
-  const reservesList = useMemo(() => storeReserves, [storeReserves])
+  // FIX: Only use store data AFTER hydration to prevent stale/crash on first render
+  const { starters: storeStarters, reserves: storeReserves, _hasHydrated } = useTeamStore()
+  const startersList = useMemo(() => _hasHydrated ? Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null) : [], [storeStarters, _hasHydrated])
+  const reservesList = useMemo(() => _hasHydrated ? storeReserves : [], [storeReserves, _hasHydrated])
   useEffect(() => {
+    // Ensure store is hydrated before using data
+    if (!_hasHydrated) {
+      hydrateTeamStore()
+      return
+    }
     setMyStarters(startersList)
     setMyReserves(reservesList)
-  }, [startersList, reservesList])
+  }, [startersList, reservesList, _hasHydrated])
 
   const isHome = currentUserId === homeUser.id
   const mySide: Possession = isHome ? 'HOME' : 'AWAY'

@@ -1,7 +1,18 @@
 // =====================================================================
-// API: /api/players/search (OTIMIZADO)
-// Fonte única: TheSportsDB + banco local
-// Cache 120s, timeout 6s, sem ensureDbSync overhead
+// API: /api/players/search
+// --------------------------------------------------------------------
+// Busca jogadores EM TEMPO REAL via TheSportsDB + banco local.
+// Fonte externa única: TheSportsDB (cobertura mundial, fotos, time atual)
+// Banco interno Prisma como fallback para seed local.
+//
+// Query params:
+//   q     -> termo de busca (mínimo 2 caracteres)
+//   limit -> máximo de resultados (default 12, máx 25)
+//   pos   -> filtra por posição (GK, DF, LD, LE, MF, FW) - opcional
+//   mode  -> DREAM_TEAM | WORLD_CUP
+//
+// Retorna array unificado de jogadores com:
+//   { id, name, fullName, team, position, photoUrl, nationality, shirtNumber?, source }
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -10,6 +21,7 @@ import { db } from '@/lib/db'
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
+// -------- Tipos unificados --------
 type PositionCode = 'GK' | 'DF' | 'LD' | 'LE' | 'MF' | 'FW'
 
 interface UnifiedPlayer {
@@ -20,6 +32,7 @@ interface UnifiedPlayer {
   position: PositionCode
   photoUrl: string
   nationality?: string | null
+  shirtNumber?: number | null
   source: 'thesportsdb' | 'local'
   overall?: number
   age?: number
@@ -32,23 +45,44 @@ interface UnifiedPlayer {
   leagueTier?: string
   isRetired?: boolean
   isInactive?: boolean
+  thesportsdbUrl?: string | null
 }
 
+// -------- TheSportsDB --------
 const SPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '3'
 
 function normalizePosition(raw: string | null | undefined): PositionCode {
   if (!raw) return 'FW'
   const p = raw.toLowerCase()
   if (p.includes('goalkeeper') || p.includes('goleiro') || p === 'gk') return 'GK'
-  if (p.includes('right back') || p.includes('right-back') || p === 'rb' || p === 'rwb' ||
-    p.includes('lateral direito') || (p.includes('right') && (p.includes('back') || p.includes('wing')))) return 'LD'
-  if (p.includes('left back') || p.includes('left-back') || p === 'lb' || p === 'lwb' ||
-    p.includes('lateral esquerdo') || (p.includes('left') && (p.includes('back') || p.includes('wing')))) return 'LE'
-  if (p.includes('centre-back') || p.includes('center-back') || p === 'cb' || p.includes('zagueiro')) return 'DF'
+  if (
+    p.includes('right back') || p.includes('right-back') || p === 'rb' || p === 'rwb' ||
+    p.includes('lateral direito') || p.includes('lateral-direito') ||
+    (p.includes('right') && (p.includes('back') || p.includes('wing')))
+  ) return 'LD'
+  if (
+    p.includes('left back') || p.includes('left-back') || p === 'lb' || p === 'lwb' ||
+    p.includes('lateral esquerdo') || p.includes('lateral-esquerdo') ||
+    (p.includes('left') && (p.includes('back') || p.includes('wing')))
+  ) return 'LE'
+  if (
+    p.includes('centre-back') || p.includes('center-back') || p.includes('central defender') ||
+    p === 'cb' || p.includes('zagueiro')
+  ) return 'DF'
   if (p.includes('defender') && !p.includes('left') && !p.includes('right')) return 'DF'
-  if (p.includes('midfield') || p.includes('volante') || p.includes('meia')) return 'MF'
-  if (p.includes('winger') || p.includes('extremo') || p.includes('ponta')) return 'FW'
-  if (p.includes('forward') || p.includes('striker') || p.includes('atacante')) return 'FW'
+  if (
+    p.includes('midfield') || p.includes('volante') || p.includes('meia') ||
+    p.includes('attacking mid') || p.includes('defensive mid') || p.includes('central mid') ||
+    p.includes('médio') || p.includes('meia ofensivo')
+  ) return 'MF'
+  if (
+    p.includes('winger') || (p.includes('wing') && !p.includes('back')) ||
+    p.includes('extremo') || p.includes('ponta')
+  ) return 'FW'
+  if (
+    p.includes('forward') || p.includes('striker') || p.includes('atacante') ||
+    p.includes('centroavante')
+  ) return 'FW'
   return 'FW'
 }
 
@@ -63,25 +97,35 @@ async function searchTheSportsDB(query: string, limit: number): Promise<UnifiedP
       next: { revalidate: 120 },
       signal: AbortSignal.timeout(6000),
     })
-    if (!res.ok) return []
+    if (!res.ok) {
+      console.warn('[search] TheSportsDB retornou', res.status)
+      return []
+    }
     const data = await res.json()
     const players: any[] = data.player || []
-    return players.slice(0, limit).map((p) => ({
-      id: `sdb_${p.idPlayer}`,
-      name: p.strPlayer || p.strDisplayName || 'Desconhecido',
-      fullName: p.strPlayer || p.strPlayer || name,
-      team: p.strTeam || 'Sem clube',
-      position: normalizePosition(p.strPosition),
-      photoUrl: p.strThumb || p.strCutout || fallbackPhoto(p.strPlayer || 'X'),
-      nationality: p.strNationality || null,
-      source: 'thesportsdb' as const,
-    }))
+    return players.slice(0, limit).map((p) => {
+      const name: string = p.strPlayer || p.strDisplayName || 'Desconhecido'
+      const photo: string = p.strThumb || p.strCutout || fallbackPhoto(name)
+      return {
+        id: `sdb_${p.idPlayer}`,
+        name,
+        fullName: p.strPlayer || name,
+        team: p.strTeam || 'Sem clube',
+        position: normalizePosition(p.strPosition),
+        photoUrl: photo,
+        nationality: p.strNationality || null,
+        shirtNumber: null,
+        source: 'thesportsdb' as const,
+        thesportsdbUrl: `https://www.thesportsdb.com/player/${p.idPlayer}` || null,
+      }
+    })
   } catch (err) {
     console.error('[search] erro TheSportsDB:', err)
     return []
   }
 }
 
+// -------- Banco interno --------
 async function searchLocal(query: string, limit: number, pos?: string | null, mode?: string | null): Promise<UnifiedPlayer[]> {
   try {
     const posFilter = pos
@@ -125,67 +169,63 @@ async function searchLocal(query: string, limit: number, pos?: string | null, mo
   }
 }
 
+// -------- Endpoint --------
 export async function GET(req: NextRequest) {
-  try {
-    const { searchParams } = new URL(req.url)
-    const q = (searchParams.get('q') ?? '').trim().toLowerCase()
-    const limit = Math.min(Number(searchParams.get('limit') ?? 12), 25)
-    const pos = searchParams.get('pos')
-    const mode = searchParams.get('mode')
+  const { searchParams } = new URL(req.url)
+  const q = (searchParams.get('q') ?? '').trim().toLowerCase()
+  const limit = Math.min(Number(searchParams.get('limit') ?? 12), 25)
+  const pos = searchParams.get('pos') // GK | DF | LD | LE | MF | FW
+  const mode = searchParams.get('mode') // DREAM_TEAM | WORLD_CUP
 
-    if (!q || q.length < 2) {
-      return NextResponse.json({
-        players: [],
-        total: 0,
-        query: q,
-        message: 'Digite ao menos 2 caracteres.',
-        sources: { thesportsdb: 0, local: 0 },
-      })
-    }
-
-    const [sdbResults, localResults] = await Promise.all([
-      searchTheSportsDB(q, limit),
-      searchLocal(q, limit, pos, mode),
-    ])
-
-    const filteredSdb = mode === 'WORLD_CUP'
-      ? sdbResults.filter((p) => !p.team.toLowerCase().includes('retro') && !p.team.toLowerCase().includes('retired'))
-      : sdbResults
-
-    const seen = new Set<string>()
-    const all: UnifiedPlayer[] = []
-    for (const p of [...localResults, ...filteredSdb]) {
-      const key = p.name.toLowerCase().replace(/\s+/g, '').trim()
-      if (seen.has(key)) continue
-      seen.add(key)
-      all.push(p)
-    }
-
-    const filtered = pos
-      ? all.filter((p) => {
-          if (pos === 'DF' || pos === 'LD' || pos === 'LE') {
-            return p.position === 'DF' || p.position === 'LD' || p.position === 'LE'
-          }
-          return p.position === pos as PositionCode
-        })
-      : all
-
-    const final = filtered.slice(0, limit)
-
+  if (!q || q.length < 2) {
     return NextResponse.json({
-      players: final,
-      total: final.length,
-      query: q,
-      sources: {
-        thesportsdb: filteredSdb.length,
-        local: localResults.length,
-      },
+      players: [],
+      message: 'Digite ao menos 2 caracteres.',
+      sources: {},
     })
-  } catch (err) {
-    console.error('[API/players/search] erro:', err)
-    return NextResponse.json(
-      { error: 'Erro ao buscar jogadores.', players: [], total: 0 },
-      { status: 500 },
-    )
   }
+
+  // Busca paralela: TheSportsDB + Local
+  const [sdbResults, localResults] = await Promise.all([
+    searchTheSportsDB(q, limit),
+    searchLocal(q, limit, pos, mode),
+  ])
+
+  // WORLD_CUP: filtra resultados externos sem retro/retired
+  const filteredSdb = mode === 'WORLD_CUP'
+    ? sdbResults.filter((p) => !p.team.toLowerCase().includes('retro') && !p.team.toLowerCase().includes('retired'))
+    : sdbResults
+
+  // Combina, remove duplicados por nome (prioriza local que tem ratings)
+  const seen = new Set<string>()
+  const all: UnifiedPlayer[] = []
+  for (const p of [...localResults, ...filteredSdb]) {
+    const key = p.name.toLowerCase().trim()
+    if (seen.has(key)) continue
+    seen.add(key)
+    all.push(p)
+  }
+
+  // Aplica filtro de posição (DF/LD/LE compatíveis)
+  const filtered = pos
+    ? all.filter((p) => {
+        if (pos === 'DF' || pos === 'LD' || pos === 'LE') {
+          return p.position === 'DF' || p.position === 'LD' || p.position === 'LE'
+        }
+        return p.position === pos
+      })
+    : all
+
+  // Limita e retorna
+  const final = filtered.slice(0, limit)
+
+  return NextResponse.json({
+    players: final,
+    total: final.length,
+    query: q,
+    sources: {
+      thesportsdb: sdbResults.length,
+      local: localResults.length,
+    },
+  })
 }

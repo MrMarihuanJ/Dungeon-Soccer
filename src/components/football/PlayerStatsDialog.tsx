@@ -2,7 +2,7 @@
 
 // =====================================================================
 // PlayerStatsDialog - Exibe estatísticas atualizadas de um jogador
-// Fonte única: TheSportsDB
+// Fonte externa única: TheSportsDB + banco local
 // =====================================================================
 
 import { useState, useEffect } from 'react'
@@ -12,6 +12,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   BarChart3, ExternalLink, Loader2, Search, Globe,
 } from 'lucide-react'
@@ -19,8 +20,6 @@ import type { SelectedPlayer } from '@/lib/football/store'
 
 interface PlayerStatsData {
   thesportsdbUrl: string | null
-  thesportsdbId: string | null
-  latestStats: string | null
   team: string | null
   position: string | null
   nationality: string | null
@@ -28,7 +27,8 @@ interface PlayerStatsData {
   born: string | null
   height: string | null
   weight: string | null
-  sources: { name: string; data: string }[]
+  latestStats: string | null
+  sources: { name: string; url: string; snippet: string }[]
 }
 
 interface Props {
@@ -78,7 +78,7 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
             Estatísticas Atualizadas
           </DialogTitle>
           <DialogDescription>
-            Dados de {player.name} — via TheSportsDB
+            Dados de {player.name} — {player.team}
           </DialogDescription>
         </DialogHeader>
 
@@ -96,30 +96,45 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
               </p>
               {player.overall && (
                 <div className="mt-1 flex gap-1">
-                  <Badge variant="outline" className="border-emerald-700 text-[9px] text-emerald-300">PAC {player.pace || '—'}</Badge>
-                  <Badge variant="outline" className="border-rose-700 text-[9px] text-rose-300">SHO {player.shooting || '—'}</Badge>
-                  <Badge variant="outline" className="border-blue-700 text-[9px] text-blue-300">PAS {player.passing || '—'}</Badge>
-                  <Badge variant="outline" className="border-purple-700 text-[9px] text-purple-300">DRI {player.dribbling || '—'}</Badge>
-                  <Badge variant="outline" className="border-amber-700 text-[9px] text-amber-300">DEF {player.defending || '—'}</Badge>
-                  <Badge variant="outline" className="border-orange-700 text-[9px] text-orange-300">PHY {player.physical || '—'}</Badge>
+                  <Badge variant="outline" className="border-emerald-700 text-[9px] text-emerald-300">
+                    PAC {player.pace || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-rose-700 text-[9px] text-rose-300">
+                    SHO {player.shooting || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-blue-700 text-[9px] text-blue-300">
+                    PAS {player.passing || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-purple-700 text-[9px] text-purple-300">
+                    DRI {player.dribbling || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-amber-700 text-[9px] text-amber-300">
+                    DEF {player.defending || '—'}
+                  </Badge>
+                  <Badge variant="outline" className="border-orange-700 text-[9px] text-orange-300">
+                    PHY {player.physical || '—'}
+                  </Badge>
                 </div>
               )}
             </div>
           </div>
 
+          {/* Loading state */}
           {loading && (
             <div className="flex flex-col items-center gap-3 py-8">
               <Loader2 className="h-8 w-8 animate-spin text-emerald-400" />
-              <p className="text-sm text-gray-400">Buscando estatísticas na TheSportsDB...</p>
+              <p className="text-sm text-gray-400">Buscando estatísticas via TheSportsDB...</p>
             </div>
           )}
 
+          {/* Error state */}
           {error && !loading && (
             <div className="rounded-lg border border-red-800/50 bg-red-950/20 p-4 text-center">
               <p className="text-sm text-red-400">{error}</p>
             </div>
           )}
 
+          {/* Stats results */}
           {stats && !loading && (
             <AnimatePresence>
               <motion.div
@@ -127,7 +142,7 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
                 animate={{ opacity: 1, y: 0 }}
                 className="space-y-3"
               >
-                {/* TheSportsDB link */}
+                {/* Quick links — TheSportsDB profile */}
                 <div className="flex gap-2">
                   {stats.thesportsdbUrl && (
                     <Button
@@ -141,44 +156,70 @@ export function PlayerStatsDialog({ open, onOpenChange, player }: Props) {
                       <ExternalLink className="h-3 w-3" />
                     </Button>
                   )}
-                  {!stats.thesportsdbUrl && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => window.open(`https://www.thesportsdb.com/search.php?search=${encodeURIComponent(player.name)}`, '_blank')}
-                      className="flex-1 gap-1 border-sky-700 text-sky-400 hover:bg-sky-950"
-                    >
-                      <Globe className="h-3.5 w-3.5" />
-                      Buscar na TheSportsDB
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
-                  )}
                 </div>
 
-                {stats.latestStats && (
+                {/* Player detail info from TheSportsDB */}
+                {stats.team && (
                   <div className="rounded-lg border border-gray-700/50 bg-gray-800/30 p-3">
-                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-gray-400">Dados recentes:</p>
-                    <p className="text-xs text-gray-300">{stats.latestStats}</p>
-                  </div>
-                )}
-
-                {/* Personal info */}
-                {(stats.born || stats.height || stats.weight) && (
-                  <div className="rounded-lg border border-emerald-700/30 bg-emerald-950/20 p-3">
-                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-emerald-400">Informações pessoais:</p>
-                    <div className="grid grid-cols-3 gap-2 text-xs text-gray-300">
-                      {stats.born && <div><span className="text-gray-500">Nascimento:</span> <span className="ml-1">{stats.born}</span></div>}
-                      {stats.height && <div><span className="text-gray-500">Altura:</span> <span className="ml-1">{stats.height}</span></div>}
-                      {stats.weight && <div><span className="text-gray-500">Peso:</span> <span className="ml-1">{stats.weight}</span></div>}
+                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-gray-400">
+                      Dados do jogador:
+                    </p>
+                    <div className="space-y-1 text-xs text-gray-300">
+                      {stats.team && <p>Time: {stats.team}</p>}
+                      {stats.position && <p>Posição: {stats.position}</p>}
+                      {stats.nationality && <p>Nacionalidade: {stats.nationality}</p>}
+                      {stats.born && <p>Data de nascimento: {stats.born}</p>}
+                      {stats.height && <p>Altura: {stats.height}</p>}
+                      {stats.weight && <p>Peso: {stats.weight}</p>}
                     </div>
                   </div>
                 )}
 
-                {!stats.latestStats && !stats.thesportsdbUrl && (
+                {/* Latest stats from web */}
+                {stats.latestStats && (
+                  <div className="rounded-lg border border-gray-700/50 bg-gray-800/30 p-3">
+                    <p className="mb-1 text-xs font-medium uppercase tracking-wider text-gray-400">
+                      Dados recentes:
+                    </p>
+                    <p className="text-xs text-gray-300">{stats.latestStats}</p>
+                  </div>
+                )}
+
+                {/* Source list */}
+                {stats.sources.length > 0 && (
+                  <div>
+                    <p className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-400">
+                      Fontes:
+                    </p>
+                    <ScrollArea className="max-h-[180px]">
+                      <ul className="space-y-1.5">
+                        {stats.sources.map((src, i) => (
+                          <li key={i}>
+                            <button
+                              type="button"
+                              onClick={() => window.open(src.url, '_blank')}
+                              className="flex w-full items-start gap-2 rounded-lg border border-gray-700/30 bg-gray-800/20 p-2 text-left transition-colors hover:border-emerald-700/50 hover:bg-gray-800/40"
+                            >
+                              <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-emerald-400" />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-medium text-white">{src.name}</p>
+                                <p className="truncate text-[10px] text-gray-400">{src.snippet.slice(0, 100)}</p>
+                              </div>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </ScrollArea>
+                  </div>
+                )}
+
+                {/* No results */}
+                {!stats.latestStats && stats.sources.length === 0 && !stats.thesportsdbUrl && (
                   <div className="rounded-lg border border-amber-800/50 bg-amber-950/20 p-4 text-center">
                     <Search className="mx-auto mb-2 h-6 w-6 text-amber-400" />
-                    <p className="text-sm text-amber-300">Nenhuma estatística encontrada na TheSportsDB.</p>
-                    <p className="mt-1 text-xs text-gray-400">Tente buscar manualmente no site da TheSportsDB.</p>
+                    <p className="text-sm text-amber-300">
+                      Nenhuma estatística externa encontrada.
+                    </p>
                   </div>
                 )}
               </motion.div>
