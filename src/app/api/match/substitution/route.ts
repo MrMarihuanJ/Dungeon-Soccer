@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
   // Parse team states from JSON
   const defaultTeamState: TeamMatchState = {
     substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
-    injuredPlayers: [], sentOffPlayers: [],
+    injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
   }
 
   let teamState: TeamMatchState = defaultTeamState

@@ -58,6 +58,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
     addReserve,
     removeReserve,
     substitute,
+    setBenchPosition,
     clearTeam,
     initStarters,
     loadFromObject,
@@ -224,6 +225,16 @@ export function TeamBuilderApp({ inviteCode }: Props) {
       `Substituição feita: ${reserveToEnter.name} entra no lugar de ${outPlayer?.name ?? 'titular'}.`,
     )
     setReserveToEnter(null)
+  }
+
+  // ===== CORREÇÃO 1: handler para mudar a posição designada do reserva no banco =====
+  // Antes este handler não existia, então o <Select> no ReserveTeam não fazia nada.
+  const handleSetBenchPosition = (reserveId: string, benchPosition: string) => {
+    setBenchPosition(reserveId, benchPosition)
+    const r = reserves.find((x) => x.id === reserveId)
+    if (r) {
+      toast.success(`${r.name} designado para ${benchPosition} no banco.`)
+    }
   }
 
   const handleClear = () => {
@@ -424,8 +435,8 @@ export function TeamBuilderApp({ inviteCode }: Props) {
           winner: null,
           matchStartedAt: new Date(),
           turnStartedAt: new Date(),
-          homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
-          awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+          homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
+          awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
           gameMode: joinGameMode,
           xpReward: GAME_MODE_CONFIG[joinGameMode].xpWin,
           pausedAt: null,
@@ -594,6 +605,7 @@ export function TeamBuilderApp({ inviteCode }: Props) {
               startersCount={startersCount}
               onSubstitute={handleSubstitute}
               onRemove={removeReserve}
+              onSetBenchPosition={handleSetBenchPosition}
             />
             {/* Team Rating Card + Stats/Share buttons */}
             <div className="mt-4 space-y-3">

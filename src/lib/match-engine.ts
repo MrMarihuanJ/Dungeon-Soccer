@@ -303,7 +303,11 @@ export interface TeamMatchState {
   redCards: number
   yellowCards: number
   injuredPlayers: string[]   // IDs dos jogadores lesionados
-  sentOffPlayers: string[]   // IDs dos jogadores expulsos
+  sentOffPlayers: string[]   // IDs dos jogadores expulsos por cartão vermelho
+  // ===== CORREÇÃO 6/8: rastreia jogadores que saíram por substituição =====
+  // Impede que um jogador já substituído (saiu de campo) continue aparecendo
+  // como ativo na lista de titulares em campo.
+  substitutedOut: string[]   // IDs dos jogadores que saíram via substituição
 }
 
 export interface MatchEvent {
@@ -678,8 +682,8 @@ export function createInitialMatchState(matchId: string, gameMode: GameMode = 'Q
     maxTurns: maxTurns ?? (config.maxTurns > 0 ? config.maxTurns : 999),
     events: [],
     winner: null,
-    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
-    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
+    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
     gameMode,
     matchStartedAt: null,
     pausedAt: null,
@@ -1144,4 +1148,398 @@ export function getRollColor(roll: DiceRollResult): string {
   if (roll.exceptional) return 'text-emerald-400'
   if (roll.success) return 'text-emerald-500'
   return 'text-red-400'
+}
+
+// =====================================================================
+// ===== CORREÇÃO 3: SISTEMA DE MULTIPLICADORES PARA COBRANÇA DE FALTA ===
+// ---------------------------------------------------------------------
+// A cada cobrança de falta:
+//   - Gerar aleatoriamente um multiplicador positivo OU negativo
+//   - Aplicar o multiplicador à chance de gol do batedor escolhido
+//   - Garantir imprevisibilidade: jogador da vez nunca é o mesmo da
+//     última cobrança, e o sinal do multiplicador alterna com peso
+//   - Mostrar claramente ao usuário se o batedor tem bônus ou penalidade
+// =====================================================================
+
+export type MultiplierSign = 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL'
+
+export interface FreeKickMultiplier {
+  /** ID único da instância do multiplicador (para controle de UI) */
+  id: string
+  /** Sinal do multiplicador: POSITIVE = bônus; NEGATIVE = penalidade; NEUTRAL = sem efeito */
+  sign: MultiplierSign
+  /** Valor numérico aplicado: positivo aumenta chance de gol, negativo diminui */
+  value: number
+  /** Rótulo amigável para exibição: "BÔNUS +20%" ou "PENALIDADE -15%" */
+  label: string
+  /** Emoji representativo */
+  emoji: string
+  /** Descrição narrativa para exibir ao usuário */
+  description: string
+}
+
+/**
+ * Histórico de multiplicadores por partida (em memória no cliente).
+ * Usado para evitar repetições consecutivas do mesmo sinal e do mesmo jogador.
+ */
+export interface MultiplierHistory {
+  lastKickerId: string | null
+  lastSign: MultiplierSign | null
+  turnCount: number
+}
+
+/**
+ * Gera um multiplicador aleatório para a cobrança de falta.
+ *
+ * Estratégia de imprevisibilidade:
+ *   - 45% positivo (bônus entre +5% e +30%)
+ *   - 40% negativo (penalidade entre -5% e -25%)
+ *   - 15% neutro (sem efeito, mas ainda mostra mensagem)
+ *
+ * Para evitar repetições consecutivas do mesmo sinal, se o último
+ * multiplicador foi POSITIVE, a chance de gerar outro POSITIVE cai pela metade
+ * (e vice-versa para NEGATIVE).
+ *
+ * @param history histórico da partida (opcional, para anti-repetição)
+ */
+export function generateFreeKickMultiplier(history?: MultiplierHistory | null): FreeKickMultiplier {
+  // Pesos base
+  let posWeight = 0.45
+  let negWeight = 0.40
+  const neutralWeight = 0.15
+
+  // Anti-repetição: se o último foi POSITIVE, reduz chance de novo POSITIVE
+  if (history?.lastSign === 'POSITIVE') {
+    posWeight = 0.25
+    negWeight = 0.60
+  } else if (history?.lastSign === 'NEGATIVE') {
+    posWeight = 0.60
+    negWeight = 0.25
+  }
+
+  const roll = Math.random()
+  let sign: MultiplierSign
+  let value: number
+  let label: string
+  let emoji: string
+  let description: string
+
+  if (roll < posWeight) {
+    sign = 'POSITIVE'
+    // Bônus entre +5% e +30%
+    value = 0.05 + Math.random() * 0.25
+    const pct = Math.round(value * 100)
+    label = `BÔNUS +${pct}%`
+    emoji = '🔥'
+    description = `${emoji} Batedor inspirado! Chance de gol aumentada em +${pct}%.`
+  } else if (roll < posWeight + negWeight) {
+    sign = 'NEGATIVE'
+    // Penalidade entre -5% e -25%
+    value = -(0.05 + Math.random() * 0.20)
+    const pct = Math.abs(Math.round(value * 100))
+    label = `PENALIDADE -${pct}%`
+    emoji = '💀'
+    description = `${emoji} Batedor desconcentrado! Chance de gol reduzida em -${pct}%.`
+  } else {
+    sign = 'NEUTRAL'
+    value = 0
+    label = 'NEUTRO'
+    emoji = '⚖️'
+    description = `${emoji} Condições normais. Sem bônus ou penalidade nesta cobrança.`
+  }
+
+  return {
+    id: `mult_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+    sign,
+    value,
+    label,
+    emoji,
+    description,
+  }
+}
+
+/**
+ * Aplica o multiplicador à chance base de gol de uma ação.
+ * Retorna nova chance entre 0.05 (mínimo) e 0.95 (máximo).
+ *
+ * @param baseGoalChance Chance original da ação (0-1)
+ * @param multiplier Multiplicador gerado por generateFreeKickMultiplier
+ */
+export function applyMultiplierToGoalChance(
+  baseGoalChance: number,
+  multiplier: FreeKickMultiplier,
+): number {
+  // chance final = base + (base * valor) -> valor positivo aumenta, negativo diminui
+  // Exemplo: base 0.7, valor +0.20 -> 0.7 + 0.14 = 0.84
+  //          base 0.7, valor -0.15 -> 0.7 - 0.105 = 0.595
+  const adjusted = baseGoalChance + (baseGoalChance * multiplier.value)
+  // Clamp entre 5% e 95% para manter jogabilidade
+  return Math.max(0.05, Math.min(0.95, adjusted))
+}
+
+/**
+ * Sorteia um batedor evitando repetição consecutiva do último batedor.
+ *
+ * @param availablePlayers Lista de jogadores em campo disponíveis
+ * @param lastKickerId ID do último batedor (para evitar repetição)
+ */
+export function pickKickerAvoidingRepeat(
+  availablePlayers: { id: string; name: string; position: string }[],
+  lastKickerId?: string | null,
+): { id: string; name: string; position: string } | null {
+  if (availablePlayers.length === 0) return null
+  if (availablePlayers.length === 1) return availablePlayers[0]
+
+  // Filtra o último batedor
+  const candidates = lastKickerId
+    ? availablePlayers.filter(p => p.id !== lastKickerId)
+    : availablePlayers
+
+  // Se só sobrou o último (caso extremo), usa ele
+  const pool = candidates.length > 0 ? candidates : availablePlayers
+  return pool[Math.floor(Math.random() * pool.length)]
+}
+
+// =====================================================================
+// ===== CORREÇÃO 7: JOGADA DEFENSIVA E ROUBADAS DE BOLA =================
+// ---------------------------------------------------------------------
+// Em momentos aleatórios durante a vez do oponente, o jogador pode
+// ter a chance de lançar um dado para uma jogada defensiva.
+//
+// Regras:
+//   - A jogada defensiva é oferecida com probabilidade base de 30% por
+//     turno do oponente, escalando para 50% se o oponente está perto
+//     do gol (progresso >= 60%).
+//   - Se bem-sucedida, o jogador recupera a posse de bola e joga novamente.
+//   - REGRA ANTI-REPETIÇÃO: após uma roubada de bola bem-sucedida, a
+//     próxima jogada defensiva NÃO é oferecida no turno imediatamente
+//     seguinte. Isso evita múltiplas roubadas consecutivas.
+// =====================================================================
+
+export interface DefensivePlayResult {
+  /** Jogador que executou a jogada defensiva */
+  playerName: string
+  /** Posição do jogador (para narrativa) */
+  position: string
+  /** Rolagem pura do d20 */
+  dice: number
+  /** Bônus de habilidade aplicado (baseado na posição) */
+  bonus: number
+  /** Total = dice + bonus */
+  total: number
+  /** Dificuldade da jogada */
+  dc: number
+  /** Sucesso geral? */
+  success: boolean
+  /** Tipo de crítico */
+  critical: 'none' | 'crit_hit' | 'crit_fail'
+  /** Se a roubada de bola foi bem-sucedida (success && !crit_fail) */
+  ballStolen: boolean
+  /** Narrativa descritiva do lance */
+  narrative: string
+}
+
+/**
+ * Bônus de defesa por posição (espelha o que está no DefensivePlayDialog).
+ */
+const DEFENSIVE_BONUS_BY_POSITION: Record<string, [number, number]> = {
+  GK:  [4, 6],  // Goleiro
+  DF:  [4, 6],  // Zagueiro
+  LD:  [4, 6],  // Lateral Direito
+  LE:  [4, 6],  // Lateral Esquerdo
+  CB:  [4, 6],  // Zagueiro Central
+  DM:  [4, 6],  // Volante
+  MF:  [2, 4],  // Meio-campo
+  AM:  [2, 4],  // Meio-atacante
+  FW:  [1, 3],  // Atacante
+  ST:  [1, 3],  // Centroavante
+  CF:  [1, 3],  // Centroavante
+  RW:  [1, 3],  // Ponta Direita
+  LW:  [1, 3],  // Ponta Esquerda
+}
+
+const DEFENSIVE_DC = 14  // Dificuldade base para jogada defensiva
+
+const DEFENSIVE_NARRATIVES_SUCCESS = [
+  '{player} antecipa o passe e rouba a bola!',
+  '{player} faz carrinho certeiro e recupera a posse!',
+  '{player} intercepta o lançamento e inicia contra-ataque!',
+  '{player} vence a dividida e fica com a bola!',
+  '{player} pressiona, rouba a bola e abre jogada!',
+]
+
+const DEFENSIVE_NARRATIVES_FAIL = [
+  '{player} tenta interceptar mas falha — o oponente passa.',
+  '{player} arrisca o carrinho mas erra — bola passa.',
+  '{player} não consegue roubar a bola. Vez do oponente continua.',
+  '{player} tenta antecipar mas o atacante se protege.',
+]
+
+/**
+ * Resolve uma jogada defensiva.
+ *
+ * @param position Posição do jogador escolhido para defender
+ * @param playerName Nome do jogador (para narrativa)
+ */
+export function resolveDefensivePlay(position: string, playerName: string): DefensivePlayResult {
+  const dice = rollD20()
+  const bonusRange = DEFENSIVE_BONUS_BY_POSITION[position] ?? [2, 4]
+  const bonus = bonusRange[0] + Math.floor(Math.random() * (bonusRange[1] - bonusRange[0] + 1))
+  const total = dice + bonus
+  const dc = DEFENSIVE_DC
+
+  let critical: DefensivePlayResult['critical'] = 'none'
+  let success: boolean
+  let ballStolen: boolean
+
+  // Regras D&D: natural 20 = crit hit (roubou automaticamente), natural 1 = crit fail
+  if (dice === 20) {
+    critical = 'crit_hit'
+    success = true
+    ballStolen = true
+  } else if (dice === 1) {
+    critical = 'crit_fail'
+    success = false
+    ballStolen = false
+  } else {
+    success = total >= dc
+    ballStolen = success
+  }
+
+  // Gera narrativa
+  const templates = success ? DEFENSIVE_NARRATIVES_SUCCESS : DEFENSIVE_NARRATIVES_FAIL
+  const narrative = templates[Math.floor(Math.random() * templates.length)].replace('{player}', playerName)
+
+  return {
+    playerName,
+    position,
+    dice,
+    bonus,
+    total,
+    dc,
+    success,
+    critical,
+    ballStolen,
+    narrative,
+  }
+}
+
+/**
+ * Decide se uma jogada defensiva deve ser oferecida neste turno.
+ *
+ * @param opponentProgress Progresso atual do oponente (0-100)
+ * @param lastTurnStole Se houve roubada de bola no turno anterior (anti-repetição)
+ * @param currentTurn Turno atual (para logging)
+ */
+export function shouldOfferDefensivePlay(
+  opponentProgress: number,
+  lastTurnStole: boolean,
+  currentTurn: number,
+): boolean {
+  // ===== REGRA ANTI-REPETIÇÃO: se roubou no turno anterior, não oferece =====
+  // Isto evita múltiplas roubadas de bola consecutivas, conforme exigido pelo usuário.
+  if (lastTurnStole) return false
+
+  // Probabilidade base 30%, escalando para 50% se oponente está perto do gol
+  let chance = 0.30
+  if (opponentProgress >= 60) chance = 0.50
+  if (opponentProgress >= 80) chance = 0.60
+
+  return Math.random() < chance
+}
+
+// =====================================================================
+// ===== CORREÇÃO 9: SISTEMA DE XP / RECOMPENSAS / PROGRESSÃO ===========
+// ---------------------------------------------------------------------
+// Cada vitória acumula XP no perfil do usuário.
+// A cada nível, o usuário desbloqueia benefícios cumulativos:
+//   - Nível 2: +5% chance de jogada defensiva bem-sucedida
+//   - Nível 3: +1 substituição extra por partida (6 no total)
+//   - Nível 5: Multiplicador de XP 1.25x em vitórias
+//   - Nível 7: Acesso a ações especiais bônus
+//   - Nível 10: Multiplicador de XP 1.5x em vitórias
+//
+// A UI exibe uma barra de progressão animada do nível atual -> próximo.
+// =====================================================================
+
+export interface XpLevelInfo {
+  level: number
+  currentLevelXp: number       // XP total acumulado para entrar no nível atual
+  nextLevelXp: number          // XP total necessário para o próximo nível
+  xpIntoCurrentLevel: number   // XP já acumulado dentro do nível atual
+  xpToNextLevel: number        // XP restante para subir de nível
+  progressPct: number          // 0-100, porcentagem da barra de progressão
+  activeBenefits: XpBenefit[]  // benefícios atualmente ativos
+}
+
+export interface XpBenefit {
+  level: number
+  name: string
+  description: string
+  emoji: string
+}
+
+/** Tabela de benefícios desbloqueados por nível */
+export const XP_BENEFITS: XpBenefit[] = [
+  { level: 2, name: 'Defensor Nato', description: '+5% chance de sucesso em jogadas defensivas', emoji: '🛡️' },
+  { level: 3, name: 'Banco Qualificado', description: '+1 substituição por partida (6 no total)', emoji: '👥' },
+  { level: 5, name: 'Veterano', description: '+25% XP em cada vitória', emoji: '⭐' },
+  { level: 7, name: 'Tático', description: 'Acesso a ações especiais extras', emoji: '🎯' },
+  { level: 10, name: 'Lenda Viva', description: '+50% XP em cada vitória', emoji: '👑' },
+]
+
+/** Curva de XP: cada nível requer 100 XP a mais que o anterior */
+export function xpRequiredForLevel(level: number): number {
+  // nível 1 = 0, nível 2 = 100, nível 3 = 250, nível 4 = 450, ...
+  // Fórmula: soma de 100 + 50*(n-2) para n>=2, ou seja, (n-1)*(n)*25
+  if (level <= 1) return 0
+  return (level - 1) * level * 25
+}
+
+/**
+ * Calcula informações de nível e progressão a partir do XP total do usuário.
+ */
+export function computeXpLevelInfo(totalXp: number): XpLevelInfo {
+  let level = 1
+  while (xpRequiredForLevel(level + 1) <= totalXp) {
+    level++
+  }
+
+  const currentLevelXp = xpRequiredForLevel(level)
+  const nextLevelXp = xpRequiredForLevel(level + 1)
+  const xpIntoCurrentLevel = totalXp - currentLevelXp
+  const xpToNextLevel = nextLevelXp - totalXp
+  const progressPct = nextLevelXp === currentLevelXp
+    ? 100
+    : Math.round((xpIntoCurrentLevel / (nextLevelXp - currentLevelXp)) * 100)
+
+  const activeBenefits = XP_BENEFITS.filter(b => b.level <= level)
+
+  return {
+    level,
+    currentLevelXp,
+    nextLevelXp,
+    xpIntoCurrentLevel,
+    xpToNextLevel,
+    progressPct,
+    activeBenefits,
+  }
+}
+
+/**
+ * Calcula o número máximo de substituições com base no nível do usuário.
+ * Base = 5; nível 3+ = 6.
+ */
+export function getMaxSubstitutionsForLevel(level: number): number {
+  return level >= 3 ? 6 : 5
+}
+
+/**
+ * Multiplicador de XP por vitória com base no nível.
+ * Nível 5+ = 1.25x; nível 10+ = 1.5x.
+ */
+export function getXpMultiplierForLevel(level: number): number {
+  if (level >= 10) return 1.5
+  if (level >= 5) return 1.25
+  return 1.0
 }

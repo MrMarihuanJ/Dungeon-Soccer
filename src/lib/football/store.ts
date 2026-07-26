@@ -35,6 +35,12 @@ export interface SelectedPlayer {
   isRetired?: boolean
   isInactive?: boolean
   source?: string
+  // ===== CORREÇÃO 1: posição designada do reserva no banco =====
+  // Permite que o usuário mude a "posição de banco" de um reserva
+  // sem precisar removê-lo e readicioná-lo. Antes este campo não
+  // existia na store e o callback `onSetBenchPosition` era ignorado
+  // (bug reportado: "as opções aparecem, mas nada acontece").
+  benchPosition?: string  // GK | DF | LD | LE | MF | FW (override opcional)
 }
 
 // Map: positionId -> SelectedPlayer | null
@@ -54,6 +60,8 @@ interface TeamState {
   removeReserve: (id: string) => void
   // Substitui titular por reserva: reserva entra na posição e titular vai ao banco
   substitute: (positionId: string, reserveId: string) => void
+  // ===== CORREÇÃO 1: define/muda a posição designada de um reserva no banco =====
+  setBenchPosition: (reserveId: string, benchPosition: string) => void
   clearTeam: () => void
   // Inicializa starters com base na formação atual (chaves nulas)
   initStarters: () => void
@@ -140,13 +148,27 @@ export const useTeamStore = create<TeamState>()(
           const current = state.starters[positionId]
           const reserve = state.reserves.find((r) => r.id === reserveId)
           if (!reserve) return state
-          const newStarters = { ...state.starters, [positionId]: reserve }
+          // ===== CORREÇÃO 1: ao entrar em campo, o reserva perde benchPosition =====
+          // (benchPosition só faz sentido para jogadores no banco)
+          const enteringField: SelectedPlayer = { ...reserve, benchPosition: undefined }
+          const newStarters = { ...state.starters, [positionId]: enteringField }
           let newReserves = state.reserves.filter((r) => r.id !== reserveId)
           if (current) {
-            newReserves = [...newReserves, current]
+            // Quem sai vai para o banco sem benchPosition (vai herdar a default)
+            newReserves = [...newReserves, { ...current, benchPosition: undefined }]
           }
           return { starters: newStarters, reserves: newReserves }
         }),
+
+      // ===== CORREÇÃO 1: implementação de setBenchPosition =====
+      // Atualiza o campo `benchPosition` do reserva sem tocar em `position`.
+      // Permite que o ReserveTeam reaja imediatamente ao clique no <Select>.
+      setBenchPosition: (reserveId, benchPosition) =>
+        set((state) => ({
+          reserves: state.reserves.map((r) =>
+            r.id === reserveId ? { ...r, benchPosition } : r
+          ),
+        })),
 
       clearTeam: () =>
         set(() => ({
@@ -210,10 +232,23 @@ export const useTeamStore = create<TeamState>()(
     }),
     {
       name: 'cartoleiro-fc-team',
-      version: 1,
+      // ===== CORREÇÃO 1: bump version para 2 (adicionado campo benchPosition) =====
+      // Migration: garante que objetos antigos sem `benchPosition` continuem funcionando
+      version: 2,
       // FIX: skip hydration during SSR to prevent mismatch.
       // Call hydrateTeamStore() on client mount instead.
       skipHydration: true,
+      migrate: (persistedState: any, _version: number) => {
+        // Garante que reservas antigos tenham o campo benchPosition (undefined)
+        if (persistedState && Array.isArray(persistedState.reserves)) {
+          persistedState.reserves = persistedState.reserves.map((r: any) =>
+            r && r.benchPosition === undefined
+              ? { ...r, benchPosition: undefined }
+              : r
+          )
+        }
+        return persistedState
+      },
     },
   ),
 )
