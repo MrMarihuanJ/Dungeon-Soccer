@@ -4,9 +4,9 @@
   "private": true,
   "description": "Monte seu time dos sonhos no estilo Cartola FC - Next.js + Prisma + Neon",
   "scripts": {
-    "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "next build && mkdir -p .next/standalone/prisma && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && cp prisma/schema.prisma .next/standalone/prisma/",
-    "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start",
     "lint": "eslint .",
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
@@ -81,6 +81,7 @@
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^11.1.0",
     "vaul": "^1.1.2",
+    "z-ai-web-dev-sdk": "^0.0.18",
     "zod": "^4.0.2",
     "zustand": "^5.0.6"
   },
