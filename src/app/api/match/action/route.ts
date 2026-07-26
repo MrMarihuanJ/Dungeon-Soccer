@@ -222,7 +222,7 @@ export async function POST(req: NextRequest) {
     // Reconstrói o estado a partir do banco
     const defaultTeamState: TeamMatchState = {
       substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
-      injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
+      injuredPlayers: [], sentOffPlayers: [],
     }
 
     let homeTeamState = defaultTeamState

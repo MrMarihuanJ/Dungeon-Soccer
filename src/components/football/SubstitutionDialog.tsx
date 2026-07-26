@@ -6,11 +6,8 @@
 // Quando o usuário clica em "Entrar" num reserva, este diálogo abre
 // para ele escolher qual titular vai sair.
 // Mostra apenas titulares cuja posição seja compatível com a do
-// reserva (considerando benchPosition se definida), mas também
-// permite troca forçada (qualquer posição) com aviso.
-//
-// NOVO: Se o reserva tem benchPosition definido, a compatibilidade
-// é calculada com base na posição designada, não na posição natural.
+// reserva (mesma posição genérica GK/DF/MF/FW), mas também permite
+// troca forçada (qualquer posição) com aviso.
 // =====================================================================
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
@@ -19,20 +16,11 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
-import { ArrowRight, AlertTriangle, MapPin } from 'lucide-react'
+import { ArrowRight, AlertTriangle } from 'lucide-react'
 import Image from 'next/image'
 import { useState } from 'react'
 import type { SelectedPlayer } from '@/lib/football/store'
 import { ROLE_TO_POSITION, POSITION_GROUPS, type SimplifiedPosition, type Formation } from '@/lib/football/formations'
-
-const POS_LABEL: Record<string, string> = {
-  GK: 'Goleiro',
-  DF: 'Zagueiro',
-  LD: 'Lateral Direito',
-  LE: 'Lateral Esquerdo',
-  MF: 'Meia',
-  FW: 'Atacante',
-}
 
 interface Props {
   open: boolean
@@ -55,17 +43,13 @@ export function SubstitutionDialog({
 
   if (!reserve) return null
 
-  // Usa benchPosition se definido, senão posição natural
-  const effectivePosition = (reserve.benchPosition || reserve.position) as SimplifiedPosition
-  const hasCustomPosition = reserve.benchPosition && reserve.benchPosition !== reserve.position
-
   // Lista titulares ocupados (com jogador)
   const filledStarters = formation.positions
     .map((p) => ({ position: p, player: starters[p.id] }))
     .filter((x) => x.player !== null) as { position: typeof formation.positions[number]; player: SelectedPlayer }[]
 
   // Filtra por posição compatível (mesmo grupo defensivo: DF/LD/LE são compatíveis)
-  const reserveGroup = POSITION_GROUPS[effectivePosition] ?? 'DEF'
+  const reserveGroup = POSITION_GROUPS[reserve.position as SimplifiedPosition] ?? 'DEF'
   const compatible = filledStarters.filter((x) => {
     const starterGroup = POSITION_GROUPS[x.player.position as SimplifiedPosition] ?? 'DEF'
     return reserveGroup === starterGroup
@@ -92,15 +76,7 @@ export function SubstitutionDialog({
           </div>
           <div className="flex-1">
             <div className="font-semibold text-gray-900">{reserve.name}</div>
-            <div className="text-xs text-gray-600">{reserve.team} · Posição natural: {reserve.position}</div>
-            {hasCustomPosition && (
-              <div className="flex items-center gap-1 mt-0.5">
-                <MapPin className="h-3 w-3 text-emerald-500" />
-                <span className="text-[11px] font-medium text-emerald-700">
-                  Designado como: {POS_LABEL[effectivePosition]} ({effectivePosition})
-                </span>
-              </div>
-            )}
+            <div className="text-xs text-gray-600">{reserve.team} · {reserve.position}</div>
           </div>
           <Badge className="bg-emerald-600 text-white">Reserva</Badge>
         </div>
@@ -112,7 +88,7 @@ export function SubstitutionDialog({
               Permitir troca em qualquer posição
             </Label>
             <span className="text-[11px] text-gray-500">
-              Por padrão, só mostramos titulares compatíveis com {POS_LABEL[effectivePosition]}.
+              Por padrão, só mostramos titulares da mesma posição.
             </span>
           </div>
           <Switch id="any-pos" checked={allowAnyPosition} onCheckedChange={setAllowAnyPosition} />
@@ -130,7 +106,7 @@ export function SubstitutionDialog({
           <ul className="divide-y divide-gray-100">
             {list.length === 0 && (
               <li className="p-6 text-center text-sm text-gray-400">
-                Nenhum titular elegível para {POS_LABEL[effectivePosition]}. Ative a opção acima para ver todos.
+                Nenhum titular elegível. Ative a opção acima para ver todos.
               </li>
             )}
             {list.map(({ position, player }) => (

@@ -4,7 +4,8 @@
 // PlayerSearchModal - Modal de busca com autocomplete em tempo real
 // --------------------------------------------------------------------
 // Fonte única: TheSportsDB + banco local
-//   - Input de texto com debounce de 200ms (otimizado)
+// Funcionalidades:
+//   - Input de texto com debounce de 200ms
 //   - Consulta /api/players/search em tempo real
 //   - Lista de sugestões com foto, nome e time
 //   - Filtro de posição (opcional) - default = posição do slot
@@ -45,6 +46,7 @@ interface ApiPlayer {
   leagueTier?: string
   isRetired?: boolean
   isInactive?: boolean
+  thesportsdbUrl?: string | null
 }
 
 interface Props {
@@ -68,8 +70,8 @@ export function PlayerSearchModal({
   const [results, setResults] = useState<ApiPlayer[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [resultCount, setResultCount] = useState(0)
   const [sourcesInfo, setSourcesInfo] = useState<{ thesportsdb: number; local: number } | null>(null)
-  const [resultCount, setResultCount] = useState<number>(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Posição-alvo no banco (GK/DF/MF/FW) baseada no role tático do slot
@@ -79,6 +81,7 @@ export function PlayerSearchModal({
     async (q: string) => {
       if (!q || q.length < 1) {
         setResults([])
+        setResultCount(0)
         setError(null)
         setLoading(false)
         return
@@ -86,7 +89,7 @@ export function PlayerSearchModal({
       setLoading(true)
       setError(null)
       try {
-        const params = new URLSearchParams({ q, limit: '15' })
+        const params = new URLSearchParams({ q, limit: '12' })
         if (targetPos) params.set('pos', targetPos)
         if (gameMode) params.set('mode', gameMode)
         const res = await fetch(`/api/players/search?${params.toString()}`, {
@@ -95,8 +98,8 @@ export function PlayerSearchModal({
         if (!res.ok) throw new Error('Falha na busca')
         const data = await res.json()
         setResults(data.players ?? [])
-        setSourcesInfo(data.sources ?? null)
         setResultCount(data.total ?? 0)
+        setSourcesInfo(data.sources ?? null)
       } catch (e) {
         console.error(e)
         setError('Não foi possível buscar jogadores. Tente novamente.')
@@ -125,6 +128,7 @@ export function PlayerSearchModal({
       setQuery('')
       setResults([])
       setError(null)
+      setResultCount(0)
     }
   }, [open])
 
@@ -165,8 +169,8 @@ export function PlayerSearchModal({
           </DialogTitle>
           <DialogDescription>
             {position
-              ? `Busca em tempo real via TheSportsDB. Filtro automático: ${targetPos}.`
-              : 'Busca em tempo real via TheSportsDB. Digite o nome de qualquer jogador do mundo.'}
+              ? `Busca em tempo real via TheSportsDB + banco local. Filtro automático: ${targetPos}.`
+              : 'Busca em tempo real via TheSportsDB + banco local. Digite o nome de qualquer jogador do mundo.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -201,24 +205,26 @@ export function PlayerSearchModal({
                 Posição: {targetPos}
               </Badge>
               <span>·</span>
-              <span>{results.length} resultado(s)</span>
+              <span>{resultCount} resultado(s)</span>
             </div>
           )}
-          {!targetPos && results.length > 0 && (
+          {!targetPos && resultCount > 0 && (
             <div className="flex items-center gap-2 text-xs text-gray-500">
-              <span>{results.length} resultado(s)</span>
+              <span>{resultCount} resultado(s)</span>
             </div>
           )}
-          {/* Result count indicator */}
+          {/* Source indicators */}
           {resultCount > 0 && !loading && sourcesInfo && (
             <div className="flex items-center gap-2 text-xs text-gray-400">
-              <Badge variant="outline" className="text-[9px] border-sky-500/30 text-sky-600 dark:text-sky-400">
-                TheSportsDB ({sourcesInfo.thesportsdb})
-              </Badge>
-              {sourcesInfo && sourcesInfo.local > 0 && (
-                <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
-                  Banco local ({sourcesInfo.local})
-                </Badge>
+              <span>Fontes:</span>
+              {sourcesInfo.thesportsdb > 0 && (
+                <Badge variant="outline" className="text-[9px] border-sky-500/30 text-sky-600 dark:text-sky-400">SportsDB ({sourcesInfo.thesportsdb})</Badge>
+              )}
+              {sourcesInfo.local > 0 && (
+                <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-600 dark:text-emerald-400">Local ({sourcesInfo.local})</Badge>
+              )}
+              {sourcesInfo.thesportsdb + sourcesInfo.local === 0 && (
+                <span className="text-amber-500">Nenhuma fonte retornou resultados</span>
               )}
             </div>
           )}
@@ -279,7 +285,7 @@ export function PlayerSearchModal({
                   {results.map((p) => {
                     const isSelected = selectedPlayerIds.includes(p.id)
                     const sourceBadge = p.source === 'thesportsdb'
-                      ? { label: 'TheSportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
+                      ? { label: 'SportsDB', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
                       : { label: 'Local', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
                     // Overall badge estilo FIFA
                     const overall = p.overall ?? 0
@@ -326,7 +332,7 @@ export function PlayerSearchModal({
                               )}
                               {p.isRetired && (
                                 <span className="rounded bg-purple-100 px-1 text-[9px] font-bold text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
-                                  LENDA
+                                  👑 LENDA
                                 </span>
                               )}
                               <span className={`rounded px-1 text-[9px] font-medium ${sourceBadge.cls}`}>
@@ -365,7 +371,7 @@ export function PlayerSearchModal({
           </ScrollArea>
 
           <p className="text-center text-[11px] text-gray-400">
-            Busca em tempo real via TheSportsDB
+            🌍 Busca em tempo real via TheSportsDB + banco local
           </p>
         </div>
       </DialogContent>

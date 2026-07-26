@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
   // Parse team states from JSON
   const defaultTeamState: TeamMatchState = {
     substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
-    injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
+    injuredPlayers: [], sentOffPlayers: [],
   }
 
   let teamState: TeamMatchState = defaultTeamState
@@ -63,15 +63,11 @@ export async function POST(req: NextRequest) {
   if (teamState.substitutionsUsed >= teamState.maxSubstitutions) {
     // Se for lesão e já atingiu limite, o time joga com um a menos
     // Retornamos sucesso mas indicamos que não foi possível substituir
-    // PUNISHMENT SYSTEM: After max substitutions, no more subs allowed —
-    // even on injury, the team must play with fewer players
     if (isForced) {
       // Remover o jogador lesionado da lista de injuredPlayers
       // (ele sai do campo mas nenhum reserva entra)
       if (outPlayerId) {
         teamState.injuredPlayers = teamState.injuredPlayers.filter(id => id !== outPlayerId)
-        // Track the departed player so they can't return
-        teamState.substitutedOut = [...(teamState.substitutedOut || []), outPlayerId]
       }
       const updatedJson = JSON.stringify(teamState)
       await db.match.update({
@@ -94,8 +90,6 @@ export async function POST(req: NextRequest) {
   // Remover jogador lesionado da lista de injuredPlayers
   if (outPlayerId) {
     teamState.injuredPlayers = teamState.injuredPlayers.filter(id => id !== outPlayerId)
-    // Track the departed player in substitutedOut so they can't return to the match
-    teamState.substitutedOut = [...(teamState.substitutedOut || []), outPlayerId]
   }
 
   // Persistir no banco

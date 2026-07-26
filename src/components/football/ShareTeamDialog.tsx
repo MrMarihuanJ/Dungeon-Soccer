@@ -46,9 +46,7 @@ function formatTeamText(
     overall: s.player.overall ?? 70,
     age: s.player.age ?? 25,
     leagueTier: (s.player.leagueTier as LeagueTier) ?? 'OTHER',
-    position: s.player.benchPosition || s.player.position,
-    nationality: s.player.nationality,
-    team: s.player.team ?? '',
+    position: s.player.position,
     isRetired: s.player.isRetired,
     isInactive: s.player.isInactive,
   }))

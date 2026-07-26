@@ -1,13 +1,8 @@
 // =====================================================================
-// API: /api/players/stats (OTIMIZADO)
+// API: /api/players/stats
 // --------------------------------------------------------------------
-// Busca estatísticas atualizadas de um jogador usando TheSportsDB
-// como única fonte de dados externos.
-//
-// Otimizações:
-//   - Cache de 180s + timeout de 6s (mais rápido)
-//   - Resposta mais leve (sem campos de deprecated/migração)
-//   - Dedup simples e direto
+// Busca estatísticas de um jogador via TheSportsDB.
+// Fonte externa única: TheSportsDB (dados, foto, link do perfil)
 //
 // Query params:
 //   name  -> nome do jogador (obrigatório)
@@ -19,11 +14,11 @@ import { NextRequest, NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-interface PlayerStats {
+const SPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '3'
+
+interface PlayerStatsResult {
   name: string
   thesportsdbUrl: string | null
-  thesportsdbId: string | null
-  latestStats: string | null
   team: string | null
   position: string | null
   nationality: string | null
@@ -31,84 +26,60 @@ interface PlayerStats {
   born: string | null
   height: string | null
   weight: string | null
-  signature: string | null
-  sources: { name: string; data: string }[]
+  sources: { name: string; url: string; snippet: string }[]
 }
 
-async function searchPlayerStatsTheSportsDB(playerName: string, team?: string | null): Promise<PlayerStats> {
-  const emptyResult: PlayerStats = {
-    name: playerName, thesportsdbUrl: null, thesportsdbId: null, latestStats: null,
-    team: null, position: null, nationality: null, photoUrl: null,
-    born: null, height: null, weight: null, signature: null, sources: [],
-  }
+function fallbackPhoto(name: string): string {
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0d8a3f&color=fff&size=200&bold=true`
+}
 
+async function searchPlayerStats(playerName: string, team?: string | null): Promise<PlayerStatsResult> {
   try {
-    const SPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '3'
+    // Search TheSportsDB for the player
     const searchUrl = `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/searchplayers.php?p=${encodeURIComponent(playerName)}`
-    const searchRes = await fetch(searchUrl, {
-      next: { revalidate: 180 }, // Cache 180s (stats mudam pouco)
-      signal: AbortSignal.timeout(6000), // Timeout 6s (mais rápido)
+    const res = await fetch(searchUrl, {
+      next: { revalidate: 180 },
+      signal: AbortSignal.timeout(6000),
     })
+    if (!res.ok) return { name: playerName, thesportsdbUrl: null, team: null, position: null, nationality: null, photoUrl: null, born: null, height: null, weight: null, sources: [] }
 
-    if (!searchRes.ok) {
-      console.warn('[stats] TheSportsDB retornou', searchRes.status)
-      return emptyResult
-    }
+    const data = await res.json()
+    const players: any[] = data.player || []
 
-    const searchData = await searchRes.json()
-    const players: any[] = searchData.player || []
-
-    // Best match: prioriza team matching se team fornecido
+    // Try to find the best match (prefer matching team)
     let bestMatch: any = null
-    if (team && players.length > 1) {
+    if (team) {
       bestMatch = players.find((p: any) =>
         p.strTeam && p.strTeam.toLowerCase().includes(team.toLowerCase())
       )
     }
-    if (!bestMatch && players.length > 0) bestMatch = players[0]
-    if (!bestMatch) return emptyResult
+    if (!bestMatch && players.length > 0) {
+      bestMatch = players[0]
+    }
 
-    const p = bestMatch
-    const idPlayer = p.idPlayer || ''
-    const name = p.strPlayer || playerName
-    const playerTeam = p.strTeam || null
-    const position = p.strPosition || null
-    const nationality = p.strNationality || null
-    const photoUrl = p.strThumb || p.strCutout || null
-
-    // Compile stats
-    const statsParts: string[] = []
-    if (playerTeam) statsParts.push(`Time: ${playerTeam}`)
-    if (position) statsParts.push(`Posição: ${position}`)
-    if (nationality) statsParts.push(`Nacionalidade: ${nationality}`)
-    if (p.strBorn) statsParts.push(`Nascimento: ${p.strBorn}`)
-    if (p.strHeight) statsParts.push(`Altura: ${p.strHeight}`)
-    if (p.strWeight) statsParts.push(`Peso: ${p.strWeight}`)
-    if (p.strDescriptionEN) statsParts.push(p.strDescriptionEN.slice(0, 200))
-    if (p.strDescriptionPT) statsParts.push(p.strDescriptionPT.slice(0, 200))
-
-    const thesportsdbUrl = idPlayer
-      ? `https://www.thesportsdb.com/player/${encodeURIComponent(name.toLowerCase().replace(/\s+/g, '-'))}-${idPlayer}`
-      : null
+    if (!bestMatch) {
+      return { name: playerName, thesportsdbUrl: null, team: null, position: null, nationality: null, photoUrl: null, born: null, height: null, weight: null, sources: [] }
+    }
 
     return {
-      name,
-      thesportsdbUrl,
-      thesportsdbId: idPlayer || null,
-      latestStats: statsParts.length > 0 ? statsParts.join(' · ') : null,
-      team: playerTeam,
-      position,
-      nationality,
-      photoUrl,
-      born: p.strBorn || null,
-      height: p.strHeight || null,
-      weight: p.strWeight || null,
-      signature: p.strSign || null,
-      sources: [{ name: 'TheSportsDB', data: statsParts.join(' | ') }],
+      name: bestMatch.strPlayer || playerName,
+      thesportsdbUrl: `https://www.thesportsdb.com/player/${bestMatch.idPlayer}`,
+      team: bestMatch.strTeam || null,
+      position: bestMatch.strPosition || null,
+      nationality: bestMatch.strNationality || null,
+      photoUrl: bestMatch.strThumb || bestMatch.strCutout || fallbackPhoto(playerName),
+      born: bestMatch.dateBorn || null,
+      height: bestMatch.strHeight || null,
+      weight: bestMatch.strWeight || null,
+      sources: [{
+        name: 'TheSportsDB',
+        url: `https://www.thesportsdb.com/player/${bestMatch.idPlayer}`,
+        snippet: bestMatch.strDescriptionEN?.slice(0, 200) || '',
+      }],
     }
   } catch (err) {
     console.error('[stats] search error:', err)
-    return emptyResult
+    return { name: playerName, thesportsdbUrl: null, team: null, position: null, nationality: null, photoUrl: null, born: null, height: null, weight: null, sources: [] }
   }
 }
 
@@ -121,11 +92,11 @@ export async function GET(req: NextRequest) {
     if (!name || name.length < 2) {
       return NextResponse.json({
         ok: false,
-        error: 'Nome do jogador é obrigatório.',
+        error: 'Nome do jogador é obrigatório (mínimo 2 caracteres).',
       }, { status: 400 })
     }
 
-    const stats = await searchPlayerStatsTheSportsDB(name, team)
+    const stats = await searchPlayerStats(name, team)
 
     return NextResponse.json({
       ok: true,

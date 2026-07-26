@@ -1,27 +1,24 @@
 // =====================================================================
 // Store Zustand - Estado do time do Cartoleiro FC
 // ---------------------------------------------------------------------
-// Mantém estado de titulares, reservas, formação selecionada e
-// operações de substituição. Persiste em localStorage para não perder
-// o time ao recarregar a página.
+// Mantém estado de titulares, reservas, formação selecionada e操作
+// de substituição. Persiste em localStorage para não perder o time
+// ao recarregar a página.
 //
-// NOVO: Reservas agora têm campo `benchPosition` que permite ao
-// usuário definir qual posição o reserva irá desempenhar quando
-// entrar em campo. Isso permite, por exemplo, que um meia seja
-// designado como atacante reserva, ou um zagueiro como lateral.
+// FIX: skipHydration=true prevents SSR/client mismatch.
+// Call hydrateTeamStore() on client mount to load localStorage data.
 // =====================================================================
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { getFormation, type FieldPosition, type SimplifiedPosition } from './formations'
+import { getFormation, type FieldPosition } from './formations'
 
 export interface SelectedPlayer {
   id: string          // ID no banco
   name: string        // Nome curto
   fullName: string    // Nome completo
   team: string        // Time atual
-  position: string    // GK | DF | LD | LE | MF | FW — posição natural do jogador
-  benchPosition?: string  // GK | DF | LD | LE | MF | FW — posição designada no banco (se diferente da natural)
+  position: string    // GK | DF | LD | LE | MF | FW
   photoUrl: string    // URL da foto
   nationality?: string | null
   shirtNumber?: number | null
@@ -48,14 +45,13 @@ interface TeamState {
   starters: StartersMap
   reserves: SelectedPlayer[] // lista simples de reservas
   gameMode: 'DREAM_TEAM' | 'WORLD_CUP'
+  _hasHydrated: boolean  // internal flag — true after localStorage data loaded
 
   setFormation: (id: string) => void
   setStarter: (positionId: string, player: SelectedPlayer) => void
   removeStarter: (positionId: string) => void
   addReserve: (player: SelectedPlayer) => void
   removeReserve: (id: string) => void
-  // Altera a posição designada de um reserva no banco
-  setReserveBenchPosition: (reserveId: string, benchPosition: SimplifiedPosition) => void
   // Substitui titular por reserva: reserva entra na posição e titular vai ao banco
   substitute: (positionId: string, reserveId: string) => void
   clearTeam: () => void
@@ -65,6 +61,7 @@ interface TeamState {
   loadFromObject: (team: { formation: string; starters: any; reserves: any }) => void
   // Define o modo de jogo (Dream Team / World Cup)
   setGameMode: (mode: 'DREAM_TEAM' | 'WORLD_CUP') => void
+  setHasHydrated: (value: boolean) => void
 }
 
 const buildEmptyStarters = (formationId: string): StartersMap => {
@@ -83,6 +80,7 @@ export const useTeamStore = create<TeamState>()(
       starters: buildEmptyStarters('4-3-3'),
       reserves: [],
       gameMode: 'DREAM_TEAM',
+      _hasHydrated: false,
 
       setFormation: (id) =>
         set((state) => {
@@ -137,27 +135,14 @@ export const useTeamStore = create<TeamState>()(
           reserves: state.reserves.filter((r) => r.id !== id),
         })),
 
-      // Nova ação: alterar a posição designada de um reserva no banco
-      // benchPosition define qual posição o jogador vai desempenhar quando
-      // for substituído, mesmo que seja diferente de sua posição natural
-      setReserveBenchPosition: (reserveId, benchPosition) =>
-        set((state) => ({
-          reserves: state.reserves.map((r) =>
-            r.id === reserveId ? { ...r, benchPosition } : r
-          ),
-        })),
-
       substitute: (positionId, reserveId) =>
         set((state) => {
           const current = state.starters[positionId]
           const reserve = state.reserves.find((r) => r.id === reserveId)
           if (!reserve) return state
-          // Quando o reserva entra, sua posição no campo é a do slot (positionId)
-          // Se ele tem benchPosition definido, usamos essa posição para o rating
           const newStarters = { ...state.starters, [positionId]: reserve }
           let newReserves = state.reserves.filter((r) => r.id !== reserveId)
           if (current) {
-            // Titular que sai vai para o banco, mantendo sua posição natural
             newReserves = [...newReserves, current]
           }
           return { starters: newStarters, reserves: newReserves }
@@ -220,10 +205,22 @@ export const useTeamStore = create<TeamState>()(
           // Dream Team permite todos
           return { gameMode: mode }
         }),
+
+      setHasHydrated: (value) => set({ _hasHydrated: value }),
     }),
     {
       name: 'cartoleiro-fc-team',
-      version: 2,  // Versão 2 — adicionado benchPosition
+      version: 1,
+      // FIX: skip hydration during SSR to prevent mismatch.
+      // Call hydrateTeamStore() on client mount instead.
+      skipHydration: true,
     },
   ),
 )
+
+// ===== Hydration helper — call on client mount =====
+export async function hydrateTeamStore(): Promise<void> {
+  if (useTeamStore.getState()._hasHydrated) return
+  await useTeamStore.persist.rehydrate()
+  useTeamStore.setState({ _hasHydrated: true })
+}
