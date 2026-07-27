@@ -11,6 +11,7 @@ import {
   signUserToken,
   buildUserCookieHeader,
 } from '@/lib/user-auth'
+import { db } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,6 +37,19 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // ===== CORREÇÃO v3: registra último login — base para exclusão de inativos =====
+    // O cron /api/cron/cleanup-inactive deleta usuários com lastLoginAt > 180 dias.
+    // Atualizamos de forma não-bloqueante: se falhar (ex.: coluna ainda não existe
+    // em dev), o login ainda assim proceeds.
+    try {
+      await db.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      })
+    } catch (updateErr) {
+      console.warn('[user/login] falha ao registrar lastLoginAt (ignorado):', updateErr)
+    }
+
     const token = signUserToken({
       userId: user.id,
       username: user.username,
@@ -49,6 +63,10 @@ export async function POST(req: NextRequest) {
         username: user.username,
         email: user.email,
         displayName: user.displayName,
+        xp: user.xp ?? 0,
+        wins: user.wins ?? 0,
+        losses: user.losses ?? 0,
+        draws: user.draws ?? 0,
       },
     })
     res.headers.set('Set-Cookie', buildUserCookieHeader(token))

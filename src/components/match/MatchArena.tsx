@@ -241,6 +241,30 @@ export function MatchArena({
   // Máximo de substituições com base no nível (5 base, 6 se nível 3+)
   const effectiveMaxSubs = getMaxSubstitutionsForLevel(xpLevelInfo.level)
 
+  // ===== CORREÇÃO v3: refaz fetch do XP do usuário quando a partida termina =====
+  // Antes a barra de XP não atualizava após o fim da partida — o `myUser.xp`
+  // vinha dos props no mount e nunca era re-buscado. Agora buscamos /api/user/me
+  // assim que a phase muda para FINISHED, garantindo que o XP recém-ganho
+  // apareça imediatamente na UI.
+  const xpRefreshedRef = useRef(false)
+  useEffect(() => {
+    if (phase !== 'FINISHED') {
+      xpRefreshedRef.current = false
+      return
+    }
+    if (xpRefreshedRef.current) return
+    xpRefreshedRef.current = true
+
+    fetch('/api/user/me', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.ok && typeof data.user?.xp === 'number') {
+          setUserXp(data.user.xp)
+        }
+      })
+      .catch(err => console.warn('[MatchArena] falha ao refetch XP:', err))
+  }, [phase])
+
   // ===== Transition after coin animation (unified mechanism) =====
   // This SINGLE effect handles ALL coin flip transitions:
   //   - Player B joining with initialState (coinFlipping=true from init)
@@ -2182,26 +2206,61 @@ export function MatchArena({
                   <strong className="text-sky-400">{state.awayScore} {awayUser.username}</strong>
                 </p>
                 <p className="mt-1 text-xs text-gray-500">
-                  {winnerIsMe ? `+${modeConfig.xpWin} XP` : state.winner === 'DRAW' ? `+${modeConfig.xpDraw} XP` : `+${modeConfig.xpLose} XP`}
+                  {winnerIsMe
+                    ? `+${Math.round(modeConfig.xpWin * (xpLevelInfo.level >= 10 ? 1.5 : xpLevelInfo.level >= 5 ? 1.25 : 1))} XP`
+                    : state.winner === 'DRAW'
+                      ? `+${Math.round(modeConfig.xpDraw * (xpLevelInfo.level >= 10 ? 1.5 : xpLevelInfo.level >= 5 ? 1.25 : 1))} XP`
+                      : `+${modeConfig.xpLose} XP`}
                   {' '}({modeConfig.emoji} {modeConfig.label})
-                </p>
-
-                {/* ===== CORREÇÃO 9: Resumo de XP/Nível ao fim da partida ===== */}
-                <div className="mt-3 flex items-center justify-center gap-3 rounded-lg border border-purple-900/40 bg-purple-950/20 p-2 text-xs">
-                  <Badge className="bg-purple-600 text-white font-bold">
-                    NÍVEL {xpLevelInfo.level}
-                  </Badge>
-                  <span className="text-purple-300">
-                    Total: <strong className="text-white">{userXp} XP</strong>
-                  </span>
-                  <span className="text-purple-400">
-                    Faltam <strong>{xpLevelInfo.xpToNextLevel} XP</strong> para o nível {xpLevelInfo.level + 1}
-                  </span>
-                  {xpLevelInfo.activeBenefits.length > 0 && (
-                    <span className="text-purple-300">
-                      Benefícios: {xpLevelInfo.activeBenefits.map(b => b.emoji).join(' ')}
+                  {(xpLevelInfo.level >= 5 || xpLevelInfo.level >= 10) && (
+                    <span className="ml-1 text-purple-400">
+                      · multiplicador {xpLevelInfo.level >= 10 ? '1.5x' : '1.25x'} ativo
                     </span>
                   )}
+                </p>
+
+                {/* ===== CORREÇÃO 9 + v3: Resumo de XP/Nível ao fim da partida ===== */}
+                <div className="mt-3 flex flex-col items-center gap-2 rounded-lg border border-purple-900/40 bg-purple-950/20 p-3 text-xs">
+                  <div className="flex items-center justify-center gap-3 flex-wrap">
+                    <Badge className="bg-purple-600 text-white font-bold">
+                      NÍVEL {xpLevelInfo.level}
+                    </Badge>
+                    <span className="text-purple-300">
+                      Total: <strong className="text-white">{userXp} XP</strong>
+                    </span>
+                    <span className="text-purple-400">
+                      Faltam <strong>{xpLevelInfo.xpToNextLevel} XP</strong> para o nível {xpLevelInfo.level + 1}
+                    </span>
+                  </div>
+                  {/* Barra de progressão visual */}
+                  <div className="w-full max-w-md h-2 rounded-full bg-purple-900/60 overflow-hidden">
+                    <motion.div
+                      className="h-full rounded-full bg-gradient-to-r from-purple-500 to-fuchsia-400"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${xpLevelInfo.progressPct}%` }}
+                      transition={{ duration: 0.8, ease: 'easeOut' }}
+                    />
+                  </div>
+                  {/* Lista de benefícios — desbloqueados e próximos */}
+                  <div className="w-full max-w-md mt-1 grid grid-cols-1 sm:grid-cols-2 gap-1 text-left">
+                    {XP_BENEFITS.map(b => {
+                      const unlocked = b.level <= xpLevelInfo.level
+                      return (
+                        <div
+                          key={b.level}
+                          className={`flex items-center gap-1.5 rounded px-1.5 py-1 text-[10px] ${
+                            unlocked
+                              ? 'bg-emerald-900/30 text-emerald-200 border border-emerald-700/40'
+                              : 'bg-gray-800/40 text-gray-500 border border-gray-700/30'
+                          }`}
+                        >
+                          <span>{unlocked ? b.emoji : '🔒'}</span>
+                          <span className="font-bold">{b.name}</span>
+                          <span className="opacity-70">· nv {b.level}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
               <Button onClick={onExit} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
@@ -2328,6 +2387,7 @@ export function MatchArena({
         onSkip={handleDefensivePlaySkip}
         starters={activeStarters}
         opponentProgress={isHome ? state.awayProgress : state.homeProgress}
+        userLevel={xpLevelInfo.level}
       />
     </div>
   )

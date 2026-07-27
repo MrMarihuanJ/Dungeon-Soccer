@@ -96,6 +96,10 @@ interface Props {
   onSkip: () => void  // Jogador optou por não tentar a jogada defensiva
   starters: SelectedPlayer[]
   opponentProgress: number
+  // ===== CORREÇÃO v3: nível de XP do usuário — aplica benefícios =====
+  // Nível 2+ (Defensor Nato): +1 de bônus na jogada defensiva.
+  // Nível 7+ (Tático): re-roll gratuito de falhas (1x por diálogo aberto).
+  userLevel?: number
 }
 
 export function DefensivePlayDialog({
@@ -105,6 +109,7 @@ export function DefensivePlayDialog({
   onSkip,
   starters,
   opponentProgress,
+  userLevel = 1,
 }: Props) {
   const [phase, setPhase] = useState<DefPhase>('SELECT_OPTION')
   const [selectedOption, setSelectedOption] = useState<DefensiveOption | null>(null)
@@ -114,6 +119,11 @@ export function DefensivePlayDialog({
   const [displayFace, setDisplayFace] = useState(1)
   // Ordem aleatória das 3 opções (sorteada quando o diálogo abre)
   const [shuffledOptions, setShuffledOptions] = useState<DefensiveOption[]>(DEFENSIVE_OPTIONS)
+  // ===== CORREÇÃO v3: controle do re-roll Tático (nível 7+) =====
+  // Permite re-rolar UMA vez por diálogo aberto quando a jogada falha
+  // (exceto crit fail — falha crítica é definitiva).
+  const [rerollUsed, setRerollUsed] = useState(false)
+  const canUseTaticoReroll = userLevel >= 7
 
   // Reset quando o diálogo abre
   useEffect(() => {
@@ -125,6 +135,7 @@ export function DefensivePlayDialog({
       setRolling(false)
       setDisplayFace(1)
       setShuffledOptions(sampleDefensiveOptions())
+      setRerollUsed(false)
     }
   }, [open])
 
@@ -156,14 +167,45 @@ export function DefensivePlayDialog({
       i++
     }, 80)
 
-    // Após 1.8s, resolver jogada defensiva e mostrar resultado
+    // Após 1.8s, resolver jogada defensiva e mostrar resultado.
+    // CORREÇÃO v3: passa userLevel para aplicar bônus de Nível 2 (Defensor Nato).
     setTimeout(() => {
       clearInterval(interval)
-      const result = resolveDefensivePlay(selectedOption, player.position, player.name)
+      const result = resolveDefensivePlay(selectedOption, player.position, player.name, userLevel)
       setDefResult(result)
       setDisplayFace(result.dice)
       setRolling(false)
     }, 1800)
+  }
+
+  // ===== CORREÇÃO v3: Re-roll Tático (benefício de Nível 7+) =====
+  // Permite re-rolar UMA vez por diálogo quando a jogada falhou (exceto
+  // falha crítica — natural 1 é definitiva). O re-roll descarta o resultado
+  // anterior e rola novamente o dado com os mesmos option/player/level.
+  const handleTaticoReroll = () => {
+    if (!selectedOption || !selectedPlayer) return
+    if (rerollUsed || !canUseTaticoReroll) return
+    // Não permite re-roll de crit fail (regra de design: falha crítica é definitiva)
+    if (defResult?.critical === 'crit_fail') return
+
+    setRerollUsed(true)
+    setRolling(true)
+    setDisplayFace(1)
+    setDefResult(null)
+
+    let i = 0
+    const interval = setInterval(() => {
+      setDisplayFace(RANDOM_FACES[i % RANDOM_FACES.length])
+      i++
+    }, 80)
+
+    setTimeout(() => {
+      clearInterval(interval)
+      const result = resolveDefensivePlay(selectedOption, selectedPlayer.position, selectedPlayer.name, userLevel)
+      setDefResult(result)
+      setDisplayFace(result.dice)
+      setRolling(false)
+    }, 1500)
   }
 
   const handleConfirmResult = () => {
@@ -527,7 +569,28 @@ export function DefensivePlayDialog({
 
               {/* Botões de ação */}
               {!rolling && defResult && (
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-2">
+                  {/* ===== CORREÇÃO v3: Re-roll Tático (Nível 7+) ===== */}
+                  {canUseTaticoReroll && !rerollUsed && !defResult.success && defResult.critical !== 'crit_fail' && (
+                    <Button
+                      onClick={handleTaticoReroll}
+                      variant="outline"
+                      className="w-full border-purple-500/60 bg-purple-950/40 text-purple-200 hover:bg-purple-900/60 hover:text-purple-100 flex items-center gap-2"
+                    >
+                      <Target className="h-4 w-4" />
+                      🎯 Re-rolar (Benefício Tático — Nível 7+)
+                    </Button>
+                  )}
+                  {canUseTaticoReroll && rerollUsed && (
+                    <p className="text-center text-[11px] text-purple-400/70 italic">
+                      Benefício Tático já usado neste turno.
+                    </p>
+                  )}
+                  {canUseTaticoReroll && !defResult.success && defResult.critical === 'crit_fail' && (
+                    <p className="text-center text-[11px] text-rose-400/70 italic">
+                      Falha crítica não pode ser re-rolada.
+                    </p>
+                  )}
                   <Button
                     onClick={handleConfirmResult}
                     className={`flex-1 ${

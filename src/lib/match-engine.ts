@@ -1498,15 +1498,27 @@ const DEFENSIVE_NARRATIVES_CRIT_FAIL = [
  * @param option Opção defensiva escolhida pelo usuário (das 3 disponíveis)
  * @param position Posição do jogador escolhido para defender
  * @param playerName Nome do jogador (para narrativa)
+ * @param userLevel Nível de XP do usuário (opcional). Aplica benefícios:
+ *                  - Nível 2+ (Defensor Nato): +1 de bônus na jogada defensiva
+ *                  - Nível 7+ (Tático): re-roll gratuito de falhas (1x por partida,
+ *                    gerenciado pelo chamador, não por esta função)
  */
 export function resolveDefensivePlay(
   option: DefensiveOption,
   position: string,
   playerName: string,
+  userLevel: number = 1,
 ): DefensivePlayResult {
   const dice = rollD20()
   const bonusRange = option.bonusByPosition[position] ?? DEFENSIVE_BONUS_BY_POSITION[position] ?? [2, 4]
-  const bonus = bonusRange[0] + Math.floor(Math.random() * (bonusRange[1] - bonusRange[0] + 1))
+  let bonus = bonusRange[0] + Math.floor(Math.random() * (bonusRange[1] - bonusRange[0] + 1))
+
+  // ===== CORREÇÃO v3: benefício de Nível 2 — Defensor Nato =====
+  // +1 de bônus na jogada defensiva (representa ~5% de chance extra vs DC 14-16).
+  // Aplicado APENAS em rolls não-críticos (natural 1 ou 20 continuam automáticos).
+  const levelDefBonus = userLevel >= 2 ? 1 : 0
+  bonus += levelDefBonus
+
   const total = dice + bonus
   const dc = option.dc
 
