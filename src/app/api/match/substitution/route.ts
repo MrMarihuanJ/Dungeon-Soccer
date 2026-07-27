@@ -15,11 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
-import {
-  computeXpLevelInfo,
-  getMaxSubstitutionsForLevel,
-  type TeamMatchState,
-} from '@/lib/match-engine'
+import type { TeamMatchState } from '@/lib/match-engine'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,25 +44,10 @@ export async function POST(req: NextRequest) {
 
   const isHome = match.homeUserId === session.userId
 
-  // ===== CORREÇÃO v3: limite de substituições escala com o nível de XP =====
-  // Base = 5; Nível 3+ (Banco Qualificado) = 6.
-  // Antes o servidor sempre usava 5, fazendo o benefício de nível 3 ser ignorado.
-  let userLevel = 1
-  try {
-    const me = await db.user.findUnique({
-      where: { id: session.userId },
-      select: { xp: true },
-    })
-    if (me) userLevel = computeXpLevelInfo(me.xp ?? 0).level
-  } catch (err) {
-    console.warn('[match/substitution] falha ao buscar nível, usando base 5:', err)
-  }
-  const serverMaxSubs = getMaxSubstitutionsForLevel(userLevel)
-
   // Parse team states from JSON
   const defaultTeamState: TeamMatchState = {
-    substitutionsUsed: 0, maxSubstitutions: serverMaxSubs, redCards: 0, yellowCards: 0,
-    injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
+    substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
+    injuredPlayers: [], sentOffPlayers: [],
   }
 
   let teamState: TeamMatchState = defaultTeamState
@@ -75,8 +56,6 @@ export async function POST(req: NextRequest) {
   try {
     if (stateJson && stateJson !== '{}') {
       teamState = JSON.parse(stateJson) as TeamMatchState
-      // Reaplica o limite correto caso o estado salvo esteja desatualizado
-      teamState.maxSubstitutions = serverMaxSubs
     }
   } catch { /* use default */ }
 
@@ -102,10 +81,7 @@ export async function POST(req: NextRequest) {
         teamState,
       })
     }
-    return NextResponse.json({
-      ok: false,
-      error: `Limite de ${teamState.maxSubstitutions} substituições atingido.`,
-    }, { status: 400 })
+    return NextResponse.json({ ok: false, error: 'Limite de 5 substituições atingido.' }, { status: 400 })
   }
 
   // Incrementar contagem de substituições

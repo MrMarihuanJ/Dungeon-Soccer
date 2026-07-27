@@ -256,19 +256,11 @@ export function sampleActions(category: ActionCategory, count: number): Football
 // In real football, the team WITH the ball doesn't "defend" — they attack.
 // A successful DEFEND action steals the ball from yourself, which is backwards.
 // Now accepts optional parameters to filter based on possession context.
-//
-// CORREÇÃO ATUALIZADA (falta): FREE_KICK actions are ALWAYS excluded from
-// normal play choices. Cobranças de falta só devem aparecer quando há uma
-// infração real (PenaltyEvent.requiresFreeKick=true ou type=PENALTY_KICK),
-// nunca em jogadas normais. Quem quiser cobrar falta deve esperar o juiz
-// marcar — não pode "escolher cobrança de falta" do menu de jogadas.
 export function sampleMixedActions(count: number, excludeDefend = false): FootballAction[] {
-  // Prioriza ações que fazem sentido no meio do jogo
-  // Exclui KICKOFF (só no início), FREE_KICK (só em infração) e
-  // opcionalmente DEFEND (quando o time está atacando)
+  // Prioriza ações que fazem sentido no meio do jogo (não KICKOFF)
+  // If the team has the ball, also exclude DEFEND (they're attacking, not defending)
   const pool = ALL_ACTIONS.filter((a) => {
     if (a.category === 'KICKOFF') return false
-    if (a.category === 'FREE_KICK') return false  // ← só em cobrança de falta real
     if (excludeDefend && a.category === 'DEFEND') return false
     return true
   })

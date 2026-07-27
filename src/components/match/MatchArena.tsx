@@ -39,16 +39,11 @@ import {
 import {
   type MatchState, type Possession, type DiceRollResult, type MatchEvent,
   type PenaltyEvent, type TeamMatchState, type GameMode,
-  type FreeKickMultiplier, type MultiplierHistory,
   type DefensivePlayResult,
   GAME_MODE_CONFIG, calculateMatchTime, calculateRemainingTimeMs,
   checkMatchEndCondition, isHalftimeReached,
   pickPlayerForAction,
-  generateFreeKickMultiplier, applyMultiplierToGoalChance,
-  pickKickerAvoidingRepeat,
-  resolveDefensivePlay, shouldOfferDefensivePlay, nextDefensiveOfferDelayMs,
-  computeXpLevelInfo, getMaxSubstitutionsForLevel, getXpMultiplierForLevel,
-  XP_BENEFITS,
+  shouldOfferDefensivePlay, initialDefensiveOfferDelayMs, nextDefensiveOfferDelayMs,
 } from '@/lib/match-engine'
 import { useTeamStore, hydrateTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { toast } from 'sonner'
@@ -96,8 +91,8 @@ export function MatchArena({
     maxTurns: modeConfig.maxTurns > 0 ? modeConfig.maxTurns : 999,
     events: [],
     winner: null,
-    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
-    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
+    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
     gameMode,
     matchStartedAt: null,
     pausedAt: null,
@@ -159,34 +154,20 @@ export function MatchArena({
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
 
-  // ===== CORREÇÃO 7: Estado da jogada defensiva =====
-  // `defensivePlayOpen` controla a abertura do DefensivePlayDialog durante
-  // a vez do oponente. `lastTurnStoleBall` impede roubadas consecutivas
-  // (regra anti-repetição exigida pelo usuário).
-  //
-  // ATUALIZAÇÃO: agora a oferta é feita periodicamente (a cada 4-8s) durante
-  // o OPPONENT_TURN, em "momentos aleatórios do jogo", conforme exigido pelo
-  // usuário. `defensiveAttemptInTurn` conta quantas tentativas já fizemos
-  // neste turno — quanto mais tentativas, maior a chance (cap 90%).
+  // ===== Defensive Play State (roubada de bola) =====
+  // Controla o diálogo de jogada defensiva que aparece durante o turno
+  // do oponente, em momentos aleatórios.
   const [defensivePlayOpen, setDefensivePlayOpen] = useState(false)
+  const [defensiveAttemptInTurn, setDefensiveAttemptInTurn] = useState(1)
   const [lastTurnStoleBall, setLastTurnStoleBall] = useState(false)
-  const defensiveOfferTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const defensiveAttemptInTurnRef = useRef(0)
-
-  // ===== CORREÇÃO 3: Histórico de multiplicadores da partida =====
-  // Guarda o último batedor e o último sinal para evitar repetições
-  // consecutivas (positivo após positivo, ou mesmo batedor repetido).
-  const [multiplierHistory, setMultiplierHistory] = useState<MultiplierHistory | null>(null)
-
-  // ===== CORREÇÃO 9: Estado da barra de XP do usuário atual =====
-  // `userXp` é populado a partir do `homeUser.xp` ou `awayUser.xp`.
-  // Renderizado em uma barra de progressão visível no header.
-  // (inicializado mais abaixo, após definição de `myUser`)
+  const defensiveOfferTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const defensiveAttemptRef = useRef(1)
 
   // Refs for timers
   const matchTimerRef = useRef<NodeJS.Timeout | null>(null)
   const turnTimerRef = useRef<NodeJS.Timeout | null>(null)
   const autoPlayRef = useRef(false)
+  const botAutoPlayRef = useRef<NodeJS.Timeout | null>(null)
 
   // Populate starters/reserves from the Zustand store (use useMemo to avoid setState in effect)
   // FIX: Only use store data AFTER hydration to prevent stale/crash on first render
@@ -208,62 +189,21 @@ export function MatchArena({
   const myUser = isHome ? homeUser : awayUser
   const oppUser = isHome ? awayUser : homeUser
 
-  // ===== CORREÇÃO 9: Estado da barra de XP do usuário atual =====
-  // `userXp` é populado a partir do `homeUser.xp` ou `awayUser.xp`.
-  const [userXp, setUserXp] = useState<number>(myUser.xp ?? 0)
-  // Sincroniza XP do usuário quando props mudam (vitória/derrota atualiza o XP)
-  useEffect(() => {
-    if (typeof myUser.xp === 'number') {
-      setUserXp(myUser.xp)
-    }
-  }, [myUser.xp])
-
-  // ===== CORREÇÃO 8: Filtrar jogadores ativos em campo =====
-  // `activeStarters` exclui jogadores que foram:
-  //   - expulsos por cartão vermelho (sentOffPlayers)
-  //   - lesionados e ainda não substituídos (injuredPlayers)
-  //   - substituídos (saiu de campo voluntariamente)
-  // Antes `myStarters` era passado cru aos dialogs, fazendo jogadores
-  // já removidos continuarem aparecendo como ativos (bug relatado).
-  const myTeamState: TeamMatchState = isHome ? state.homeTeamState : state.awayTeamState
+  // ===== activeStarters: titulares filtrando expulsos/lesionados =====
+  // Usado para o DefensivePlayDialog (roubada de bola) — não faz sentido
+  // oferecer uma jogada defensiva para um jogador que não está em campo.
+  const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
   const activeStarters = useMemo(() => {
-    const exclude = new Set<string>([
-      ...myTeamState.sentOffPlayers,
-      ...myTeamState.injuredPlayers,
-      ...myTeamState.substitutedOut,
-    ])
-    return myStarters.filter((p) => !exclude.has(p.id))
+    return myStarters.filter((p) => {
+      if (!p) return false
+      if (myTeamState.sentOffPlayers.includes(p.id)) return false
+      if (myTeamState.injuredPlayers.includes(p.id)) return false
+      return true
+    })
   }, [myStarters, myTeamState])
 
-  // ===== CORREÇÃO 9: Informações de nível/XP do usuário =====
-  // Computa nível atual, progressão e benefícios ativos para exibir na UI.
-  const xpLevelInfo = useMemo(() => computeXpLevelInfo(userXp), [userXp])
-  // Máximo de substituições com base no nível (5 base, 6 se nível 3+)
-  const effectiveMaxSubs = getMaxSubstitutionsForLevel(xpLevelInfo.level)
-
-  // ===== CORREÇÃO v3: refaz fetch do XP do usuário quando a partida termina =====
-  // Antes a barra de XP não atualizava após o fim da partida — o `myUser.xp`
-  // vinha dos props no mount e nunca era re-buscado. Agora buscamos /api/user/me
-  // assim que a phase muda para FINISHED, garantindo que o XP recém-ganho
-  // apareça imediatamente na UI.
-  const xpRefreshedRef = useRef(false)
-  useEffect(() => {
-    if (phase !== 'FINISHED') {
-      xpRefreshedRef.current = false
-      return
-    }
-    if (xpRefreshedRef.current) return
-    xpRefreshedRef.current = true
-
-    fetch('/api/user/me', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.ok && typeof data.user?.xp === 'number') {
-          setUserXp(data.user.xp)
-        }
-      })
-      .catch(err => console.warn('[MatchArena] falha ao refetch XP:', err))
-  }, [phase])
+  // ===== Progresso do oponente para exibir no DefensivePlayDialog =====
+  const opponentProgress = isHome ? state.awayProgress : state.homeProgress
 
   // ===== Transition after coin animation (unified mechanism) =====
   // This SINGLE effect handles ALL coin flip transitions:
@@ -886,13 +826,11 @@ export function MatchArena({
     if (pe.type === 'INJURY' && pe.requiresSubstitution) {
       setSubIsForced(true)
       let injPlayer: SelectedPlayer | null = null
-      // CORREÇÃO 8: usa activeStarters (não myStarters) — jogador já expulso/
-      // substituído não pode ser "lesionado" de novo.
       if (pe.injuredPlayerId) {
-        injPlayer = activeStarters.find(p => p.id === pe.injuredPlayerId) || null
+        injPlayer = myStarters.find(p => p.id === pe.injuredPlayerId) || null
       }
-      if (!injPlayer && activeStarters.length > 0) {
-        injPlayer = activeStarters[Math.floor(Math.random() * activeStarters.length)]
+      if (!injPlayer && myStarters.length > 0) {
+        injPlayer = myStarters[Math.floor(Math.random() * myStarters.length)]
       }
       if (!injPlayer) {
         injPlayer = { id: pe.injuredPlayerId || 'unknown', name: 'Jogador Lesionado', fullName: 'Jogador Lesionado', team: '', position: 'MF', photoUrl: '' }
@@ -901,10 +839,8 @@ export function MatchArena({
       setSubOpen(true)
       return
     }
-    // ===== CORREÇÃO 2: cobrança de falta SÓ aparece quando há infração real =====
-    // O FreeKickDialog só abre se PenaltyEvent.requiresFreeKick=true (FOUL)
-    // ou type=PENALTY_KICK. Em jogadas normais sem infração, nenhum
-    // PenaltyEvent é gerado, então este diálogo nunca aparece (correto).
+    // BUG FIX: Only show FreeKickDialog if the free kick favors MY team.
+    // If the opponent is favored (e.g., I committed a foul), transition to their turn instead.
     if (pe.requiresFreeKick || pe.type === 'FOUL') {
       if (pe.favoredPossession === mySide) {
         setFreeKickPossession(pe.favoredPossession)
@@ -922,22 +858,6 @@ export function MatchArena({
         return
       }
       // Penalty favors opponent — skip dialog and transition to their turn
-      finishPenaltyAndContinue()
-      return
-    }
-    // ===== CORREÇÃO 6: RED_CARD — feedback explícito de expulsão =====
-    // Antes apenas um toast era exibido. Agora mostramos um aviso claro
-    // de que o jogador foi removido e o time está com um a menos.
-    if (pe.type === 'RED_CARD') {
-      const cardPlayer = pe.cardPlayerId
-        ? myStarters.find(p => p.id === pe.cardPlayerId)
-        : null
-      toast.error('🟥 CARTÃO VERMELHO!', {
-        description: cardPlayer
-          ? `${cardPlayer.name} foi expulso! O time jogará com um jogador a menos.`
-          : 'Jogador expulso! O time jogará com um jogador a menos.',
-        duration: 5000,
-      })
       finishPenaltyAndContinue()
       return
     }
@@ -990,135 +910,131 @@ export function MatchArena({
   // BUG FIX: Free kick play callback — now validates turn ownership before proceeding.
   // Previously, this bypassed the processing/diceRolling guards blindly, allowing
   // actions to be submitted even when it was the opponent's turn.
-  //
-  // ===== CORREÇÃO 3: recebe o multiplicador do FreeKickDialog e aplica à chance de gol =====
-  // Antes a chance de gol era fixa (action.goalChance). Agora ela é ajustada
-  // dinamicamente por um multiplicador aleatório (positivo/negativo/neutro).
-  const handleFreeKickPlay = async (
-    kickerId: string,
-    action: FootballAction,
-    multiplier: FreeKickMultiplier,
-  ) => {
+  const handleFreeKickPlay = async (kickerId: string, action: FootballAction) => {
     setFreeKickOpen(false)
     // Validate: only proceed if it's actually my team's turn (possession)
+    // This prevents submitting a free kick when the opponent should be playing
     setState((freshState) => {
       if (freshState.currentPossession !== mySide) {
         toast.error('Não é seu turno para cobrar a falta.')
         finishPenaltyAndContinue()
         return freshState
       }
+      // Reset flags only after confirming it's my turn
       setProcessing(false)
       setDiceRolling(false)
-
-      // ===== Aplica o multiplicador à chance de gol =====
-      // Criamos uma versão modificada da ação com a chance ajustada.
-      const adjustedAction: FootballAction = {
-        ...action,
-        goalChance: applyMultiplierToGoalChance(action.goalChance, multiplier),
-      }
-
-      // ===== Atualiza histórico para a próxima cobrança (anti-repetição) =====
-      setMultiplierHistory({
-        lastKickerId: kickerId,
-        lastSign: multiplier.sign,
-        turnCount: freshState.turnCount,
-      })
-
-      // Notifica o usuário sobre o bônus/penalidade aplicado
-      toast(`${multiplier.emoji} ${multiplier.label} aplicado para ${action.name}!`, {
-        description: multiplier.description,
-        duration: 3500,
-      })
-
       // Find kicker name for narrative
       const kicker = myStarters.find(p => p.id === kickerId)
       const kickerName = kicker?.name
       // Fire-and-forget — handleSelectAction manages its own state
-      handleSelectAction(adjustedAction, kickerName)
+      handleSelectAction(action, kickerName)
       return freshState
     })
   }
 
-  // ===== CORREÇÃO 5: Substituição agora chama a API e atualiza myStarters/myReserves =====
-  // Antes este callback apenas incrementava substitutionsUsed em state local
-  // e nunca persistia no servidor, nem atualizava a lista de jogadores em campo.
-  // Agora:
-  //   1. Chama POST /api/match/substitution para persistir no DB
-  //   2. Marca o jogador que saiu em substitutedOut (não pode voltar)
-  //   3. Atualiza myStarters (remove quem saiu) e myReserves (remove quem entrou)
-  //   4. Persiste a contagem de substituições usadas (limite de 5 ou 6)
-  //   5. Trata caso de limite atingido por lesão (time joga com 1 a menos)
-  const handleSubstitution = async (outPlayerId: string, inPlayerId: string) => {
-    if (!outPlayerId) {
-      toast.error('Erro: nenhum titular selecionado para sair.')
-      return
-    }
+  // Substitution callback
+  const handleSubstitution = (outPlayerId: string, inPlayerId: string) => {
     setSubOpen(false)
-
-    const currentTeamState = isHome ? state.homeTeamState : state.awayTeamState
-
-    // Otimistic update — atualiza UI imediatamente
+    const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
     const updatedTeamState: TeamMatchState = {
-      ...currentTeamState,
-      // CORREÇÃO 5: lesão também conta no limite de substituições
-      substitutionsUsed: currentTeamState.substitutionsUsed + 1,
-      injuredPlayers: currentTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
-      // Marca o jogador que saiu para que não apareça mais como ativo
-      substitutedOut: [...currentTeamState.substitutedOut, outPlayerId],
+      ...myTeamState,
+      substitutionsUsed: myTeamState.substitutionsUsed + 1,
+      injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
     }
-
     setState((s) => ({
       ...s,
       homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
       awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
     }))
+    toast.success('✅ Substituição realizada!')
+    finishPenaltyAndContinue()
+  }
 
-    // Atualiza myStarters (remove o jogador que saiu) e myReserves (remove o que entrou)
-    const outPlayer = myStarters.find(p => p.id === outPlayerId)
-    const inPlayer = myReserves.find(p => p.id === inPlayerId)
-    if (outPlayer && inPlayer) {
-      setMyStarters((prev) =>
-        prev.map(p => p.id === outPlayerId ? inPlayer : p)
-      )
-      setMyReserves((prev) => prev.filter(p => p.id !== inPlayerId))
-      toast.success(`✅ ${inPlayer.name} entra no lugar de ${outPlayer.name}!`, {
-        description: `Substituições restantes: ${Math.max(0, effectiveMaxSubs - updatedTeamState.substitutionsUsed)}`,
-      })
-    } else {
-      toast.success('✅ Substituição realizada!')
-    }
+  // ===== Defensive Play Handlers (roubada de bola) =====
+  // --------------------------------------------------------------------
+  // CORREÇÃO DO BUG: Quando o defensor rouba a bola, a posse é
+  // explicitamente transferida para o time do defensor via API
+  // `/api/match/defensive-play`. Assim, a próxima jogada processada
+  // por applyActionToState (no endpoint /api/match/action) capturará
+  // possession = defensor, e TODOS os pontos ganhos serão creditados
+  // ao defensor — não ao oponente.
+  // --------------------------------------------------------------------
 
-    // ===== CORREÇÃO 5: persiste no servidor via API =====
+  // Called when the user confirms a defensive play result
+  const handleDefensivePlayResult = async (result: DefensivePlayResult) => {
+    setDefensivePlayOpen(false)
+
+    // Persiste no banco via API dedicada
     try {
-      const res = await fetch('/api/match/substitution', {
+      const res = await fetch('/api/match/defensive-play', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          matchId,
-          outPlayerId,
-          inPlayerId,
-          isForced: subIsForced,
-        }),
+        body: JSON.stringify({ matchId, result }),
       })
       const data = await res.json()
+
       if (!data.ok) {
-        // Se a API rejeitou (ex: limite atingido), reverte optimistic update
-        toast.error(data.error || 'Erro ao persistir substituição.')
-        // Sincroniza com o estado real do servidor
-        fetchMatchState()
-      } else if (data.playedWithLess) {
-        // A API aceitou mas indicou que o time joga com 1 a menos
-        toast.warning('⚠️ Limite de substituições atingido. Time joga com um a menos!', {
-          description: 'O jogador lesionado saiu mas nenhum reserva entrou.',
-          duration: 5000,
+        console.error('[MatchArena] defensive-play error:', data.error)
+        toast.error(data.error || 'Erro ao processar jogada defensiva.')
+        // Mesmo com erro, fechamos o diálogo e deixamos o oponente continuar
+        return
+      }
+
+      // Atualiza estado local com o novo estado do servidor
+      setState((s) => ({
+        ...s,
+        currentPossession: data.newState.currentPossession as Possession,
+        homeProgress: data.newState.homeProgress,
+        awayProgress: data.newState.awayProgress,
+        turnStartedAt: new Date(),
+      }))
+
+      if (result.ballStolen) {
+        // ===== ROUBADA DE BOLA BEM-SUCEDIDA =====
+        // Marca anti-repetição para o próximo turno
+        setLastTurnStoleBall(true)
+        // Transição forçada para PLAYER_TURN
+        setPhase('PLAYER_TURN')
+        // Limpa timer do bot (caso esteja em modo offline)
+        if (botAutoPlayRef.current) {
+          clearTimeout(botAutoPlayRef.current)
+          botAutoPlayRef.current = null
+        }
+        // Gera novas ações para o jogador
+        drawMixedActions()
+        setTurn((t) => t + 1)
+        // Toast de sucesso
+        toast.success(`⚽ ROUBADA DE BOLA! ${result.playerName} recupera a posse para você!`, {
+          duration: 4000,
         })
+      } else if (result.success && result.progressReduction > 0) {
+        // ===== Marcação pressiva bem-sucedida (sem roubo) =====
+        // Oponente continua, mas com progresso reduzido
+        toast.success(`🛡️ ${result.playerName} reduziu ${result.progressReduction}% do progresso do oponente!`, {
+          duration: 3000,
+        })
+        // Continua no OPPONENT_TURN — não muda phase
+      } else {
+        // ===== Falha =====
+        toast.info(`❌ ${result.playerName} falhou na jogada defensiva. Vez do oponente continua.`, {
+          duration: 3000,
+        })
+        // Continua no OPPONENT_TURN — não muda phase
       }
     } catch (err) {
-      console.error('[handleSubstitution] API error:', err)
-      toast.error('Erro de conexão ao salvar substituição.')
+      console.error('[MatchArena] defensive-play fetch error:', err)
+      toast.error('Erro de conexão ao processar jogada defensiva.')
     }
+  }
 
-    finishPenaltyAndContinue()
+  // Called when the user chooses to skip the defensive play
+  const handleDefensivePlaySkip = () => {
+    setDefensivePlayOpen(false)
+    // Não roubo, então reseta anti-repetição
+    setLastTurnStoleBall(false)
+    // Continua no OPPONENT_TURN — não muda phase
+    // Agenda próxima oferta (se aplicável)
+    // (O useEffect principal vai cuidar disso)
   }
 
   // BUG FIX: Set processing=false AFTER phase transition (inside the timeout),
@@ -1144,96 +1060,15 @@ export function MatchArena({
   }
 
   // ===== Voluntary substitution =====
-  // ===== CORREÇÃO 5: usa effectiveMaxSubs (5 ou 6 conforme nível do usuário) =====
   const handleVoluntarySub = () => {
-    const currentTeamState = isHome ? state.homeTeamState : state.awayTeamState
-    if (currentTeamState.substitutionsUsed >= effectiveMaxSubs) {
-      toast.error(`Limite de ${effectiveMaxSubs} substituições atingido!`)
+    const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+    if (myTeamState.substitutionsUsed >= myTeamState.maxSubstitutions) {
+      toast.error('Limite de 5 substituições atingido!')
       return
     }
     setSubIsForced(false)
     setSubInjuredPlayer(null)
     setSubOpen(true)
-  }
-
-  // ===== CORREÇÃO 7: Handlers da jogada defensiva =====
-  // `handleDefensivePlayResult`: chamado quando o usuário conclui a jogada
-  //   defensiva (sucesso ou falha). Se a bola foi roubada, o usuário ganha
-  //   a posse e joga novamente — interrompendo a vez do oponente.
-  //   Se foi apenas "pressão bem-sucedida" (opção Marcação Pressiva),
-  //   o turno do oponente CONTINUA mas seu progresso é reduzido.
-  //   Em qualquer caso, o diálogo SOME IMEDIATAMENTE (regra anti-repetição).
-  const handleDefensivePlayResult = (result: DefensivePlayResult) => {
-    setDefensivePlayOpen(false)
-
-    if (result.ballStolen) {
-      // ===== Roubo de bola: posse passa para o usuário =====
-      // Marca que houve roubada neste turno para bloquear a próxima oferta
-      setLastTurnStoleBall(true)
-
-      toast.success('🛡️ Roubo de bola! Sua vez de jogar.', {
-        description: result.narrative,
-        duration: 4000,
-      })
-
-      // ===== Transição forçada para PLAYER_TURN =====
-      // Como o oponente perdeu a posse, atualizamos localmente para o
-      // turno do usuário. O servidor já terá sido atualizado pela ação
-      // do oponente (que falhou). Aqui apenas refletimos na UI.
-      // Também aplicamos redução de progresso (se houver) ao oponente.
-      setState((s) => {
-        const opponentProgressKey = isHome ? 'awayProgress' : 'homeProgress'
-        const currentOppProgress = s[opponentProgressKey]
-        const newOppProgress = Math.max(0, currentOppProgress - result.progressReduction)
-        return {
-          ...s,
-          currentPossession: mySide,
-          [opponentProgressKey]: newOppProgress,
-        }
-      })
-      setPhase('PLAYER_TURN')
-      drawMixedActions()
-      setTurn((t) => t + 1)
-      setProcessing(false)
-
-      // Limpa qualquer timer pendente do bot (offline)
-      if (botAutoPlayRef.current) {
-        clearTimeout(botAutoPlayRef.current)
-        botAutoPlayRef.current = null
-      }
-    } else if (result.success) {
-      // ===== Pressão bem-sucedida: oponente continua, mas perde progresso =====
-      toast('🟡 Marcação pressiva bem-sucedida!', {
-        description: `${result.narrative} Progresso do oponente reduzido em ${result.progressReduction}%.`,
-        duration: 3500,
-      })
-      // Reduz o progresso do oponente
-      setState((s) => {
-        const opponentProgressKey = isHome ? 'awayProgress' : 'homeProgress'
-        const currentOppProgress = s[opponentProgressKey]
-        const newOppProgress = Math.max(0, currentOppProgress - result.progressReduction)
-        return {
-          ...s,
-          [opponentProgressKey]: newOppProgress,
-        }
-      })
-      // Não marca lastTurnStoleBall (não houve roubo)
-      // Mantém phase OPPONENT_TURN — bot/polling continua
-    } else {
-      // ===== Falha: a vez do oponente continua normalmente =====
-      toast.warning('Jogada defensiva falhou.', {
-        description: result.narrative,
-        duration: 3500,
-      })
-      // Não marca lastTurnStoleBall (não houve roubada)
-      // Mantém phase OPPONENT_TURN — polling/bot continua
-    }
-  }
-
-  // `handleDefensivePlaySkip`: o usuário optou por não tentar a jogada
-  const handleDefensivePlaySkip = () => {
-    setDefensivePlayOpen(false)
-    // Continua no OPPONENT_TURN — polling prossegue
   }
 
   // ===== fetchMatchState (atualiza estado local com dados do servidor) =====
@@ -1282,18 +1117,13 @@ export function MatchArena({
   // ===== BOT AUTO-PLAY (offline mode) =====
   // In offline mode, when it's OPPONENT_TURN, the bot plays automatically
   // after a short delay to simulate "thinking".
-  //
-  // CORREÇÃO 7: o bot SÓ joga se o DefensivePlayDialog NÃO estiver aberto.
-  // Caso contrário, o usuário está escolhendo uma jogada defensiva e o
-  // bot não deve "jogar por cima" da decisão. O timer é limpo e recriado
-  // quando o diálogo fecha.
-  const botAutoPlayRef = useRef<NodeJS.Timeout | null>(null)
+  // (botAutoPlayRef is declared at the top with other refs)
 
   useEffect(() => {
     // Only auto-play bot when offline and it's the bot's turn
-    // Also pause if a defensive play dialog is open (user is deciding)
-    if (!isOffline || phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS'
-        || processing || diceRolling || defensivePlayOpen || subOpen || freeKickOpen || varOpen) {
+    // PAUSE bot while any modal is open (defensive play, sub, free kick, VAR)
+    const anyModalOpen = defensivePlayOpen || subOpen || freeKickOpen || varOpen
+    if (!isOffline || phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS' || processing || diceRolling || anyModalOpen) {
       if (botAutoPlayRef.current) {
         clearTimeout(botAutoPlayRef.current)
         botAutoPlayRef.current = null
@@ -1304,8 +1134,11 @@ export function MatchArena({
     // Bot "thinks" for 1.5-2.5 seconds before playing
     const thinkDelay = 1500 + Math.random() * 1000
     botAutoPlayRef.current = setTimeout(() => {
-      // Double-check that no dialog opened during the thinking delay
-      if (defensivePlayOpen || subOpen || freeKickOpen || varOpen) return
+      // Double-check inside timeout: if a modal opened during thinking, abort
+      if (defensivePlayOpen || subOpen || freeKickOpen || varOpen) {
+        botAutoPlayRef.current = null
+        return
+      }
       const actions = sampleMixedActions(1, true)
       const action = actions[0]
       if (action) {
@@ -1321,6 +1154,107 @@ export function MatchArena({
       }
     }
   }, [isOffline, phase, state.status, processing, diceRolling, defensivePlayOpen, subOpen, freeKickOpen, varOpen])
+
+  // ===== DEFENSIVE PLAY OFFER (roubada de bola) =====
+  // --------------------------------------------------------------------
+  // Durante o OPPONENT_TURN, em momentos aleatórios, oferecemos ao
+  // defensor (usuário) a opção de tentar uma jogada defensiva.
+  // Se ele acertar uma opção que rouba bola, a posse é transferida
+  // para ele — e a próxima jogada creditará os pontos ao defensor.
+  //
+  // Regra anti-repetição: se roubou no OPPONENT_TURN anterior, não
+  // oferece no OPPONENT_TURN atual. Resetamos lastTurnStoleBall para
+  // permitir oferta no OPPONENT_TURN seguinte.
+  // --------------------------------------------------------------------
+  const prevPhaseRef = useRef<Phase>('COIN_FLIP')
+  useEffect(() => {
+    // Detecta transição para OPPONENT_TURN
+    const justEnteredOpponentTurn = phase === 'OPPONENT_TURN' && prevPhaseRef.current !== 'OPPONENT_TURN'
+    prevPhaseRef.current = phase
+
+    // Só oferece durante OPPONENT_TURN, em partida em andamento
+    if (phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS') {
+      if (defensiveOfferTimeoutRef.current) {
+        clearTimeout(defensiveOfferTimeoutRef.current)
+        defensiveOfferTimeoutRef.current = null
+      }
+      // Reseta tentativas ao sair do OPPONENT_TURN
+      if (phase !== 'OPPONENT_TURN') {
+        defensiveAttemptRef.current = 1
+        setDefensiveAttemptInTurn(1)
+      }
+      return
+    }
+
+    // Anti-repetição: se roubou no OPPONENT_TURN anterior, NÃO oferece
+    // neste, e reseta lastTurnStoleBall para permitir oferta no próximo.
+    if (justEnteredOpponentTurn && lastTurnStoleBall) {
+      setLastTurnStoleBall(false)
+      // Não oferece neste turno — deixa o oponente jogar
+      if (defensiveOfferTimeoutRef.current) {
+        clearTimeout(defensiveOfferTimeoutRef.current)
+        defensiveOfferTimeoutRef.current = null
+      }
+      return
+    }
+
+    // Não oferece se algum modal já está aberto
+    if (defensivePlayOpen || subOpen || freeKickOpen || varOpen || processing || diceRolling) {
+      return
+    }
+
+    // Não oferece se não há titulares ativos
+    if (activeStarters.length === 0) return
+
+    // Sorteia delay inicial (0.8s - 2.0s)
+    const initialDelay = initialDefensiveOfferDelayMs()
+    defensiveOfferTimeoutRef.current = setTimeout(() => {
+      // Decide se oferece baseado na chance
+      const shouldOffer = shouldOfferDefensivePlay(
+        opponentProgress,
+        lastTurnStoleBall,
+        defensiveAttemptRef.current,
+      )
+
+      if (shouldOffer) {
+        setDefensivePlayOpen(true)
+      } else {
+        // Se não ofereceu, agenda próxima tentativa (4s - 8s)
+        scheduleNextDefensiveOffer()
+      }
+    }, initialDelay)
+
+    const scheduleNextDefensiveOffer = () => {
+      if (defensiveOfferTimeoutRef.current) {
+        clearTimeout(defensiveOfferTimeoutRef.current)
+      }
+      const nextDelay = nextDefensiveOfferDelayMs()
+      defensiveOfferTimeoutRef.current = setTimeout(() => {
+        // Incrementa tentativa para aumentar chance na próxima
+        defensiveAttemptRef.current += 1
+        setDefensiveAttemptInTurn(defensiveAttemptRef.current)
+
+        const shouldOffer = shouldOfferDefensivePlay(
+          opponentProgress,
+          lastTurnStoleBall,
+          defensiveAttemptRef.current,
+        )
+
+        if (shouldOffer) {
+          setDefensivePlayOpen(true)
+        } else {
+          scheduleNextDefensiveOffer()
+        }
+      }, nextDelay)
+    }
+
+    return () => {
+      if (defensiveOfferTimeoutRef.current) {
+        clearTimeout(defensiveOfferTimeoutRef.current)
+        defensiveOfferTimeoutRef.current = null
+      }
+    }
+  }, [phase, state.status, defensivePlayOpen, subOpen, freeKickOpen, varOpen, processing, diceRolling, opponentProgress, lastTurnStoleBall, activeStarters.length])
 
   // ===== POLL FOR OPPONENT ACTIONS (online multiplayer only) =====
   const opponentPollRef = useRef<NodeJS.Timeout | null>(null)
@@ -1433,84 +1367,6 @@ export function MatchArena({
       }
     }
   }, [phase, state.status, matchId, mySide, gameMode, modeConfig.goalsToWin])
-
-  // ===== CORREÇÃO 7: Oferece jogada defensiva em MOMENTOS ALEATÓRIOS =====
-  // -----------------------------------------------------------------
-  // ATUALIZAÇÃO: Em vez de oferecer apenas uma vez no início do OPPONENT_TURN,
-  // agora sorteamos periodicamente (a cada 4-8s) enquanto durar o turno do
-  // oponente. Isto atende ao requisito do usuário de que as opções defensivas
-  // "apareçam em momentos aleatórios do jogo, independentemente do estado
-  // geral da partida".
-  //
-  // Funciona tanto em modo online (polling) quanto offline (bot auto-play).
-  // Em ambos os casos, o timer periódico rola a chance de oferta.
-  //
-  // Quando oferecida, o usuário vê 3 opções defensivas distintas no
-  // DefensivePlayDialog. Após o resultado (roubo/pressão/falha), o diálogo
-  // SOME IMEDIATAMENTE — não há repetição consecutiva.
-  //
-  // REGRA ANTI-REPETIÇÃO: se a última jogada defensiva resultou em roubo de
-  // bola, a próxima oferta é bloqueada no turno imediatamente seguinte.
-  useEffect(() => {
-    // Só oferece se for vez do oponente E partida em andamento
-    if (phase !== 'OPPONENT_TURN' || state.status !== 'IN_PROGRESS') {
-      setDefensivePlayOpen(false)
-      // Limpa o timer e reseta o contador de tentativas
-      if (defensiveOfferTimerRef.current) {
-        clearTimeout(defensiveOfferTimerRef.current)
-        defensiveOfferTimerRef.current = null
-      }
-      return
-    }
-
-    // Não oferece se já está aberto ou se há outro modal em uso
-    if (defensivePlayOpen || subOpen || freeKickOpen || varOpen) return
-
-    // ===== Função que tenta oferecer a jogada defensiva =====
-    const tryOfferDefensivePlay = () => {
-      // Re-checa guards (podem ter mudado desde o agendamento)
-      if (defensivePlayOpen || subOpen || freeKickOpen || varOpen) return
-      if (phase !== 'OPPONENT_TURN') return
-
-      // Progresso do oponente (quanto mais perto do gol, maior a chance)
-      const oppProgress = isHome ? state.awayProgress : state.homeProgress
-
-      // Decide se oferece neste momento
-      const shouldOffer = shouldOfferDefensivePlay(
-        oppProgress,
-        lastTurnStoleBall,
-        defensiveAttemptInTurnRef.current,
-        state.turnCount,
-      )
-
-      if (shouldOffer) {
-        setDefensivePlayOpen(true)
-      } else {
-        // Se não ofereceu, reseta o flag de "último turno roubado"
-        // para que a próxima oferta possa ocorrer normalmente
-        if (lastTurnStoleBall) {
-          setLastTurnStoleBall(false)
-        }
-        // Agenda a próxima tentativa em 4-8s
-        defensiveAttemptInTurnRef.current += 1
-        defensiveOfferTimerRef.current = setTimeout(tryOfferDefensivePlay, nextDefensiveOfferDelayMs())
-      }
-    }
-
-    // ===== Inicia o ciclo de ofertas com um pequeno delay inicial =====
-    // Reset do contador de tentativas quando entramos num novo OPPONENT_TURN
-    defensiveAttemptInTurnRef.current = 0
-    const initialDelay = 800 + Math.random() * 1200  // 0.8-2.0s inicial
-    defensiveOfferTimerRef.current = setTimeout(tryOfferDefensivePlay, initialDelay)
-
-    return () => {
-      if (defensiveOfferTimerRef.current) {
-        clearTimeout(defensiveOfferTimerRef.current)
-        defensiveOfferTimerRef.current = null
-      }
-    }
-  }, [phase, state.status, state.turnCount, state.homeProgress, state.awayProgress,
-      isHome, defensivePlayOpen, subOpen, freeKickOpen, varOpen, lastTurnStoleBall])
 
   // ===== Poll for opponent joining (WAITING phase) =====
   useEffect(() => {
@@ -1743,91 +1599,6 @@ export function MatchArena({
               color="sky"
               goalsToWin={gameMode === 'QUICK_MATCH' ? modeConfig.goalsToWin : 0}
             />
-          </div>
-
-          {/* ===== CORREÇÃO 9: Barra de XP + benefícios ativos ===== */}
-          {/* Exibe nível atual, barra de progressão animada, e benefícios desbloqueados */}
-          <div className="mt-3 flex items-center gap-3 rounded-lg border border-purple-900/40 bg-purple-950/20 p-2">
-            <div className="flex items-center gap-2 text-xs">
-              <Badge className="bg-purple-600 text-white font-bold">
-                NÍVEL {xpLevelInfo.level}
-              </Badge>
-              <span className="text-purple-300 font-semibold">
-                {userXp} XP
-              </span>
-            </div>
-            <div className="relative flex-1">
-              <div className="h-2 overflow-hidden rounded-full bg-gray-700">
-                <motion.div
-                  animate={{ width: `${xpLevelInfo.progressPct}%` }}
-                  transition={{ duration: 0.6, ease: 'easeOut' }}
-                  className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-pink-500"
-                />
-              </div>
-              <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] text-purple-200">
-                {xpLevelInfo.xpToNextLevel} XP → Nível {xpLevelInfo.level + 1}
-              </span>
-            </div>
-            {/* Benefícios ativos */}
-            {xpLevelInfo.activeBenefits.length > 0 && (
-              <div className="flex items-center gap-1">
-                {xpLevelInfo.activeBenefits.map((b) => (
-                  <span
-                    key={b.level}
-                    title={`${b.name} (Nível ${b.level}): ${b.description}`}
-                    className="cursor-help text-base"
-                  >
-                    {b.emoji}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* ===== CORREÇÃO 6/8: Status de cartões e substituições ===== */}
-          {/* Mostra visualmente quantos jogadores estão em campo, cartões, e substituições */}
-          <div className="mt-2 flex items-center justify-between gap-3 text-xs">
-            {/* Home team status */}
-            <div className="flex items-center gap-2 text-emerald-300">
-              <span className="font-semibold">{homeUser.username}</span>
-              <span title="Jogadores em campo" className="flex items-center gap-1">
-                👥 {Math.max(0, 11 - state.homeTeamState.sentOffPlayers.length)}
-              </span>
-              {state.homeTeamState.redCards > 0 && (
-                <span className="text-red-400" title="Cartões vermelhos">
-                  🟥 {state.homeTeamState.redCards}
-                </span>
-              )}
-              {state.homeTeamState.yellowCards > 0 && (
-                <span className="text-yellow-400" title="Cartões amarelos">
-                  🟨 {state.homeTeamState.yellowCards}
-                </span>
-              )}
-              <span className="text-gray-400" title="Substituições usadas">
-                🔄 {state.homeTeamState.substitutionsUsed}/5
-              </span>
-            </div>
-
-            {/* Away team status */}
-            <div className="flex items-center gap-2 text-sky-300">
-              <span className="text-gray-400" title="Substituições usadas">
-                🔄 {state.awayTeamState.substitutionsUsed}/5
-              </span>
-              {state.awayTeamState.redCards > 0 && (
-                <span className="text-red-400" title="Cartões vermelhos">
-                  🟥 {state.awayTeamState.redCards}
-                </span>
-              )}
-              {state.awayTeamState.yellowCards > 0 && (
-                <span className="text-yellow-400" title="Cartões amarelos">
-                  🟨 {state.awayTeamState.yellowCards}
-                </span>
-              )}
-              <span title="Jogadores em campo" className="flex items-center gap-1">
-                👥 {Math.max(0, 11 - state.awayTeamState.sentOffPlayers.length)}
-              </span>
-              <span className="font-semibold">{awayUser.username}</span>
-            </div>
           </div>
 
           {/* Barra de progresso do campo */}
@@ -2206,62 +1977,9 @@ export function MatchArena({
                   <strong className="text-sky-400">{state.awayScore} {awayUser.username}</strong>
                 </p>
                 <p className="mt-1 text-xs text-gray-500">
-                  {winnerIsMe
-                    ? `+${Math.round(modeConfig.xpWin * (xpLevelInfo.level >= 10 ? 1.5 : xpLevelInfo.level >= 5 ? 1.25 : 1))} XP`
-                    : state.winner === 'DRAW'
-                      ? `+${Math.round(modeConfig.xpDraw * (xpLevelInfo.level >= 10 ? 1.5 : xpLevelInfo.level >= 5 ? 1.25 : 1))} XP`
-                      : `+${modeConfig.xpLose} XP`}
+                  {winnerIsMe ? `+${modeConfig.xpWin} XP` : state.winner === 'DRAW' ? `+${modeConfig.xpDraw} XP` : `+${modeConfig.xpLose} XP`}
                   {' '}({modeConfig.emoji} {modeConfig.label})
-                  {(xpLevelInfo.level >= 5 || xpLevelInfo.level >= 10) && (
-                    <span className="ml-1 text-purple-400">
-                      · multiplicador {xpLevelInfo.level >= 10 ? '1.5x' : '1.25x'} ativo
-                    </span>
-                  )}
                 </p>
-
-                {/* ===== CORREÇÃO 9 + v3: Resumo de XP/Nível ao fim da partida ===== */}
-                <div className="mt-3 flex flex-col items-center gap-2 rounded-lg border border-purple-900/40 bg-purple-950/20 p-3 text-xs">
-                  <div className="flex items-center justify-center gap-3 flex-wrap">
-                    <Badge className="bg-purple-600 text-white font-bold">
-                      NÍVEL {xpLevelInfo.level}
-                    </Badge>
-                    <span className="text-purple-300">
-                      Total: <strong className="text-white">{userXp} XP</strong>
-                    </span>
-                    <span className="text-purple-400">
-                      Faltam <strong>{xpLevelInfo.xpToNextLevel} XP</strong> para o nível {xpLevelInfo.level + 1}
-                    </span>
-                  </div>
-                  {/* Barra de progressão visual */}
-                  <div className="w-full max-w-md h-2 rounded-full bg-purple-900/60 overflow-hidden">
-                    <motion.div
-                      className="h-full rounded-full bg-gradient-to-r from-purple-500 to-fuchsia-400"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${xpLevelInfo.progressPct}%` }}
-                      transition={{ duration: 0.8, ease: 'easeOut' }}
-                    />
-                  </div>
-                  {/* Lista de benefícios — desbloqueados e próximos */}
-                  <div className="w-full max-w-md mt-1 grid grid-cols-1 sm:grid-cols-2 gap-1 text-left">
-                    {XP_BENEFITS.map(b => {
-                      const unlocked = b.level <= xpLevelInfo.level
-                      return (
-                        <div
-                          key={b.level}
-                          className={`flex items-center gap-1.5 rounded px-1.5 py-1 text-[10px] ${
-                            unlocked
-                              ? 'bg-emerald-900/30 text-emerald-200 border border-emerald-700/40'
-                              : 'bg-gray-800/40 text-gray-500 border border-gray-700/30'
-                          }`}
-                        >
-                          <span>{unlocked ? b.emoji : '🔒'}</span>
-                          <span className="font-bold">{b.name}</span>
-                          <span className="opacity-70">· nv {b.level}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
               </div>
               <Button onClick={onExit} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
                 <ArrowLeft className="h-4 w-4" />
@@ -2355,39 +2073,36 @@ export function MatchArena({
         onConfirm={handleSubstitution}
         injuredPlayer={subInjuredPlayer}
         reserves={myReserves}
-        // CORREÇÃO 8: passa activeStarters (filtra expulsos/lesionados/substituídos)
-        starters={activeStarters}
+        starters={myStarters}
         substitutionsUsed={isHome ? state.homeTeamState.substitutionsUsed : state.awayTeamState.substitutionsUsed}
-        // CORREÇÃO 9: maxSubstitutions dinâmico conforme nível do usuário (5 ou 6)
-        maxSubstitutions={effectiveMaxSubs}
+        maxSubstitutions={5}
         isForced={subIsForced}
       />
 
-      {/* ===== CORREÇÃO 2/3: FreeKickDialog =====
-          - fieldPlayers usa activeStarters (jogadores realmente em campo)
-          - multiplierHistory evita repetições consecutivas de batedor/sinal
-          - onPlayFreeKick agora recebe o multiplier além de kicker+action */}
+      {/* BUG FIX: Only render FreeKickDialog if it's my team's free kick.
+          Previously, this dialog was always rendered using myStarters regardless
+          of who was favored, causing the fouling player to select a kicker for
+          the opponent's free kick. */}
       <FreeKickDialog
         open={freeKickOpen}
         onClose={() => { setFreeKickOpen(false); finishPenaltyAndContinue() }}
         onPlayFreeKick={handleFreeKickPlay}
-        fieldPlayers={activeStarters}
+        fieldPlayers={myStarters}
         possession={freeKickPossession}
-        multiplierHistory={multiplierHistory}
       />
 
-      {/* ===== CORREÇÃO 7: DefensivePlayDialog =====
-          - Abre em momentos aleatórios durante a vez do oponente
-          - Em caso de sucesso, o usuário recupera a posse e joga de novo
-          - `lastTurnStoleBall` impede roubadas consecutivas */}
+      {/* ===== Defensive Play Dialog (roubada de bola) =====
+          Oferecido ao defensor durante o turno do oponente, em momentos
+          aleatórios. Se o defensor acertar uma opção que rouba bola,
+          a posse é transferida para ele via /api/match/defensive-play. */}
       <DefensivePlayDialog
         open={defensivePlayOpen}
         onClose={() => setDefensivePlayOpen(false)}
         onResult={handleDefensivePlayResult}
         onSkip={handleDefensivePlaySkip}
         starters={activeStarters}
-        opponentProgress={isHome ? state.awayProgress : state.homeProgress}
-        userLevel={xpLevelInfo.level}
+        opponentProgress={opponentProgress}
+        attemptInTurn={defensiveAttemptInTurn}
       />
     </div>
   )

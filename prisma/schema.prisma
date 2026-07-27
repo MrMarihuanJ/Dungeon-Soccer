@@ -57,11 +57,6 @@ model User {
   displayName  String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
-  // ===== CORREÇÃO v3: rastreia último login para deletar contas inativas =====
-  // Atualizado a cada login bem-sucedido. Usuários que não fazem login há mais
-  // de 180 dias são deletados automaticamente pelo cron /api/cron/cleanup-inactive.
-  // Se for NULL (conta criada mas nunca logou — improvível), usa createdAt como fallback.
-  lastLoginAt  DateTime?
   teams        UserTeam[]
   wins         Int       @default(0)
   losses       Int       @default(0)

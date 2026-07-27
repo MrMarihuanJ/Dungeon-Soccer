@@ -303,11 +303,7 @@ export interface TeamMatchState {
   redCards: number
   yellowCards: number
   injuredPlayers: string[]   // IDs dos jogadores lesionados
-  sentOffPlayers: string[]   // IDs dos jogadores expulsos por cartão vermelho
-  // ===== CORREÇÃO 6/8: rastreia jogadores que saíram por substituição =====
-  // Impede que um jogador já substituído (saiu de campo) continue aparecendo
-  // como ativo na lista de titulares em campo.
-  substitutedOut: string[]   // IDs dos jogadores que saíram via substituição
+  sentOffPlayers: string[]   // IDs dos jogadores expulsos
 }
 
 export interface MatchEvent {
@@ -682,8 +678,8 @@ export function createInitialMatchState(matchId: string, gameMode: GameMode = 'Q
     maxTurns: maxTurns ?? (config.maxTurns > 0 ? config.maxTurns : 999),
     events: [],
     winner: null,
-    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
-    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [], substitutedOut: [] },
+    homeTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
+    awayTeamState: { substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0, injuredPlayers: [], sentOffPlayers: [] },
     gameMode,
     matchStartedAt: null,
     pausedAt: null,
@@ -1060,9 +1056,27 @@ export function applyActionToState(
       }
       // Se não foi gol e não perdeu posse, continua com a posse
     } else {
-      // Ação de defesa bem-sucedida: rouba a bola
-      newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
-      event.possessionChanged = true
+      // ===== CORREÇÃO DO BUG DE ROUBADA DE BOLA =====
+      // --------------------------------------------------------------------
+      // BUG ANTERIOR (linhas 1058-1062 originais):
+      //   newState.currentPossession = possession === 'HOME' ? 'AWAY' : 'HOME'
+      //
+      // Este código invertia a posse para o OPONENTE do time que defendeu,
+      // o que é o OPOSTO de uma roubada de bola. Como applyActionToState
+      // captura `possession = newState.currentPossession!` no início de
+      // cada jogada, a jogada seguinte creditava TODOS os pontos ao time
+      // errado (o oponente do defensor).
+      //
+      // CORREÇÃO: O time COM posse não deveria jogar DEFEND (excluído via
+      // sampleMixedActions). Mas como defesa adicional, se uma DEFEND
+      // chegar aqui, NÃO mudamos a posse — o time mantém a bola.
+      // A roubada real acontece via DefensivePlayDialog no cliente,
+      // que altera currentPossession explicitamente para o time do defensor.
+      // --------------------------------------------------------------------
+      // Mantém a posse com o time atual (defender keeps the ball)
+      // — não há roubo automático aqui, a lógica correta de roubo
+      // é feita pelo DefensivePlayDialog + handleDefensivePlayResult.
+      event.possessionChanged = false
     }
   } else {
     // ===== FRACASSO =====
@@ -1151,257 +1165,93 @@ export function getRollColor(roll: DiceRollResult): string {
 }
 
 // =====================================================================
-// ===== CORREÇÃO 3: SISTEMA DE MULTIPLICADORES PARA COBRANÇA DE FALTA ===
-// ---------------------------------------------------------------------
-// A cada cobrança de falta:
-//   - Gerar aleatoriamente um multiplicador positivo OU negativo
-//   - Aplicar o multiplicador à chance de gol do batedor escolhido
-//   - Garantir imprevisibilidade: jogador da vez nunca é o mesmo da
-//     última cobrança, e o sinal do multiplicador alterna com peso
-//   - Mostrar claramente ao usuário se o batedor tem bônus ou penalidade
+// ===== SISTEMA DE JOGADA DEFENSIVA (roubada de bola) ================
+// --------------------------------------------------------------------
+// CORREÇÃO PRINCIPAL DO BUG:
+// O sistema anterior de DEFEND era conceitualmente incorreto — quando o
+// time COM posse jogava DEFEND e tinha sucesso, a posse ia para o
+// OONENTE (o oposto de uma roubada). Isso fazia com que, na jogada
+// seguinte, todos os pontos ganhos fossem creditados ao time errado,
+// porque applyActionToState captura possession = newState.currentPossession!
+// no início de cada jogada.
+//
+// Agora o sistema funciona corretamente:
+//   1. A jogada defensiva é oferecida ao time SEM posse (defensor)
+//      durante o turno do oponente, em momentos aleatórios.
+//   2. Se o defensor acertar uma opção que rouba bola, a posse muda
+//      para o time do defensor (o roubo correto).
+//   3. Na jogada seguinte, possession = time do defensor, então todos
+//      os pontos ganhos são creditados corretamente ao defensor.
 // =====================================================================
 
-export type MultiplierSign = 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL'
-
-export interface FreeKickMultiplier {
-  /** ID único da instância do multiplicador (para controle de UI) */
-  id: string
-  /** Sinal do multiplicador: POSITIVE = bônus; NEGATIVE = penalidade; NEUTRAL = sem efeito */
-  sign: MultiplierSign
-  /** Valor numérico aplicado: positivo aumenta chance de gol, negativo diminui */
-  value: number
-  /** Rótulo amigável para exibição: "BÔNUS +20%" ou "PENALIDADE -15%" */
-  label: string
-  /** Emoji representativo */
-  emoji: string
-  /** Descrição narrativa para exibir ao usuário */
-  description: string
-}
-
-/**
- * Histórico de multiplicadores por partida (em memória no cliente).
- * Usado para evitar repetições consecutivas do mesmo sinal e do mesmo jogador.
- */
-export interface MultiplierHistory {
-  lastKickerId: string | null
-  lastSign: MultiplierSign | null
-  turnCount: number
-}
-
-/**
- * Gera um multiplicador aleatório para a cobrança de falta.
- *
- * Estratégia de imprevisibilidade:
- *   - 45% positivo (bônus entre +5% e +30%)
- *   - 40% negativo (penalidade entre -5% e -25%)
- *   - 15% neutro (sem efeito, mas ainda mostra mensagem)
- *
- * Para evitar repetições consecutivas do mesmo sinal, se o último
- * multiplicador foi POSITIVE, a chance de gerar outro POSITIVE cai pela metade
- * (e vice-versa para NEGATIVE).
- *
- * @param history histórico da partida (opcional, para anti-repetição)
- */
-export function generateFreeKickMultiplier(history?: MultiplierHistory | null): FreeKickMultiplier {
-  // Pesos base
-  let posWeight = 0.45
-  let negWeight = 0.40
-  const neutralWeight = 0.15
-
-  // Anti-repetição: se o último foi POSITIVE, reduz chance de novo POSITIVE
-  if (history?.lastSign === 'POSITIVE') {
-    posWeight = 0.25
-    negWeight = 0.60
-  } else if (history?.lastSign === 'NEGATIVE') {
-    posWeight = 0.60
-    negWeight = 0.25
-  }
-
-  const roll = Math.random()
-  let sign: MultiplierSign
-  let value: number
-  let label: string
-  let emoji: string
-  let description: string
-
-  if (roll < posWeight) {
-    sign = 'POSITIVE'
-    // Bônus entre +5% e +30%
-    value = 0.05 + Math.random() * 0.25
-    const pct = Math.round(value * 100)
-    label = `BÔNUS +${pct}%`
-    emoji = '🔥'
-    description = `${emoji} Batedor inspirado! Chance de gol aumentada em +${pct}%.`
-  } else if (roll < posWeight + negWeight) {
-    sign = 'NEGATIVE'
-    // Penalidade entre -5% e -25%
-    value = -(0.05 + Math.random() * 0.20)
-    const pct = Math.abs(Math.round(value * 100))
-    label = `PENALIDADE -${pct}%`
-    emoji = '💀'
-    description = `${emoji} Batedor desconcentrado! Chance de gol reduzida em -${pct}%.`
-  } else {
-    sign = 'NEUTRAL'
-    value = 0
-    label = 'NEUTRO'
-    emoji = '⚖️'
-    description = `${emoji} Condições normais. Sem bônus ou penalidade nesta cobrança.`
-  }
-
-  return {
-    id: `mult_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-    sign,
-    value,
-    label,
-    emoji,
-    description,
-  }
-}
-
-/**
- * Aplica o multiplicador à chance base de gol de uma ação.
- * Retorna nova chance entre 0.05 (mínimo) e 0.95 (máximo).
- *
- * @param baseGoalChance Chance original da ação (0-1)
- * @param multiplier Multiplicador gerado por generateFreeKickMultiplier
- */
-export function applyMultiplierToGoalChance(
-  baseGoalChance: number,
-  multiplier: FreeKickMultiplier,
-): number {
-  // chance final = base + (base * valor) -> valor positivo aumenta, negativo diminui
-  // Exemplo: base 0.7, valor +0.20 -> 0.7 + 0.14 = 0.84
-  //          base 0.7, valor -0.15 -> 0.7 - 0.105 = 0.595
-  const adjusted = baseGoalChance + (baseGoalChance * multiplier.value)
-  // Clamp entre 5% e 95% para manter jogabilidade
-  return Math.max(0.05, Math.min(0.95, adjusted))
-}
-
-/**
- * Sorteia um batedor evitando repetição consecutiva do último batedor.
- *
- * @param availablePlayers Lista de jogadores em campo disponíveis
- * @param lastKickerId ID do último batedor (para evitar repetição)
- */
-export function pickKickerAvoidingRepeat(
-  availablePlayers: { id: string; name: string; position: string }[],
-  lastKickerId?: string | null,
-): { id: string; name: string; position: string } | null {
-  if (availablePlayers.length === 0) return null
-  if (availablePlayers.length === 1) return availablePlayers[0]
-
-  // Filtra o último batedor
-  const candidates = lastKickerId
-    ? availablePlayers.filter(p => p.id !== lastKickerId)
-    : availablePlayers
-
-  // Se só sobrou o último (caso extremo), usa ele
-  const pool = candidates.length > 0 ? candidates : availablePlayers
-  return pool[Math.floor(Math.random() * pool.length)]
-}
-
-// =====================================================================
-// ===== CORREÇÃO 7: JOGADA DEFENSIVA E ROUBADAS DE BOLA =================
-// ---------------------------------------------------------------------
-// Em momentos aleatórios durante a vez do oponente, o jogador pode
-// ter a chance de lançar um dado para uma jogada defensiva.
-//
-// REGRA ATUALIZADA: em vez de apenas escolher um jogador, o usuário
-// agora escolhe entre TRÊS OPÇÕES DEFENSIVAS DISTINTAS, cada uma com
-// sua própria dificuldade (DC), bônus por posição, e efeito:
-//
-//   - CARRINHO AGRESSIVO: alto risco, alta recompensa. DC 16, mas se
-//     bem-sucedido rouba a bola E reduz o progresso do oponente em 20%.
-//   - INTERCEPTAÇÃO DE PASSE: jogada balanceada. DC 14, roubo normal.
-//   - MARCAÇÃO PRESSIVA: baixo risco, baixa recompensa. DC 12, mas só
-//     atrasa o oponente (reduz progresso em 10%) sem roubar a bola.
-//
-// Gatilho: em momentos aleatórios durante OPPONENT_TURN, com
-// probabilidade base de 35%, escalando para 55% se o oponente está
-// perto do gol (progresso >= 60%). O sorteio é refeito periodicamente
-// (a cada 4-8s) enquanto durar o turno do oponente, para que a oferta
-// apareça em "momentos aleatórios do jogo".
-//
-// REGRA ANTI-REPETIÇÃO: após uma roubada de bola bem-sucedida, a
-// próxima jogada defensiva NÃO é oferecida no turno imediatamente
-// seguinte. Isso evita múltiplas roubadas consecutivas.
-// =====================================================================
-
-/**
- * Catálogo de opções defensivas. Cada opção define:
- *   - id: identificador único
- *   - name, emoji, description: para exibição no card
- *   - dc: dificuldade do d20
- *   - bonusByPosition: faixa de bônus por posição do jogador escolhido
- *   - stealBall: se sucesso rouba a bola (true) ou só atrasa (false)
- *   - progressReduction: quanto reduz o progresso do oponente (0-100)
- *   - riskLabel: rótulo de risco para exibição (Baixo/Médio/Alto)
- *   - color: classe tailwind para o card
- */
 export interface DefensiveOption {
   id: 'AGGRESSIVE_TACKLE' | 'PASS_INTERCEPTION' | 'PRESSING_MARK'
   name: string
   emoji: string
   description: string
   dc: number
-  bonusByPosition: Record<string, [number, number]>
-  stealBall: boolean
+  /** Se true, um sucesso rouba a bola do oponente */
+  stealsBall: boolean
+  /** Redução de progresso aplicada ao oponente (0-100, em %) */
   progressReduction: number
-  riskLabel: 'Baixo Risco' | 'Médio Risco' | 'Alto Risco'
-  color: string
+  riskLabel: 'Alto' | 'Médio' | 'Baixo'
+  /** Bônus por posição (defensores têm mais em opções agressivas) */
+  bonusByPosition: Record<string, number>
 }
+
+// Posições padrão para bônus caso a posição não esteja mapeada
+const DEFAULT_DEFENSIVE_BONUS = 2
 
 export const DEFENSIVE_OPTIONS: DefensiveOption[] = [
   {
     id: 'AGGRESSIVE_TACKLE',
     name: 'Carrinho Agressivo',
     emoji: '⚔️',
-    description: 'Entrada dura para roubar a bola. Alto risco, alta recompensa: se bem-sucedido, rouba a posse E reduz o progresso do oponente em 20%.',
+    description: 'Carrinho duro para roubar a bola. Alto risco, alto retorno: rouba a bola E reduz 20% do progresso do oponente.',
     dc: 16,
-    bonusByPosition: {
-      GK: [4, 6], DF: [5, 7], LD: [5, 7], LE: [5, 7], CB: [5, 7], DM: [5, 7],
-      MF: [3, 5], AM: [2, 4], FW: [1, 3], ST: [1, 3], CF: [1, 3], RW: [1, 3], LW: [1, 3],
-    },
-    stealBall: true,
+    stealsBall: true,
     progressReduction: 20,
-    riskLabel: 'Alto Risco',
-    color: 'from-rose-600 to-rose-800',
+    riskLabel: 'Alto',
+    bonusByPosition: {
+      GK: 6, DF: 6, LD: 6, LE: 6, CB: 6, DM: 5,
+      MF: 3, AM: 2,
+      FW: 1, ST: 1, CF: 1, RW: 1, LW: 1,
+    },
   },
   {
     id: 'PASS_INTERCEPTION',
     name: 'Interceptação de Passe',
     emoji: '🛡️',
-    description: 'Antecipa o passe do oponente e intercepta. Jogada balanceada: se bem-sucedido, rouba a posse sem efeitos colaterais.',
+    description: 'Antecipa o passe e intercepta. Médio risco: rouba a bola sem efeito colateral.',
     dc: 14,
-    bonusByPosition: {
-      GK: [4, 6], DF: [4, 6], LD: [4, 6], LE: [4, 6], CB: [4, 6], DM: [4, 6],
-      MF: [3, 5], AM: [2, 4], FW: [1, 3], ST: [1, 3], CF: [1, 3], RW: [1, 3], LW: [1, 3],
-    },
-    stealBall: true,
+    stealsBall: true,
     progressReduction: 0,
-    riskLabel: 'Médio Risco',
-    color: 'from-sky-600 to-sky-800',
+    riskLabel: 'Médio',
+    bonusByPosition: {
+      GK: 5, DF: 5, LD: 5, LE: 5, CB: 5, DM: 6,
+      MF: 4, AM: 3,
+      FW: 1, ST: 1, CF: 1, RW: 2, LW: 2,
+    },
   },
   {
     id: 'PRESSING_MARK',
     name: 'Marcação Pressiva',
     emoji: '🏃',
-    description: 'Pressão alta para dificultar a saída do oponente. Baixo risco: mesmo se falhar não há punição, e se acertar reduz o progresso em 10% (mas não rouba a bola).',
+    description: 'Pressão alta para sufocar o ataque. Baixo risco: não rouba a bola, mas reduz 10% do progresso do oponente.',
     dc: 12,
-    bonusByPosition: {
-      GK: [3, 5], DF: [3, 5], LD: [3, 5], LE: [3, 5], CB: [3, 5], DM: [4, 6],
-      MF: [4, 6], AM: [3, 5], FW: [2, 4], ST: [2, 4], CF: [2, 4], RW: [2, 4], LW: [2, 4],
-    },
-    stealBall: false,
+    stealsBall: false,
     progressReduction: 10,
-    riskLabel: 'Baixo Risco',
-    color: 'from-amber-600 to-amber-800',
+    riskLabel: 'Baixo',
+    bonusByPosition: {
+      GK: 3, DF: 4, LD: 4, LE: 4, CB: 4, DM: 5,
+      MF: 5, AM: 4,
+      FW: 3, ST: 3, CF: 3, RW: 4, LW: 4,
+    },
   },
 ]
 
 /**
- * Sorteia 3 opções defensivas distintas para o usuário escolher.
- * Sempre retorna as 3 opções do catálogo, em ordem aleatória.
+ * Retorna as 3 opções defensivas em ordem aleatória.
  */
 export function sampleDefensiveOptions(): DefensiveOption[] {
   const shuffled = [...DEFENSIVE_OPTIONS].sort(() => Math.random() - 0.5)
@@ -1409,166 +1259,88 @@ export function sampleDefensiveOptions(): DefensiveOption[] {
 }
 
 export interface DefensivePlayResult {
-  /** Opção defensiva escolhida pelo usuário */
   optionId: DefensiveOption['id']
-  /** Nome da opção (para exibição) */
   optionName: string
-  /** Emoji da opção */
   optionEmoji: string
-  /** Se a opção rouba a bola em caso de sucesso */
   optionStealsBall: boolean
-  /** Redução de progresso aplicada ao oponente (0 se não houver) */
   progressReduction: number
-  /** Jogador que executou a jogada defensiva */
   playerName: string
-  /** Posição do jogador (para narrativa) */
   position: string
-  /** Rolagem pura do d20 */
-  dice: number
-  /** Bônus de habilidade aplicado (baseado na posição e na opção) */
-  bonus: number
-  /** Total = dice + bonus */
-  total: number
-  /** Dificuldade da jogada */
-  dc: number
-  /** Sucesso geral? */
+  dice: number          // 1-20 (rolagem pura do d20)
+  bonus: number         // skillBonus aplicado (baseado na posição e opção)
+  total: number         // dice + bonus
+  dc: number            // dificuldade da opção
+  margin: number        // total - dc
   success: boolean
-  /** Tipo de crítico */
   critical: 'none' | 'crit_hit' | 'crit_fail'
-  /** Se a roubada de bola foi bem-sucedida (success && option.stealBall && !crit_fail) */
+  /** Se true, a jogada roubou a bola do oponente */
   ballStolen: boolean
-  /** Narrativa descritiva do lance */
+  /** Narrativa para exibição na UI */
   narrative: string
 }
 
 /**
- * Bônus de defesa por posição (espelha o que está no DefensivePlayDialog).
- * Mantido para compatibilidade — agora cada DefensiveOption tem seu próprio
- * bonusByPosition, mas este mapa é usado como fallback.
- */
-const DEFENSIVE_BONUS_BY_POSITION: Record<string, [number, number]> = {
-  GK:  [4, 6],  // Goleiro
-  DF:  [4, 6],  // Zagueiro
-  LD:  [4, 6],  // Lateral Direito
-  LE:  [4, 6],  // Lateral Esquerdo
-  CB:  [4, 6],  // Zagueiro Central
-  DM:  [4, 6],  // Volante
-  MF:  [2, 4],  // Meio-campo
-  AM:  [2, 4],  // Meio-atacante
-  FW:  [1, 3],  // Atacante
-  ST:  [1, 3],  // Centroavante
-  CF:  [1, 3],  // Centroavante
-  RW:  [1, 3],  // Ponta Direita
-  LW:  [1, 3],  // Ponta Esquerda
-}
-
-const DEFENSIVE_DC = 14  // Dificuldade base para jogada defensiva (legacy)
-
-const DEFENSIVE_NARRATIVES_SUCCESS_STEAL = [
-  '{player} antecipa o passe e rouba a bola!',
-  '{player} faz carrinho certeiro e recupera a posse!',
-  '{player} intercepta o lançamento e inicia contra-ataque!',
-  '{player} vence a dividida e fica com a bola!',
-  '{player} pressiona, rouba a bola e abre jogada!',
-]
-
-const DEFENSIVE_NARRATIVES_SUCCESS_PRESS = [
-  '{player} faz marcação pressiva e atrasa o avanço!',
-  '{player} fecha os espaços e o oponente recua!',
-  '{player} corta o passe e o ataque perde o ímpeto!',
-  '{player} adianta a linha e o oponente hesita!',
-]
-
-const DEFENSIVE_NARRATIVES_FAIL = [
-  '{player} tenta interceptar mas falha — o oponente passa.',
-  '{player} arrisca o carrinho mas erra — bola passa.',
-  '{player} não consegue roubar a bola. Vez do oponente continua.',
-  '{player} tenta antecipar mas o atacante se protege.',
-]
-
-const DEFENSIVE_NARRATIVES_CRIT_FAIL = [
-  '{player} escorrega e tropeça! Falha automática — vez do oponente continua.',
-  '{player} chega atrasado e comete falta! Vez do oponente continua.',
-  '{player} perde o equilíbrio e o oponente se aproveita!',
-]
-
-/**
- * Resolve uma jogada defensiva com opção escolhida.
+ * Resolve uma jogada defensiva.
  *
- * @param option Opção defensiva escolhida pelo usuário (das 3 disponíveis)
- * @param position Posição do jogador escolhido para defender
+ * @param option A opção defensiva escolhida (AGGRESSIVE_TACKLE, PASS_INTERCEPTION, PRESSING_MARK)
+ * @param position Posição do jogador que executa (GK, DF, MF, FW, etc.)
  * @param playerName Nome do jogador (para narrativa)
- * @param userLevel Nível de XP do usuário (opcional). Aplica benefícios:
- *                  - Nível 2+ (Defensor Nato): +1 de bônus na jogada defensiva
- *                  - Nível 7+ (Tático): re-roll gratuito de falhas (1x por partida,
- *                    gerenciado pelo chamador, não por esta função)
+ * @returns DefensivePlayResult com todos os dados do resultado
  */
 export function resolveDefensivePlay(
   option: DefensiveOption,
   position: string,
   playerName: string,
-  userLevel: number = 1,
 ): DefensivePlayResult {
   const dice = rollD20()
-  const bonusRange = option.bonusByPosition[position] ?? DEFENSIVE_BONUS_BY_POSITION[position] ?? [2, 4]
-  let bonus = bonusRange[0] + Math.floor(Math.random() * (bonusRange[1] - bonusRange[0] + 1))
-
-  // ===== CORREÇÃO v3: benefício de Nível 2 — Defensor Nato =====
-  // +1 de bônus na jogada defensiva (representa ~5% de chance extra vs DC 14-16).
-  // Aplicado APENAS em rolls não-críticos (natural 1 ou 20 continuam automáticos).
-  const levelDefBonus = userLevel >= 2 ? 1 : 0
-  bonus += levelDefBonus
-
+  const bonus = option.bonusByPosition[position] ?? DEFAULT_DEFENSIVE_BONUS
   const total = dice + bonus
   const dc = option.dc
+  const margin = total - dc
 
   let critical: DefensivePlayResult['critical'] = 'none'
   let success: boolean
-  let ballStolen: boolean
 
-  // Regras D&D: natural 20 = crit hit (roubou automaticamente se a opção rouba bola)
   if (dice === 20) {
     critical = 'crit_hit'
     success = true
-    // No crit hit, mesmo opções de "pressing" reduzem o progresso do oponente em dobro
-    ballStolen = option.stealBall
   } else if (dice === 1) {
     critical = 'crit_fail'
     success = false
-    ballStolen = false
   } else {
-    success = total >= dc
-    // Só rouba a bola se a opção rouba E foi sucesso
-    ballStolen = success && option.stealBall
+    success = margin >= 0
   }
 
-  // Gera narrativa conforme resultado
+  // Bola roubada apenas se a opção rouba E teve sucesso (ou crit hit)
+  const ballStolen = success && option.stealsBall
+
+  // Gera narrativa
   let narrative: string
-  if (critical === 'crit_fail') {
-    narrative = DEFENSIVE_NARRATIVES_CRIT_FAIL[Math.floor(Math.random() * DEFENSIVE_NARRATIVES_CRIT_FAIL.length)]
-      .replace('{player}', playerName)
-  } else if (success) {
-    const templates = ballStolen
-      ? DEFENSIVE_NARRATIVES_SUCCESS_STEAL
-      : DEFENSIVE_NARRATIVES_SUCCESS_PRESS
-    narrative = templates[Math.floor(Math.random() * templates.length)].replace('{player}', playerName)
+  if (critical === 'crit_hit') {
+    narrative = `🎲 CRITICAL HIT! ${playerName} faz uma interceptação espetacular!${ballStolen ? ' Rouba a bola!' : ''}`
+  } else if (critical === 'crit_fail') {
+    narrative = `💀 CRITICAL FAIL! ${playerName} escorrega e comete falta! A vez do oponente continua.`
+  } else if (success && ballStolen) {
+    narrative = `✅ ${playerName} executa ${option.name} com sucesso e ROUBA a bola do oponente!`
+  } else if (success && !ballStolen) {
+    narrative = `✅ ${playerName} executa ${option.name}! O oponente perde ${option.progressReduction}% de progresso, mas mantém a bola.`
   } else {
-    narrative = DEFENSIVE_NARRATIVES_FAIL[Math.floor(Math.random() * DEFENSIVE_NARRATIVES_FAIL.length)]
-      .replace('{player}', playerName)
+    narrative = `❌ ${playerName} falha no ${option.name}. A vez do oponente continua.`
   }
 
   return {
     optionId: option.id,
     optionName: option.name,
     optionEmoji: option.emoji,
-    optionStealsBall: option.stealBall,
-    progressReduction: success ? option.progressReduction : 0,
+    optionStealsBall: option.stealsBall,
+    progressReduction: option.progressReduction,
     playerName,
     position,
     dice,
     bonus,
     total,
     dc,
+    margin,
     success,
     critical,
     ballStolen,
@@ -1577,141 +1349,54 @@ export function resolveDefensivePlay(
 }
 
 /**
- * Decide se uma jogada defensiva deve ser oferecida neste momento.
+ * Decide se deve oferecer uma jogada defensiva ao defensor.
  *
- * ATUALIZAÇÃO: agora aceita um parâmetro `attemptInTurn` que indica
- * quantas vezes já tentamos oferecer neste turno do oponente. O sorteio
- * é refeito periodicamente (a cada 4-8s) e a cada nova oferta a chance
- * aumenta ligeiramente, para garantir que o usuário eventualmente
- * tenha a oportunidade se o turno do oponente durar muito.
+ * Regra anti-repetição: se o defensor roubou a bola no turno anterior,
+ * não oferece de novo no turno atual.
  *
  * @param opponentProgress Progresso atual do oponente (0-100)
- * @param lastTurnStole Se houve roubada de bola no turno anterior (anti-repetição)
- * @param attemptInTurn Número da tentativa de oferta neste turno (0, 1, 2, ...)
- * @param currentTurn Turno atual (para logging)
+ * @param lastTurnStoleBall Se o defensor roubou a bola no turno anterior
+ * @param attemptInTurn Número da tentativa no turno atual (começa em 1)
+ * @returns true se deve oferecer a jogada defensiva
  */
 export function shouldOfferDefensivePlay(
   opponentProgress: number,
-  lastTurnStole: boolean,
-  attemptInTurn: number = 0,
-  currentTurn: number = 0,
+  lastTurnStoleBall: boolean,
+  attemptInTurn: number = 1,
 ): boolean {
-  // ===== REGRA ANTI-REPETIÇÃO: se roubou no turno anterior, não oferece =====
-  // Isto evita múltiplas roubadas de bola consecutivas, conforme exigido pelo usuário.
-  if (lastTurnStole) return false
+  // Anti-repetição: se roubou no turno anterior, não oferece
+  if (lastTurnStoleBall) return false
 
-  // Probabilidade base 35%, escalando para 55% se oponente está perto do gol
-  let chance = 0.35
-  if (opponentProgress >= 60) chance = 0.55
-  if (opponentProgress >= 80) chance = 0.65
+  // Probabilidade base aumenta com tentativas no mesmo turno (cap 90%)
+  const attemptBonus = Math.min(40, (attemptInTurn - 1) * 10)
 
-  // A cada nova tentativa no mesmo turno, aumenta 10% a chance (cap 90%)
-  // Isto garante que o usuário eventualmente terá oportunidade em turnos longos.
-  chance = Math.min(0.90, chance + attemptInTurn * 0.10)
+  let baseChance = 35 + attemptBonus // 35% base + 10% por tentativa
 
-  return Math.random() < chance
+  // Escala com progresso do oponente (mais perto do gol = mais urgência)
+  if (opponentProgress >= 80) {
+    baseChance = 65 + attemptBonus
+  } else if (opponentProgress >= 60) {
+    baseChance = 55 + attemptBonus
+  }
+
+  // Cap em 90%
+  baseChance = Math.min(90, baseChance)
+
+  return Math.random() * 100 < baseChance
 }
 
 /**
- * Sorteia um intervalo aleatório (em ms) para a próxima tentativa de
- * oferecer jogada defensiva. O intervalo fica entre 4s e 8s.
+ * Sorteia o delay (em ms) para a próxima oferta de jogada defensiva.
+ * Intervalo entre 4s e 8s.
  */
 export function nextDefensiveOfferDelayMs(): number {
-  return 4000 + Math.floor(Math.random() * 4000)  // 4000-8000ms
-}
-
-// =====================================================================
-// ===== CORREÇÃO 9: SISTEMA DE XP / RECOMPENSAS / PROGRESSÃO ===========
-// ---------------------------------------------------------------------
-// Cada vitória acumula XP no perfil do usuário.
-// A cada nível, o usuário desbloqueia benefícios cumulativos:
-//   - Nível 2: +5% chance de jogada defensiva bem-sucedida
-//   - Nível 3: +1 substituição extra por partida (6 no total)
-//   - Nível 5: Multiplicador de XP 1.25x em vitórias
-//   - Nível 7: Acesso a ações especiais bônus
-//   - Nível 10: Multiplicador de XP 1.5x em vitórias
-//
-// A UI exibe uma barra de progressão animada do nível atual -> próximo.
-// =====================================================================
-
-export interface XpLevelInfo {
-  level: number
-  currentLevelXp: number       // XP total acumulado para entrar no nível atual
-  nextLevelXp: number          // XP total necessário para o próximo nível
-  xpIntoCurrentLevel: number   // XP já acumulado dentro do nível atual
-  xpToNextLevel: number        // XP restante para subir de nível
-  progressPct: number          // 0-100, porcentagem da barra de progressão
-  activeBenefits: XpBenefit[]  // benefícios atualmente ativos
-}
-
-export interface XpBenefit {
-  level: number
-  name: string
-  description: string
-  emoji: string
-}
-
-/** Tabela de benefícios desbloqueados por nível */
-export const XP_BENEFITS: XpBenefit[] = [
-  { level: 2, name: 'Defensor Nato', description: '+5% chance de sucesso em jogadas defensivas', emoji: '🛡️' },
-  { level: 3, name: 'Banco Qualificado', description: '+1 substituição por partida (6 no total)', emoji: '👥' },
-  { level: 5, name: 'Veterano', description: '+25% XP em cada vitória', emoji: '⭐' },
-  { level: 7, name: 'Tático', description: 'Acesso a ações especiais extras', emoji: '🎯' },
-  { level: 10, name: 'Lenda Viva', description: '+50% XP em cada vitória', emoji: '👑' },
-]
-
-/** Curva de XP: cada nível requer 100 XP a mais que o anterior */
-export function xpRequiredForLevel(level: number): number {
-  // nível 1 = 0, nível 2 = 100, nível 3 = 250, nível 4 = 450, ...
-  // Fórmula: soma de 100 + 50*(n-2) para n>=2, ou seja, (n-1)*(n)*25
-  if (level <= 1) return 0
-  return (level - 1) * level * 25
+  return 4000 + Math.random() * 4000
 }
 
 /**
- * Calcula informações de nível e progressão a partir do XP total do usuário.
+ * Sorteia o delay inicial (em ms) antes da primeira oferta no turno.
+ * Intervalo entre 0.8s e 2.0s.
  */
-export function computeXpLevelInfo(totalXp: number): XpLevelInfo {
-  let level = 1
-  while (xpRequiredForLevel(level + 1) <= totalXp) {
-    level++
-  }
-
-  const currentLevelXp = xpRequiredForLevel(level)
-  const nextLevelXp = xpRequiredForLevel(level + 1)
-  const xpIntoCurrentLevel = totalXp - currentLevelXp
-  const xpToNextLevel = nextLevelXp - totalXp
-  const progressPct = nextLevelXp === currentLevelXp
-    ? 100
-    : Math.round((xpIntoCurrentLevel / (nextLevelXp - currentLevelXp)) * 100)
-
-  const activeBenefits = XP_BENEFITS.filter(b => b.level <= level)
-
-  return {
-    level,
-    currentLevelXp,
-    nextLevelXp,
-    xpIntoCurrentLevel,
-    xpToNextLevel,
-    progressPct,
-    activeBenefits,
-  }
-}
-
-/**
- * Calcula o número máximo de substituições com base no nível do usuário.
- * Base = 5; nível 3+ = 6.
- */
-export function getMaxSubstitutionsForLevel(level: number): number {
-  return level >= 3 ? 6 : 5
-}
-
-/**
- * Multiplicador de XP por vitória com base no nível.
- * Nível 5+ = 1.25x; nível 10+ = 1.5x.
- */
-export function getXpMultiplierForLevel(level: number): number {
-  if (level >= 10) return 1.5
-  if (level >= 5) return 1.25
-  return 1.0
+export function initialDefensiveOfferDelayMs(): number {
+  return 800 + Math.random() * 1200
 }

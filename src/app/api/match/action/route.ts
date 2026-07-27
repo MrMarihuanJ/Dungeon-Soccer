@@ -15,17 +15,11 @@ import {
   flipCoin, coinToPossession, resolveAction, applyActionToState,
   createInitialMatchState, GAME_MODE_CONFIG,
   checkMatchEndCondition, isHalftimeReached, isTimeExpired,
-  computeXpLevelInfo, getXpMultiplierForLevel,
   type MatchState, type CoinResult, type TeamMatchState, type GameMode,
 } from '@/lib/match-engine'
 import type { FootballAction } from '@/lib/dnd-actions'
 import { ALL_ACTIONS } from '@/lib/dnd-actions'
 import { ensureDbSync } from '@/lib/db-sync'
-
-// ID do usuário bot (offline matches). Nunca deve receber XP nem ser
-// contabilizado para estatísticas — e nunca deve ser deletado pelo cron
-// de limpeza de contas inativas.
-const BOT_USER_ID = 'BOT_PLAYER_DUNGEON_SOCER_001'
 
 export const dynamic = 'force-dynamic'
 
@@ -119,7 +113,7 @@ export async function POST(req: NextRequest) {
       })
 
       // Atualiza W/L/D e XP
-      const xpAwarded = await updateUserStats(match.homeUserId, match.awayUserId ?? '', winner, modeConfig)
+      await updateUserStats(match.homeUserId, match.awayUserId ?? '', winner, modeConfig)
 
       return NextResponse.json({
         ok: true,
@@ -136,7 +130,6 @@ export async function POST(req: NextRequest) {
           gameMode,
           matchEndReason: 'Tempo esgotado!',
         },
-        xpAwarded,
       })
     }
   }
@@ -229,7 +222,7 @@ export async function POST(req: NextRequest) {
     // Reconstrói o estado a partir do banco
     const defaultTeamState: TeamMatchState = {
       substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
-      injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
+      injuredPlayers: [], sentOffPlayers: [],
     }
 
     let homeTeamState = defaultTeamState
@@ -299,6 +292,8 @@ export async function POST(req: NextRequest) {
     if (newState.status === 'FINISHED') {
       updateData.status = 'FINISHED'
       updateData.winner = newState.winner
+      // Atualiza W/L/D dos usuários com XP baseado no modo
+      await updateUserStats(match.homeUserId, match.awayUserId ?? '', newState.winner, modeConfig)
     }
 
     try {
@@ -306,12 +301,6 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error('[match/action] update error:', err)
       return NextResponse.json({ ok: false, error: 'Erro ao salvar jogada. Tente novamente.' }, { status: 500 })
-    }
-
-    // Atualiza W/L/D e XP APÓS o match.update para evitar race condition.
-    let xpAwarded: { homeXpAwarded: number; awayXpAwarded: number } | undefined
-    if (newState.status === 'FINISHED') {
-      xpAwarded = await updateUserStats(match.homeUserId, match.awayUserId ?? '', newState.winner, modeConfig)
     }
 
     return NextResponse.json({
@@ -331,7 +320,6 @@ export async function POST(req: NextRequest) {
         gameMode,
         matchEndReason: newState.matchEndReason,
       },
-      xpAwarded,
     })
   }
 
@@ -339,66 +327,20 @@ export async function POST(req: NextRequest) {
 }
 
 // ===== Helper: atualizar W/L/D e XP baseado no modo de jogo =====
-// CORREÇÃO v3: aplica multiplicador de XP por nível (Veterano +25%, Lenda Viva +50%).
-//              Pula o bot (BOT_USER_ID) — não recebe XP nem W/L/D.
-//              Retorna o XP efetivamente concedido a cada lado para o cliente
-//              exibir em tela sem precisar refetch.
 async function updateUserStats(
   homeUserId: string,
   awayUserId: string,
   winner: string | null,
   modeConfig: typeof GAME_MODE_CONFIG['QUICK_MATCH'],
-): Promise<{ homeXpAwarded: number; awayXpAwarded: number }> {
-  // Busca XP atual dos dois usuários para calcular nível e multiplicador.
-  // Filtra o bot — se um dos lados for o bot, seus stats não são tocados.
-  const userIds = [homeUserId, awayUserId].filter(id => id && id !== BOT_USER_ID)
-  const users = await db.user.findMany({
-    where: { id: { in: userIds } },
-    select: { id: true, xp: true },
-  })
-  const userXpMap = new Map<string, number>(users.map(u => [u.id, u.xp ?? 0]))
-
-  const computeAwardedXp = (userId: string, baseXp: number): number => {
-    if (userId === BOT_USER_ID) return 0
-    const totalXp = userXpMap.get(userId) ?? 0
-    const level = computeXpLevelInfo(totalXp).level
-    // Multiplicador só se aplica a VITÓRIAS e EMPATES — derrota não é bonificada
-    // (evita farming de XP perdendo). Vitórias/draws continuam escalando.
-    const multiplier = baseXp > 0 ? getXpMultiplierForLevel(level) : 1
-    return Math.round(baseXp * multiplier)
-  }
-
-  let homeXpAwarded = 0
-  let awayXpAwarded = 0
-
+) {
   if (winner === 'HOME') {
-    homeXpAwarded = computeAwardedXp(homeUserId, modeConfig.xpWin)
-    awayXpAwarded = computeAwardedXp(awayUserId, modeConfig.xpLose)
-    if (homeUserId !== BOT_USER_ID) {
-      await db.user.update({ where: { id: homeUserId }, data: { wins: { increment: 1 }, xp: { increment: homeXpAwarded } } })
-    }
-    if (awayUserId && awayUserId !== BOT_USER_ID) {
-      await db.user.update({ where: { id: awayUserId }, data: { losses: { increment: 1 }, xp: { increment: awayXpAwarded } } })
-    }
+    await db.user.update({ where: { id: homeUserId }, data: { wins: { increment: 1 }, xp: { increment: modeConfig.xpWin } } })
+    await db.user.update({ where: { id: awayUserId }, data: { losses: { increment: 1 }, xp: { increment: modeConfig.xpLose } } })
   } else if (winner === 'AWAY') {
-    awayXpAwarded = computeAwardedXp(awayUserId, modeConfig.xpWin)
-    homeXpAwarded = computeAwardedXp(homeUserId, modeConfig.xpLose)
-    if (awayUserId && awayUserId !== BOT_USER_ID) {
-      await db.user.update({ where: { id: awayUserId }, data: { wins: { increment: 1 }, xp: { increment: awayXpAwarded } } })
-    }
-    if (homeUserId !== BOT_USER_ID) {
-      await db.user.update({ where: { id: homeUserId }, data: { losses: { increment: 1 }, xp: { increment: homeXpAwarded } } })
-    }
+    await db.user.update({ where: { id: awayUserId }, data: { wins: { increment: 1 }, xp: { increment: modeConfig.xpWin } } })
+    await db.user.update({ where: { id: homeUserId }, data: { losses: { increment: 1 }, xp: { increment: modeConfig.xpLose } } })
   } else {
-    homeXpAwarded = computeAwardedXp(homeUserId, modeConfig.xpDraw)
-    awayXpAwarded = computeAwardedXp(awayUserId, modeConfig.xpDraw)
-    if (homeUserId !== BOT_USER_ID) {
-      await db.user.update({ where: { id: homeUserId }, data: { draws: { increment: 1 }, xp: { increment: homeXpAwarded } } })
-    }
-    if (awayUserId && awayUserId !== BOT_USER_ID) {
-      await db.user.update({ where: { id: awayUserId }, data: { draws: { increment: 1 }, xp: { increment: awayXpAwarded } } })
-    }
+    await db.user.update({ where: { id: homeUserId }, data: { draws: { increment: 1 }, xp: { increment: modeConfig.xpDraw } } })
+    await db.user.update({ where: { id: awayUserId }, data: { draws: { increment: 1 }, xp: { increment: modeConfig.xpDraw } } })
   }
-
-  return { homeXpAwarded, awayXpAwarded }
 }
