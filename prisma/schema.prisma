@@ -2,8 +2,10 @@
 // Prisma Schema - Dungeon and Soccer
 // --------------------------------------------------------------------
 // Compatível com PostgreSQL (Neon/Vercel prod) e SQLite (testes locais).
-// O provider é controlado pela constante `provider` abaixo.
-// Em produção, trocar para "postgresql" e configurar DATABASE_URL do Neon.
+// O provider é AUTO-DETECTADO por `scripts/swap-prisma-provider.js`
+// (roda em `postinstall` antes de `prisma generate`, e em `prebuild`).
+// NÃO EDITE a linha `provider = "..."` abaixo manualmente — o script
+// a reescreve com base no scheme de `DATABASE_URL`.
 // ====================================================================
 
 generator client {
@@ -17,9 +19,10 @@ datasource db {
   // LOCAL DEV / TESTS:  provider = "sqlite"
   // PROD (Vercel+Neon): provider = "postgresql"
   //
-  // O código é compatível com ambos. O db-sync.ts detecta
-  // automaticamente via DATABASE_URL e só executa DDL bruto
-  // em Postgres. Em SQLite, confiamos em `prisma db push`.
+  // O provider é gerenciado AUTOMATICAMENTE por
+  // scripts/swap-prisma-provider.js (roda no postinstall e no
+  // prebuild). Ele detecta o scheme da DATABASE_URL e reescreve
+  // a linha abaixo para o provider correto. NÃO EDITE MANUALMENTE.
   // ============================================================
   provider = "sqlite"
   url      = env("DATABASE_URL")

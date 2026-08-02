@@ -200,24 +200,20 @@ com esses valores.
 2. Crie um projeto e copie a connection string
 3. Guarde para configurar como `DATABASE_URL` na Vercel
 
-### Passo 2: Preparar o código para produção
+### Passo 2: Importar na Vercel (sem editar código manualmente)
 
-Edite `prisma/schema.prisma` e troque o provider de `sqlite` para
-`postgresql`:
+O `prisma/schema.prisma` tem `provider = "sqlite"` por padrão (para dev
+local). Em produção, o **script `scripts/swap-prisma-provider.js`** roda
+automaticamente no `postinstall` e no `prebuild` da Vercel, detectando o
+scheme de `DATABASE_URL` e reescrevendo o schema para `postgresql` antes
+de `prisma generate` rodar.
 
-```prisma
-datasource db {
-  provider = "postgresql"  // era "sqlite"
-  url      = env("DATABASE_URL")
-}
-```
-
-### Passo 3: Importar na Vercel
+**Você não precisa editar nenhum arquivo antes do deploy.**
 
 1. Faça push do código para GitHub
 2. Na Vercel, importe o repositório
 3. Configure as variáveis de ambiente (ver `.env.example`):
-   - `DATABASE_URL` = connection string do Neon
+   - `DATABASE_URL` = connection string do Neon (deve começar com `postgresql://`)
    - `JWT_SECRET` = gere com `openssl rand -hex 32`
    - `ADMIN_USERNAME` = seu username admin
    - `ADMIN_PASSWORD` = senha forte (≥8 chars, NÃO use `admin123`)
@@ -226,15 +222,36 @@ datasource db {
    - `API_FOOTBALL_KEY` = opcional (apenas se quiser fotos via API-Football)
 4. Deploy
 
-### Passo 4: Primeira migração do banco
+### Passo 3: Verificar saúde do banco
 
-Após o primeiro deploy, rode localmente com `DATABASE_URL` apontando para
-o Neon de produção:
+Após o deploy, acesse:
+
+```
+https://dungeonnsoccer.vercel.app/api/db/health
+```
+
+Resposta esperada:
+
+```json
+{
+  "ok": true,
+  "databaseUrlScheme": "postgresql",
+  "tables": { "User": { "ok": true }, "Match_read": { "ok": true }, ... }
+}
+```
+
+Se `ok: false` com hint "PROVIDER MISMATCH", veja `HOTFIX_V3_DIAGNOSIS.md`.
+
+### Passo 4: Primeira migração do banco (opcional)
+
+Se o `/api/db/health` indicar que as tabelas estão vazias, rode o seed:
 
 ```bash
-DATABASE_URL="postgresql://..." bunx prisma db push
 DATABASE_URL="postgresql://..." bun run db:seed
 ```
+
+Em Cold Start, o `db-sync.ts` também cria as tabelas automaticamente, e
+faz auto-seed da tabela `Player` se ela estiver vazia.
 
 ### Passo 5: Verificar cron job
 
