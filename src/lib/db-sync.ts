@@ -257,14 +257,34 @@ $$
 `
 
 /**
+ * Detecta se o banco configurado é PostgreSQL (Neon) ou outro (ex.: SQLite
+ * usado em testes locais/sandbox). O db-sync só executa DDL bruto em Postgres;
+ * em SQLite, as migrações são feitas via `prisma db push`.
+ */
+function isPostgres(): boolean {
+  const url = process.env.DATABASE_URL || ''
+  return url.startsWith('postgresql://') || url.startsWith('postgres://')
+}
+
+/**
  * Garante que todas as tabelas existem no banco.
  * Executa apenas uma vez por cold start. Em chamadas subsequentes, retorna imediatamente.
  *
  * PERFORMANCE: Usa 3 PL/pgSQL DO blocks (~4 SQL calls total) em vez de
  * 30+ chamadas individuais, eliminando timeout 504 no Vercel + Neon.
+ *
+ * COMPAT: Em SQLite (desenvolvimento/testes locais), é no-op — confiamos
+ * no `prisma db push` para criar/migrar o schema.
  */
 export async function ensureDbSync(): Promise<void> {
   if (syncDone) return
+
+  // No-op para SQLite (desenvolvimento local) — apenas Postgres/Neon precisa
+  // do sync runtime porque o Vercel serverless não roda migrations no cold start.
+  if (!isPostgres()) {
+    syncDone = true
+    return
+  }
 
   if (!syncPromise) {
     syncPromise = (async () => {

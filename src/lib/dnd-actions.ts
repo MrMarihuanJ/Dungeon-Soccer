@@ -252,15 +252,19 @@ export function sampleActions(category: ActionCategory, count: number): Football
 }
 
 // Sorteia N ações aleatórias de TODAS as categorias (para turnos subsequentes)
-// BUG FIX: Exclude DEFEND actions when the team has possession of the ball.
-// In real football, the team WITH the ball doesn't "defend" — they attack.
-// A successful DEFEND action steals the ball from yourself, which is backwards.
-// Now accepts optional parameters to filter based on possession context.
+// --------------------------------------------------------------------
+// REGRAS:
+//   - KICKOFF   → só aparece na saída de bola (sampleActions)
+//   - FREE_KICK → só aparece em cobranças de falta (sampleFreeKickActions)
+//   - DEFEND    → excluída quando o time está em posse (ataca em vez de defender)
+//
+// Isto corrige o bug onde ações de cobrança de falta (ex.: "Efeito Juninha",
+// "Bomba no Ângulo") podiam ser sorteadas durante uma jogada normal,
+// concedendo progresso/golChance fora do contexto de set-piece.
 export function sampleMixedActions(count: number, excludeDefend = false): FootballAction[] {
-  // Prioriza ações que fazem sentido no meio do jogo (não KICKOFF)
-  // If the team has the ball, also exclude DEFEND (they're attacking, not defending)
   const pool = ALL_ACTIONS.filter((a) => {
     if (a.category === 'KICKOFF') return false
+    if (a.category === 'FREE_KICK') return false // cobranças só em set-piece
     if (excludeDefend && a.category === 'DEFEND') return false
     return true
   })

@@ -152,6 +152,30 @@ export function MatchArena({
   const [myReserves, setMyReserves] = useState<SelectedPlayer[]>([])
   const [myStarters, setMyStarters] = useState<SelectedPlayer[]>([])
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
+  // ===== Free kick pendente (multiplicador + cobrador sorteados pelo servidor) =====
+  const [pendingFreeKickInfo, setPendingFreeKickInfo] = useState<
+    | {
+        multiplier: { value: number; kind: 'BONUS' | 'PENALTY' | 'NEUTRAL'; target: 'SUCCESS_CHANCE' | 'DICE_BONUS' | 'GOAL_CHANCE'; label: string; description: string }
+        taker: { playerId: string; playerName: string; position: string }
+        nonce: string
+        favoredPossession: 'HOME' | 'AWAY'
+        penaltyType: string
+        description: string
+      }
+    | null
+  >(null)
+  // ===== Última rolagem de dado (para animação) =====
+  const [lastDiceRoll, setLastDiceRoll] = useState<number | null>(null)
+  const [lastRollResult, setLastRollResult] = useState<{
+    dice: number
+    bonus: number
+    total: number
+    dc: number
+    margin: number
+    success: boolean
+    critical: 'none' | 'crit_hit' | 'crit_fail'
+    exceptional: boolean
+  } | null>(null)
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
 
   // ===== Defensive Play State (roubada de bola) =====
@@ -907,47 +931,170 @@ export function MatchArena({
     }
   }
 
-  // BUG FIX: Free kick play callback — now validates turn ownership before proceeding.
-  // Previously, this bypassed the processing/diceRolling guards blindly, allowing
-  // actions to be submitted even when it was the opponent's turn.
-  const handleFreeKickPlay = async (kickerId: string, action: FootballAction) => {
+  // ===== Free kick play callback =====
+  // --------------------------------------------------------------------
+  // FIX: Agora chama /api/match/free-kick-resolve que:
+  //   1. Lê o pendingPenaltyEventJson (multiplicador + cobrador sorteados
+  //      no servidor quando a jogada gerou a falta).
+  //   2. Rola o d20 no servidor (anti-cheat).
+  //   3. Aplica o multiplicador à rolagem.
+  //   4. Atualiza estado da partida e limpa o pending.
+  // O cliente apenas exibe o resultado animado.
+  // --------------------------------------------------------------------
+  const handleFreeKickPlay = async (actionId: string) => {
     setFreeKickOpen(false)
-    // Validate: only proceed if it's actually my team's turn (possession)
-    // This prevents submitting a free kick when the opponent should be playing
-    setState((freshState) => {
-      if (freshState.currentPossession !== mySide) {
-        toast.error('Não é seu turno para cobrar a falta.')
+    setProcessing(true)
+    setDiceRolling(true)
+    try {
+      const res = await fetch('/api/match/free-kick-resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matchId: state.matchId,
+          actionId,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        toast.error('Falha na cobrança de falta', {
+          description: data.error || `HTTP ${res.status}`,
+        })
         finishPenaltyAndContinue()
-        return freshState
+        return
       }
-      // Reset flags only after confirming it's my turn
-      setProcessing(false)
-      setDiceRolling(false)
-      // Find kicker name for narrative
-      const kicker = myStarters.find(p => p.id === kickerId)
-      const kickerName = kicker?.name
-      // Fire-and-forget — handleSelectAction manages its own state
-      handleSelectAction(action, kickerName)
-      return freshState
-    })
+      // Atualiza estado com a resposta do servidor
+      const ns = data.newState
+      setState((s) => ({
+        ...s,
+        status: ns.status,
+        currentPossession: ns.currentPossession,
+        homeScore: ns.homeScore,
+        awayScore: ns.awayScore,
+        homeProgress: ns.homeProgress,
+        awayProgress: ns.awayProgress,
+        turnCount: ns.turnCount,
+        winner: ns.winner,
+        homeTeamState: ns.homeTeamState,
+        awayTeamState: ns.awayTeamState,
+        matchEndReason: ns.matchEndReason,
+        events: [...s.events, data.event],
+      }))
+
+      // Exibe o multiplicador como toast (feedback visual)
+      if (data.multiplier) {
+        const m = data.multiplier
+        if (m.kind === 'BONUS') {
+          toast.success(`🎯 ${m.label}`, { description: m.description })
+        } else if (m.kind === 'PENALTY') {
+          toast.error(`🎯 ${m.label}`, { description: m.description })
+        }
+      }
+
+      // Anima o dice roll
+      const event = data.event
+      if (event?.roll?.dice) {
+        setLastDiceRoll(event.roll.dice)
+        setLastRollResult(event.roll)
+      }
+
+      // Transição de fase
+      setTimeout(() => {
+        setDiceRolling(false)
+        setProcessing(false)
+        if (ns.status === 'FINISHED') {
+          setPhase('FINISHED')
+        } else {
+          const stillMyTurn = ns.currentPossession === mySide
+          setPhase(stillMyTurn ? 'PLAYER_TURN' : 'OPPONENT_TURN')
+          if (stillMyTurn) {
+            drawMixedActions()
+            setTurn((t) => t + 1)
+          } else {
+            setAvailableActions([])
+          }
+        }
+      }, 1800)
+    } catch (err) {
+      console.error('[MatchArena] free-kick-resolve error:', err)
+      toast.error('Erro de rede na cobrança. Tente novamente.')
+      finishPenaltyAndContinue()
+    }
   }
 
   // Substitution callback
-  const handleSubstitution = (outPlayerId: string, inPlayerId: string) => {
+  // --------------------------------------------------------------------
+  // FIX C3: Agora persiste no servidor via /api/match/substitution.
+  // O cliente mantém estado local otimista (atualiza UI imediatamente),
+  // mas confia na resposta do servidor como source-of-truth.
+  // --------------------------------------------------------------------
+  const handleSubstitution = async (outPlayerId: string, inPlayerId: string) => {
     setSubOpen(false)
+    const isForced = !!subInjuredPlayer // lesão = substituição forçada
+
+    // Estado otimista local (UI responde imediatamente)
     const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
-    const updatedTeamState: TeamMatchState = {
+    const optimisticTeamState: TeamMatchState = {
       ...myTeamState,
-      substitutionsUsed: myTeamState.substitutionsUsed + 1,
+      substitutionsUsed: Math.min(myTeamState.maxSubstitutions, myTeamState.substitutionsUsed + 1),
       injuredPlayers: myTeamState.injuredPlayers.filter((id) => id !== outPlayerId),
     }
     setState((s) => ({
       ...s,
-      homeTeamState: isHome ? updatedTeamState : s.homeTeamState,
-      awayTeamState: isHome ? s.awayTeamState : updatedTeamState,
+      homeTeamState: isHome ? optimisticTeamState : s.homeTeamState,
+      awayTeamState: isHome ? s.awayTeamState : optimisticTeamState,
     }))
-    toast.success('✅ Substituição realizada!')
-    finishPenaltyAndContinue()
+
+    try {
+      const res = await fetch('/api/match/substitution', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matchId: state.matchId,
+          outPlayerId,
+          inPlayerId,
+          isForced,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        toast.error('Falha na substituição', {
+          description: data.error || `HTTP ${res.status}`,
+        })
+        // Reverte estado local otimista buscando estado real do servidor
+        await fetchMatchState()
+        return
+      }
+
+      // Sucesso: atualiza com a resposta do servidor (source of truth)
+      const serverTeamState = data.teamState as TeamMatchState
+      setState((s) => ({
+        ...s,
+        homeTeamState: isHome ? serverTeamState : s.homeTeamState,
+        awayTeamState: isHome ? s.awayTeamState : serverTeamState,
+      }))
+
+      if (data.playedWithLess) {
+        toast.warning('Time com jogador a menos', {
+          description: data.message || 'Limite de substituições atingido.',
+        })
+      } else {
+        toast.success('✅ Substituição realizada!', {
+          description: `${data.substitutionsUsed}/${data.maxSubstitutions} usadas.`,
+        })
+      }
+
+      // Se foi substituição por lesão, limpa injuredPlayer local
+      if (isForced) {
+        setSubInjuredPlayer(null)
+        setSubIsForced(false)
+      }
+
+      finishPenaltyAndContinue()
+    } catch (err) {
+      console.error('[MatchArena] substitution error:', err)
+      toast.error('Erro de rede ao substituir. Tente novamente.')
+      await fetchMatchState()
+    }
   }
 
   // ===== Defensive Play Handlers (roubada de bola) =====
@@ -2079,16 +2226,16 @@ export function MatchArena({
         isForced={subIsForced}
       />
 
-      {/* BUG FIX: Only render FreeKickDialog if it's my team's free kick.
-          Previously, this dialog was always rendered using myStarters regardless
-          of who was favored, causing the fouling player to select a kicker for
-          the opponent's free kick. */}
+      {/* ===== Free Kick Dialog =====
+          Aberto quando o cliente detecta um pendingFreeKick retornado por
+          /api/match/state OU quando uma jogada local gera falta que favorece
+          o meu time. O multiplicador e o cobrador são decididos no servidor. */}
       <FreeKickDialog
         open={freeKickOpen}
         onClose={() => { setFreeKickOpen(false); finishPenaltyAndContinue() }}
-        onPlayFreeKick={handleFreeKickPlay}
-        fieldPlayers={myStarters}
-        possession={freeKickPossession}
+        pendingFreeKick={pendingFreeKickInfo}
+        onResolve={handleFreeKickPlay}
+        resolving={processing}
       />
 
       {/* ===== Defensive Play Dialog (roubada de bola) =====

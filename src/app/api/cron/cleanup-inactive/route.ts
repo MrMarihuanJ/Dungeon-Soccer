@@ -11,26 +11,40 @@
 //   - Inatividade = `lastLoginAt` < 180 dias atrás
 //     (se `lastLoginAt` for NULL, usa `createdAt` como fallback)
 //   - O usuário bot (BOT_PLAYER_DUNGEON_SOCER_001) NUNCA é deletado
-//   - Usuários admin (authenticated via /api/auth/login, não /api/user/login)
-//     não têm `lastLoginAt` atualizado por esta rota — mas se ficarem inativos
-//     por 180 dias também serão deletados, o que é o comportamento esperado
-//     para contas fantasmas.
-//   - Cascade deletes em UserTeam, Friendship, FriendRequest, Match (home/away)
-//     são automáticos pelo Prisma (onDelete: Cascade no schema).
+//   - Usuários marcados como `isProtected = true` NUNCA são deletados
+//     (ex.: contas de serviço, contas VIP marcadas manualmente)
+//   - Usuários marcados como `isAdmin = true` NUNCA são deletados
+//     (mesmo inativos, admins devem ser revogados manualmente)
+//   - Antes da deleção, partidas históricas onde o usuário é home/away
+//     têm o `homeUserId`/`awayUserId` anonimizado para um ID de placeholder
+//     para preservar integridade referencial (stats agregadas).
+//   - Cascade deletes em UserTeam, Friendship, FriendRequest são automáticos.
+//
+// IDEMPOTÊNCIA:
+//   - A query é baseada em `lastLoginAt < cutoff`, que só muda quando o
+//     usuário loga. Rodar duas vezes no mesmo dia produz o mesmo resultado.
+//   - Após a primeira execução, os usuários inativos são deletados; a
+//     segunda execução encontra 0 inativos e retorna ok.
 //
 // CONFIGURAÇÃO:
 //   - Defina a env var CRON_SECRET no Vercel com um valor aleatório longo.
-//   - Configure o cron schedule em vercel.json.
+//   - Configure o cron schedule em vercel.json (default: 0 3 * * *).
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60  // Vercel: até 60s para concluir a limpeza
+export const maxDuration = 60 // Vercel: até 60s para concluir a limpeza
 
 // ID do usuário bot — jamais deve ser deletado.
 const BOT_USER_ID = 'BOT_PLAYER_DUNGEON_SOCER_001'
+
+// Placeholder para anonimização de partidas históricas (preserva integridade).
+// Este "usuário fantasma" não precisa existir na tabela User — apenas marcamos
+// o `homeUserId`/`awayUserId` com este ID string. As estatísticas agregadas
+// (gols, etc.) permanecem intactas, mas a identidade é anonimizada.
+const ANONYMIZED_USER_ID = 'ANONYMIZED_INACTIVE_USER'
 
 // Janela de inatividade: 180 dias em milissegundos.
 const INACTIVITY_WINDOW_MS = 180 * 24 * 60 * 60 * 1000
@@ -39,15 +53,14 @@ const INACTIVITY_WINDOW_MS = 180 * 24 * 60 * 60 * 1000
  * Verifica o header Authorization: Bearer <token>.
  * O token deve bater com process.env.CRON_SECRET.
  *
- * Em desenvolvimento (NODE_ENV !== 'production') a rota também aceita
- * ser chamada sem token para facilitar testes manuais — em produção o
- * token é OBRIGATÓRIO.
+ * Em desenvolvimento (NODE_ENV !== 'production') a rota exige um CRON_SECRET
+ * mesmo em dev (para evitar acionamentos acidentais), mas aceita o valor
+ * "dev-cron-secret" como default de dev.
  */
 function isAuthorized(req: NextRequest): boolean {
-  if (process.env.NODE_ENV !== 'production') return true
   const secret = process.env.CRON_SECRET
   if (!secret) {
-    console.error('[cron/cleanup-inactive] CRON_SECRET não configurado em produção.')
+    console.error('[cron/cleanup-inactive] CRON_SECRET não configurado.')
     return false
   }
   const authHeader = req.headers.get('authorization') || ''
@@ -56,7 +69,6 @@ function isAuthorized(req: NextRequest): boolean {
   // Constant-time comparison
   if (token.length !== secret.length) return false
   try {
-    // Buffer.from + timingSafeEqual — evita timing attack
     const a = Buffer.from(token)
     const b = Buffer.from(secret)
     return a.length === b.length && a.equals(b)
@@ -68,23 +80,24 @@ function isAuthorized(req: NextRequest): boolean {
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json(
-      { ok: false, error: 'Não autorizado. Configure CRON_SECRET.' },
+      { ok: false, error: 'Não autorizado. Configure CRON_SECRET no header Authorization.' },
       { status: 401 },
     )
   }
 
   const cutoffDate = new Date(Date.now() - INACTIVITY_WINDOW_MS)
-  console.log(`[cron/cleanup-inactive] Cutoff: ${cutoffDate.toISOString()}`)
+  const runId = `cleanup-${Date.now()}`
+  console.log(`[cron/cleanup-inactive] ${runId} iniciando. Cutoff: ${cutoffDate.toISOString()}`)
 
   try {
-    // Busca usuários inativos:
-    //   - lastLoginAt < cutoff (já logou mas parou há >180 dias)
-    //   - OU (lastLoginAt IS NULL AND createdAt < cutoff) — conta criada há
-    //     >180 dias mas nunca logou desde então
-    // Exclui o bot.
+    // Busca usuários inativos que NÃO são protegidos/admin/bot:
+    //   - lastLoginAt < cutoff (logou há >180 dias)
+    //   - OU (lastLoginAt IS NULL AND createdAt < cutoff) (criado há >180 dias, nunca logou)
     const inactiveUsers = await db.user.findMany({
       where: {
         id: { not: BOT_USER_ID },
+        isProtected: false,
+        isAdmin: false,
         OR: [
           { lastLoginAt: { lt: cutoffDate } },
           {
@@ -99,51 +112,90 @@ export async function GET(req: NextRequest) {
         email: true,
         lastLoginAt: true,
         createdAt: true,
+        wins: true,
+        losses: true,
+        draws: true,
+        xp: true,
       },
     })
 
     if (inactiveUsers.length === 0) {
+      console.log(`[cron/cleanup-inactive] ${runId} concluído: 0 contas inativas.`)
       return NextResponse.json({
         ok: true,
+        runId,
         deletedCount: 0,
+        anonymizedCount: 0,
         message: 'Nenhuma conta inativa encontrada.',
         cutoff: cutoffDate.toISOString(),
       })
     }
 
-    console.log(`[cron/cleanup-inactive] ${inactiveUsers.length} conta(s) a deletar.`)
+    console.log(
+      `[cron/cleanup-inactive] ${runId}: ${inactiveUsers.length} conta(s) a processar.`,
+    )
 
-    // Deleta em lotes para evitar transação longa. Cascade deleta:
+    // PASSO 1: Anonimizar partidas históricas onde o usuário é home ou away.
+    // Isto preserva a integridade referencial das partidas (score, events) sem
+    // expor a identidade do usuário inativo.
+    const ids = inactiveUsers.map((u) => u.id)
+    let anonymizedCount = 0
+    for (const userId of ids) {
+      // Atualiza partidas onde o usuário é homeUserId
+      const homeUpdated = await db.match.updateMany({
+        where: { homeUserId: userId },
+        data: { homeUserId: ANONYMIZED_USER_ID },
+      })
+      // Atualiza partidas onde o usuário é awayUserId
+      const awayUpdated = await db.match.updateMany({
+        where: { awayUserId: userId },
+        data: { awayUserId: ANONYMIZED_USER_ID },
+      })
+      anonymizedCount += homeUpdated.count + awayUpdated.count
+    }
+    console.log(
+      `[cron/cleanup-inactive] ${runId}: ${anonymizedCount} partida(s) anonimizadas.`,
+    )
+
+    // PASSO 2: Deletar usuários. Cascade deleta:
     //   - UserTeam
     //   - Friendship (ambos lados)
     //   - FriendRequest (ambos lados)
-    //   - Match (home ou away)
-    const ids = inactiveUsers.map(u => u.id)
+    //   - Match onde homeUserId/awayUserId == este usuário (mas já anonimizamos,
+    //     então não há matches apontando para estes IDs).
+    // Usamos deleteMany (não delete) para que a ausência de um usuário (já
+    // deletado em rodada anterior) não cause erro — idempotência.
     const deleteResult = await db.user.deleteMany({
       where: { id: { in: ids } },
     })
 
-    console.log(`[cron/cleanup-inactive] ${deleteResult.count} conta(s) deletada(s).`)
+    console.log(
+      `[cron/cleanup-inactive] ${runId} concluído: ${deleteResult.count} conta(s) deletada(s), ${anonymizedCount} partida(s) anonimizadas.`,
+    )
 
     return NextResponse.json({
       ok: true,
+      runId,
       deletedCount: deleteResult.count,
+      anonymizedCount,
       cutoff: cutoffDate.toISOString(),
-      // Não expõe emails/usernames no corpo por privacidade, mas registra no log.
-      sample: inactiveUsers.slice(0, 5).map(u => ({
+      // Amostra para auditoria (não expõe emails no corpo, mas registra no log)
+      sample: inactiveUsers.slice(0, 5).map((u) => ({
         id: u.id,
         username: u.username,
         lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
         createdAt: u.createdAt.toISOString(),
       })),
     })
-  } catch (err: any) {
-    console.error('[cron/cleanup-inactive] erro:', err)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[cron/cleanup-inactive] ${runId} erro:`, message)
     return NextResponse.json(
       {
         ok: false,
+        runId,
         error: 'Erro interno ao limpar contas inativas.',
-        details: process.env.NODE_ENV !== 'production' ? String(err?.message || err) : undefined,
+        details: process.env.NODE_ENV !== 'production' ? message : undefined,
       },
       { status: 500 },
     )

@@ -1,6 +1,10 @@
-# Dungeon and Soccer ⚽
+# Dungeon and Soccer ⚽🎲
 
-> Monte seu time dos sonhos com **qualquer jogador do mundo** — busca em tempo real via TheSportsDB + Wikipedia + banco local, formações táticas, gestão de reservas e painel administrativo.
+> RPG de futebol baseado em jogadores reais — monte seu time, enfrente adversários
+> e use estratégias de dados, cartas, habilidades e eventos de partida.
+>
+> **Versão auditada e corrigida** — veja `RELATORIO_IMPLEMENTACAO.md` para o
+> detalhamento completo das correções aplicadas.
 
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)
@@ -8,23 +12,21 @@
 ![Prisma](https://img.shields.io/badge/Prisma-6-2d3748?logo=prisma)
 ![Vercel](https://img.shields.io/badge/Vercel-ready-black?logo=vercel)
 ![Neon](https://img.shields.io/badge/Neon_Postgres-ready-00e599?logo=neon)
+![Tests](https://img.shields.io/badge/Tests-144_passing-brightgreen)
 
 ---
 
 ## Sumário
 
 - [Visão Geral](#visão-geral)
-- [Funcionalidades](#funcionalidades)
+- [Novidades desta versão](#novidades-desta-versão)
 - [Stack Técnica](#stack-técnica)
-- [Arquitetura](#arquitetura)
 - [Rodando Localmente](#rodando-localmente)
-- [Deploy na Vercel + GitHub + Neon](#deploy-na-vercel--github--neon)
-- [Painel Administrativo](#painel-administrativo)
-- [Busca Mundial em Tempo Real](#busca-mundial-em-tempo-real)
-- [Como Usar](#como-usar)
+- [Deploy na Vercel + Neon](#deploy-na-vercel--neon)
+- [Variáveis de Ambiente](#variáveis-de-ambiente)
+- [Regras Implementadas](#regras-implementadas)
+- [Testes](#testes)
 - [Estrutura de Arquivos](#estrutura-de-arquivos)
-- [API Reference](#api-reference)
-- [Customização](#customização)
 - [Troubleshooting](#troubleshooting)
 - [Licença](#licença)
 
@@ -32,674 +34,349 @@
 
 ## Visão Geral
 
-O **Dungeon and Soccer** é um montador de times de futebol web que permite buscar **qualquer jogador do mundo** em tempo real. O usuário escolhe uma formação tática (4-3-3, 4-4-2, etc.), clica nas "bolas" posicionadas no campo para abrir um campo de busca com **autocomplete em tempo real**, seleciona o jogador desejado e vê a foto real dele aparecer na bola correspondente.
+Dungeon & Soccer é um jogo de RPG baseado em futebol onde usuários montam
+times com jogadores reais (busca em tempo real via TheSportsDB + Wikipedia
++ banco local) e disputam partidas que combinam:
 
-A busca consulta **3 fontes em paralelo**:
-1. **TheSportsDB** — cobertura mundial (todos os jogadores de todas as ligas)
-2. **Wikipedia** — fallback para atletas menos famosos
-3. **Banco local** — jogadores curados/gerenciados pelo admin
+- **Mecânicas D&D:** d20, DC (Difficulty Class), skill bonus, critical hits.
+- **Mecânicas de futebol:** formações, posse de bola, progresso no campo,
+  gols, cartões, lesões, substituições.
+- **Sistema de XP e níveis** para usuários e times.
+- **Multiplayer online via convites** ou **offline vs bot**.
+- **Painel administrativo** para gerenciar jogadores.
 
-Além dos 11 titulares, há um **banco de reservas** onde o usuário atua como técnico: convoca reservas e faz substituições com os titulares.
-
-Há também um **painel administrativo** protegido por login/senha, acessível via `/?admin`, onde é possível adicionar, editar e remover jogadores do banco local.
+Site em produção: <https://dungeonnsoccer.vercel.app>
 
 ---
 
-## Funcionalidades
+## Novidades desta versão
 
-### Site principal (montador de times)
-- **6 formações táticas**: 4-3-3, 4-4-2, 3-5-2, 4-2-3-1, 3-4-3, 5-3-2
-- **Campo visual responsivo** com marcações oficiais (áreas, círculo central, cantos)
-- **Bolas flutuantes clicáveis** em cada posição do campo
-- **Busca em tempo real** com debounce de 250ms
-- **3 fontes de dados** em paralelo: TheSportsDB + Wikipedia + banco local
-- **Autocomplete** com foto real, nome completo, time atual, nacionalidade e número da camisa
-- **Filtro automático por posição**: ao clicar numa posição, só aparecem jogadores daquela posição
-- **Foto real do jogador** exibida na bola após seleção
-- **Banco de reservas** ilimitado com cards ricos
-- **Sistema de substituição** com diálogo dedicado
-- **Persistência local** via Zustand + localStorage
-- **Toast notifications** para feedback de ações
-- **Design responsivo mobile-first** com animações Framer Motion
+Esta versão é o resultado de uma auditoria técnica completa seguida de
+implementação de correções críticas. Os principais destaques:
 
-### Painel administrativo (`/?admin`)
-- **Login/senha** com cookie HTTP-only assinado (HMAC-SHA256)
-- **Dashboard** com estatísticas (total de jogadores, fontes ativas)
-- **CRUD completo** de jogadores do banco local:
-  - Criar novo jogador (nome, posição, time, foto, nacionalidade, número)
-  - Editar jogador existente (inline)
-  - Remover jogador
-  - Buscar jogadores por nome ou time
-- **Logout** com limpeza de cookie
-- **Botão "Ver site"** para voltar ao site principal
+### Correções críticas
+- **C1/C2:** Exclusão automática de contas inativas (>180 dias) via cron
+  da Vercel — `lastLoginAt` agora é atualizado pelo servidor após login.
+- **C3:** Substituições in-match agora persistem no servidor via
+  `/api/match/substitution` (antes era só estado local).
+- **C4:** XP idempotente via transação atômica com flag `xpGranted` +
+  tabela `XpGrant` (constraint unique em `[userId, source]`).
+- **C5:** Ações `FREE_KICK` não aparecem mais em jogadas normais.
+- **C6:** Reserva pode ser movida para o campo (corrige crash em runtime).
+- **C7:** Admin auth com hard-fail em produção sem `JWT_SECRET`/`ADMIN_PASSWORD`.
+
+### Novos sistemas
+- **Máquina de estados de jogador** (ACTIVE/RESERVE/INJURED/SUBSTITUTED/
+  SENT_OFF/UNAVAILABLE) com transições validadas no servidor.
+- **Sistema de cobrança de falta** com multiplicadores aleatórios
+  (positivos e negativos) gerados no servidor, anti-repetição de cobrador.
+- **Limite rigoroso de 5 substituições** (táticas + lesão contam juntas),
+  com bloqueio pós-limite e time jogando com jogador a menos.
+- **XP para equipes e jogadores** com progressão, níveis, recompensas e
+  idempotência.
+- **Concorrência otimista** via campo `version` na tabela `Match`.
+
+### Melhorias de UI/UX
+- `SubstitutionModal` reescrito com fluxo de 2 fases (seleciona sai →
+  seleciona entra) e acessibilidade ARIA.
+- `FreeKickDialog` reformulado para mostrar multiplicador e cobrador
+  designados pelo servidor.
+- `ReserveTeam` com novo dropdown "Mover para o campo".
+- Easter eggs cômicos adicionais (tiki-taka, catenaccio, pelé, maradona,
+  vampeta, etc).
+
+### Testes
+- **144 testes** unitários e de integração cobrindo os fluxos críticos
+  (free kick, sub limit, red card, XP idempotência, admin auth, etc).
+
+Veja `RELATORIO_IMPLEMENTACAO.md` para o detalhamento completo.
 
 ---
 
 ## Stack Técnica
 
-| Camada | Tecnologia |
-|---|---|
-| **Framework** | Next.js 16 (App Router, Turbopack) |
-| **Linguagem** | TypeScript 5 |
-| **Estilo** | Tailwind CSS 4 + shadcn/ui (New York) |
-| **Banco de dados** | Prisma ORM (SQLite em dev, **Neon Postgres** em prod) |
-| **Estado (client)** | Zustand + persist middleware |
-| **Auth** | HMAC-SHA256 + cookie HTTP-only (sem dependências externas) |
-| **API externa** | TheSportsDB (mundial) + Wikipedia (fallback) |
-| **Ícones** | Lucide React |
-| **Animações** | Framer Motion |
-| **Toasts** | Sonner |
-| **Hospedagem** | Vercel |
-| **CI/CD** | GitHub → Vercel (deploy automático em cada push) |
-| **Banco gerenciado** | Neon Postgres (serverless) |
-
----
-
-## Arquitetura
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        Browser (Cliente)                     │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │            Página / (App Router)                       │  │
-│  │                                                        │  │
-│  │   ?admin ausente  →  <TeamBuilderApp />                │  │
-│  │   ?admin presente →  <AdminApp />                      │  │
-│  │                     ├── <AdminLogin />                 │  │
-│  │                     └── <AdminDashboard />             │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                          ▲                                   │
-│                          │ Zustand (localStorage)            │
-│                          ▼                                   │
-│  fetch /api/players/search · /api/auth/* · /api/admin/*     │
-└──────────────────────────────────────────────────────────────┘
-                            │ HTTPS
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│                    Vercel (Serverless)                       │
-│                                                              │
-│  ┌──────────────────────┐  ┌──────────────────────────────┐ │
-│  │ /api/players/search  │  │ /api/auth/login              │ │
-│  │  TheSportsDB + Wiki  │  │ /api/auth/logout              │ │
-│  │  + DB local (Prisma) │  │ /api/auth/me                  │ │
-│  └──────────┬───────────┘  └──────────────────────────────┘ │
-│             │                                               │
-│  ┌──────────▼─────────────────────────────────────────────┐ │
-│  │  /api/admin/players (CRUD, requer cookie admin)        │ │
-│  └──────────┬─────────────────────────────────────────────┘ │
-│             │                                                │
-│             ▼                                                │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │         Prisma Client (conexao pooled)               │   │
-│  └────────────────────────┬─────────────────────────────┘   │
-└───────────────────────────┼──────────────────────────────────┘
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│              Neon Postgres (Serverless DB)                   │
-│                                                              │
-│  ┌────────────────┐  ┌────────────────┐                      │
-│  │   Player       │  │   SavedTeam    │  (opcional)          │
-│  └────────────────┘  └────────────────┘                      │
-└──────────────────────────────────────────────────────────────┘
-                            ▲
-                            │ HTTPS (fetch server-side)
-                            │
-┌──────────────────────────────────────────────────────────────┐
-│              APIs externas (busca em tempo real)             │
-│                                                              │
-│  ┌─────────────────────┐  ┌─────────────────────────────┐   │
-│  │  TheSportsDB        │  │  Wikipedia API              │   │
-│  │  thesportsdb.com    │  │  en.wikipedia.org/w/api.php │   │
-│  │  (mundial, fotos)   │  │  (fallback biográfico)      │   │
-│  └─────────────────────┘  └─────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────┘
-```
+- **Framework:** Next.js 16 (App Router, Turbopack)
+- **Linguagem:** TypeScript 5
+- **Estilo:** Tailwind CSS 4 + shadcn/ui (New York)
+- **Banco:** Prisma 6 ORM + PostgreSQL (Neon em produção; SQLite em dev)
+- **Auth:** HMAC-SHA256 em cookies HTTP-only (custom, sem NextAuth)
+- **State:** Zustand (cliente) + TanStack Query (server)
+- **Animações:** Framer Motion
+- **Testes:** Vitest 4
+- **Deploy:** Vercel + Neon Postgres + Vercel Cron
 
 ---
 
 ## Rodando Localmente
 
 ### Pré-requisitos
-
-- [Node.js 18+](https://nodejs.org/) ou [Bun](https://bun.sh/)
+- Node.js 20+ ou Bun
 - Git
 
 ### Passos
 
 ```bash
-# 1. Clone o repositório
-git clone https://github.com/SEU_USUARIO/dungeon-and-soccer.git
-cd dungeon-and-soccer
+# 1. Instalar dependências
+bun install
+# ou: npm install
 
-# 2. Instale as dependências
-bun install     # ou: npm install / pnpm install
-
-# 3. Configure as variáveis de ambiente
+# 2. Configurar variáveis de ambiente
 cp .env.example .env
-# (o .env já vem com SQLite + credenciais admin padrão para dev)
+# Edite .env e gere valores aleatórios para JWT_SECRET e CRON_SECRET:
+#   openssl rand -hex 32
 
-# 4. Crie o banco e aplique o schema
-bun run db:push
-
-# 5. Popule o banco com os jogadores iniciais
+# 3. Criar banco SQLite local e popular jogadores
+bunx prisma db push
 bun run db:seed
-# ✅ Seed concluído! 103 jogadores inseridos.
 
-# 6. Rode o servidor de desenvolvimento
+# 4. Rodor em modo desenvolvimento
 bun run dev
-# ▲ Next.js 16.1.3 (Turbopack)
-# - Local: http://localhost:3000
+# Acesse http://localhost:3000
+
+# 5. (Opcional) Rodar testes
+bun run test
+bun run test:coverage
+
+# 6. (Opcional) Lint
+bun run lint
 ```
 
-Abra [http://localhost:3000](http://localhost:3000) no navegador. 🎉
+### Credenciais admin em dev
 
-Para acessar o **painel admin**, abra [http://localhost:3000/?admin](http://localhost:3000/?admin) ou clique no botão **Admin** no canto superior direito.
-
-**Credenciais padrão (dev):**
-- Usuário: `admin`
-- Senha: `admin123`
+Em desenvolvimento (`NODE_ENV !== 'production'`), as credenciais admin
+default são `admin` / `admin123`. Em produção, a aplicação recusa iniciar
+com esses valores.
 
 ---
 
-## Deploy na Vercel + GitHub + Neon
+## Deploy na Vercel + Neon
 
-### Passo 1: Criar o banco no Neon
+### Passo 1: Configurar Neon (PostgreSQL)
 
-1. Acesse [https://neon.tech](https://neon.tech) e crie uma conta (login com GitHub recomendado).
-2. Clique em **New Project** → dê o nome `dungeon-and-soccer`.
-3. Escolha a região mais próxima dos usuários (ex: `AWS US East` para América, `AWS São Paulo` para Brasil).
-4. Após criar, copie a **connection string** exibida:
-   ```
-   postgresql://USER:PASSWORD@ep-XXXX.region.aws.neon.tech/dbname?sslmode=require
-   ```
+1. Crie conta em <https://neon.tech>
+2. Crie um projeto e copie a connection string
+3. Guarde para configurar como `DATABASE_URL` na Vercel
 
-### Passo 2: Subir o código para o GitHub
+### Passo 2: Preparar o código para produção
 
-```bash
-git init
-git add .
-git commit -m "feat: Dungeon and Soccer - montador de times com busca mundial"
-git branch -M main
-git remote add origin https://github.com/SEU_USUARIO/dungeon-and-soccer.git
-git push -u origin main
-```
-
-### Passo 3: Conectar na Vercel
-
-1. Acesse [https://vercel.com/new](https://vercel.com/new).
-2. Importe o repositório `dungeon-and-soccer` do GitHub.
-3. A Vercel detecta automaticamente o Next.js — **não mude nada nas configurações de build**.
-4. Em **Environment Variables**, adicione:
-
-   | Nome | Valor | Descrição |
-   |---|---|---|
-   | `DATABASE_URL` | `postgresql://USER:PASSWORD@ep-XXXX.region.aws.neon.tech/dbname?sslmode=require&connect_timeout=300` | Connection string do Neon |
-   | `ADMIN_USERNAME` | `admin` | Usuário do painel admin |
-   | `ADMIN_PASSWORD` | `sua-senha-forte-aqui` | ⚠️ Use uma senha forte! |
-   | `JWT_SECRET` | `string-aleatoria-de-64-caracteres` | Gere com `openssl rand -hex 32` |
-   | `THESPORTSDB_API_KEY` | `3` | Chave pública de testes (ou sua própria) |
-
-   ⚠️ **Atenção:** adicione `&connect_timeout=300` ao final da URL do Neon para evitar timeouts em cold starts.
-
-5. Clique em **Deploy**. Em ~2 minutos o site estará no ar em `https://dungeon-and-soccer.vercel.app`.
-
-### Passo 4: Trocar o provider do Prisma para PostgreSQL
-
-**Importante:** o projeto vem com `provider = "sqlite"` (para dev local). Em produção, edite `prisma/schema.prisma`:
+Edite `prisma/schema.prisma` e troque o provider de `sqlite` para
+`postgresql`:
 
 ```prisma
 datasource db {
-  provider = "postgresql"   // ← mude de "sqlite" para "postgresql"
+  provider = "postgresql"  // era "sqlite"
   url      = env("DATABASE_URL")
 }
 ```
 
-Faça commit e push:
+### Passo 3: Importar na Vercel
+
+1. Faça push do código para GitHub
+2. Na Vercel, importe o repositório
+3. Configure as variáveis de ambiente (ver `.env.example`):
+   - `DATABASE_URL` = connection string do Neon
+   - `JWT_SECRET` = gere com `openssl rand -hex 32`
+   - `ADMIN_USERNAME` = seu username admin
+   - `ADMIN_PASSWORD` = senha forte (≥8 chars, NÃO use `admin123`)
+   - `CRON_SECRET` = gere com `openssl rand -hex 32`
+   - `THESPORTSDB_API_KEY` = `"3"` (free tier) ou sua key
+   - `API_FOOTBALL_KEY` = opcional (apenas se quiser fotos via API-Football)
+4. Deploy
+
+### Passo 4: Primeira migração do banco
+
+Após o primeiro deploy, rode localmente com `DATABASE_URL` apontando para
+o Neon de produção:
 
 ```bash
-git add prisma/schema.prisma
-git commit -m "chore: switch Prisma provider to postgresql for production"
-git push
+DATABASE_URL="postgresql://..." bunx prisma db push
+DATABASE_URL="postgresql://..." bun run db:seed
 ```
 
-A Vercel fará redeploy automático.
+### Passo 5: Verificar cron job
 
-### Passo 5: Seed inicial do banco em produção
-
-Após o primeiro deploy, o banco estará vazio. Faça o seed via API:
+A Vercel executará automaticamente `/api/cron/cleanup-inactive` diariamente
+às 03:00 UTC (configurado em `vercel.json`). Para testar manualmente:
 
 ```bash
-curl -X POST https://dungeon-and-soccer.vercel.app/api/seed
-# {"ok":true,"message":"Seed concluído com 103 jogadores.","total":103}
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://dungeonnsoccer.vercel.app/api/cron/cleanup-inactive
 ```
 
-### Passo 6: Deploy automático funcionando
+---
 
-A partir de agora, **todo `git push` na `main`** dispara um deploy automático na Vercel. Branches não-main criam **Preview Deployments** isolados.
+## Variáveis de Ambiente
+
+Veja `.env.example` para a lista completa. As críticas são:
+
+| Variável | Descrição | Obrigatório em prod |
+|----------|-----------|---------------------|
+| `DATABASE_URL` | Connection string do Neon (ou SQLite path em dev) | Sim |
+| `JWT_SECRET` | HMAC secret para assinar cookies (≥16 chars) | Sim |
+| `ADMIN_USERNAME` | Username do painel admin | Sim |
+| `ADMIN_PASSWORD` | Senha admin (≥8 chars, não default) | Sim |
+| `CRON_SECRET` | Token para autorizar o cron de cleanup | Sim |
+| `THESPORTSDB_API_KEY` | Key da TheSportsDB (`"3"` para free tier) | Não |
+| `API_FOOTBALL_KEY` | Key da API-Football (opcional, para fotos) | Não |
+| `NEXT_PUBLIC_APP_NAME` | Nome da aplicação | Não |
+| `NEXT_PUBLIC_APP_URL` | URL pública | Não |
 
 ---
 
-## Painel Administrativo
+## Regras Implementadas
 
-### Acesso
+### Substituições
+- **Limite:** 5 por partida (táticas + lesão contam juntas).
+- **Pós-limite:** nova lesão → jogador fica UNAVAILABLE, time joga com 1 a menos.
+- **Validação:** apenas ACTIVE pode sair; apenas RESERVE pode entrar.
+- **Proibido:** substituir jogador já substituído, expulso, ou ele mesmo.
 
-- **URL**: `https://seu-site.com/?admin`
-- **Botão alternativo**: clique em **Admin** no canto superior direito do site
-- **Credenciais** (definidas nas variáveis de ambiente):
-  - `ADMIN_USERNAME` — usuário (default: `admin`)
-  - `ADMIN_PASSWORD` — senha (default: `admin123` — **troque em produção!**)
+### Cartões
+- **Vermelho:** removido imediatamente de campo, marcado SENT_OFF, +1 redCards, não pode voltar.
+- **Amarelo:** contabilizado, jogador continua em campo.
 
-### Funcionalidades
+### Cobrança de Falta
+- **Quando:** jogada com `requiresFreeKick=true` ou `type=PENALTY_KICK`.
+- **Multiplicador:** sorteado no servidor, valor entre -4 e +5.
+- **Cobrador:** sorteado no servidor, prioriza atacantes/meias, não repete consecutivo.
+- **Dice roll:** no servidor, aplicado ao multiplicador.
+- **Não aparece** em jogadas normais (apenas em set-piece).
 
-| Ação | Como |
-|---|---|
-| **Login** | Digite usuário e senha na tela de login |
-| **Ver estatísticas** | Cards no topo do dashboard (total jogadores, fontes ativas) |
-| **Adicionar jogador** | Formulário à esquerda: preencha nome, posição, time, foto, nacionalidade, número |
-| **Editar jogador** | Clique no ícone de lápis (azul) ao lado do jogador na lista |
-| **Remover jogador** | Clique no ícone de lixeira (vermelho) e confirme |
-| **Buscar jogador** | Campo de busca acima da lista (filtra por nome ou time) |
-| **Logout** | Botão "Sair" no topo |
-| **Voltar ao site** | Botão "Ver site" no topo |
+### XP
+- **Base:** 30/5/15 (QUICK_MATCH), 50/10/25 (TIMED_10), 100/20/40 (FULL_90).
+- **Bônus:** dificuldade, vitória dominante (≥3 gols), eventos especiais.
+- **Multiplicador nível:** 5% (lv 3-24), 10% (lv 25+).
+- **Cap:** 100 XP por partida.
+- **Idempotente:** transação atômica com `xpGranted` + `XpGrant` unique.
 
-### Segurança
-
-- **Cookie HTTP-only**: não acessível por JavaScript no cliente
-- **SameSite=Strict**: protege contra CSRF
-- **Secure em produção**: cookie só enviado via HTTPS
-- **HMAC-SHA256**: token assinado, não pode ser forjado
-- **Expiração**: sessão expira em 8 horas
-- **Anti brute-force**: delay de 400ms + comparação constant-time
-- **Validação em cada endpoint**: `/api/admin/*` valida o cookie antes de processar
-
----
-
-## Busca Mundial em Tempo Real
-
-A busca de jogadores consulta **3 fontes em paralelo** e combina os resultados:
-
-### 1. TheSportsDB (primária)
-- **URL**: `https://www.thesportsdb.com/api/v1/json/{KEY}/searchplayers.php?p={query}`
-- **Cobertura**: jogadores de todas as ligas do mundo (Premier League, La Liga, Serie A, Brasileirão, MLS, etc.)
-- **Dados retornados**: nome, time atual, foto, nacionalidade, posição
-- **Chave pública de teste**: `3` (rate-limited)
-- **Como obter chave própria**: cadastre-se em [thesportsdb.com/api.php](https://www.thesportsdb.com/api.php) (gratuito)
-
-### 2. Wikipedia (fallback)
-- **URL**: `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={query}+footballer`
-- **Uso**: quando TheSportsDB não encontra o jogador
-- **Dados retornados**: nome, foto (se disponível no Commons), snippet biográfico
-
-### 3. Banco local (complementar)
-- **Tabela `Player` no Prisma/Neon**
-- **Uso**: jogadores curados pelo admin + jogadores criados via painel
-- **Dados retornados**: nome, nome completo, time, posição, foto, nacionalidade, número da camisa
-
-### Combinação e deduplicação
-- Resultados das 3 fontes são combinados
-- Duplicatas removidas por nome (case-insensitive)
-- Ordem de prioridade: TheSportsDB → Local → Wikipedia
-- Filtro de posição aplicado no final (se `?pos=GK|DF|MF|FW`)
-
-### Rate limits
-- **TheSportsDB chave "3"**: ~100 requests/minuto (suficiente para uso normal)
-- **Wikipedia**: sem rate limit oficial, mas recomendamos uso responsável
-- **Cache Next.js**: buscas repetidas em 1 minuto usam cache (não batem na API externa)
+### Exclusão de Contas Inativas
+- **Janela:** 180 dias sem `lastLoginAt` (ou `createdAt` se nunca logou).
+- **Protegidos:** admins, `isProtected=true`, bot user.
+- **Anonimização:** partidas históricas têm IDs de usuário trocados por placeholder.
+- **Idempotente:** query baseada em timestamp; re-execução não causa erro.
+- **Schedule:** diário às 03:00 UTC via Vercel Cron.
 
 ---
 
-## Como Usar
+## Testes
 
-### 1. Escolha a formação
-Use o seletor **"Formação"** no topo do campo para escolher entre 4-3-3, 4-4-2, 3-5-2, 4-2-3-1, 3-4-3 ou 5-3-2. As bolas se reposicionam automaticamente. Se você já tinha titulares escolhidos e a posição ainda existe na nova formação, eles são preservados — caso contrário, vão para o banco de reservas.
+```bash
+bun run test              # roda uma vez
+bun run test:watch        # modo watch
+bun run test:coverage     # com cobertura
+```
 
-### 2. Adicione titulares
-Clique em qualquer **bola flutuante** no campo. Um modal abre com um campo de texto. Comece a digitar o nome do jogador (ex: "Neymar", "Mbappe", "Bellingham"). A cada 250ms, o sistema consulta as 3 fontes em paralelo e exibe sugestões com **foto real, nome, time atual, nacionalidade** e um **badge** indicando a fonte (SportsDB / Wikipedia / Local). Clique no jogador desejado — a foto real dele aparece na bola.
+### Cobertura atual
 
-> 💡 O filtro é automático: se você clicou na bola de zagueiro (ZAG), só aparecem defensores. Para ver jogadores de qualquer posição, use o botão "Convocar Reserva".
+```
+✓ src/lib/__tests__/free-kick-system.test.ts (20 tests)
+✓ src/lib/__tests__/player-match-state.test.ts (25 tests)
+✓ src/lib/__tests__/xp-system.test.ts (36 tests)
+✓ src/lib/__tests__/dnd-actions.test.ts (15 tests)
+✓ src/lib/__tests__/match-engine.test.ts (20 tests)
+✓ src/lib/__tests__/integration.test.ts (17 tests)
+✓ src/lib/__tests__/admin-auth.test.ts (11 tests)
 
-### 3. Convocar reservas
-Clique em **"Convocar Reserva"** na barra de ferramentas. O mesmo modal de busca abre, mas **sem filtro de posição** — você pode adicionar qualquer jogador ao banco.
-
-### 4. Fazer substituições
-No painel "Banco de Reservas", cada reserva tem um botão **"Entrar"**. Clique nele para abrir o diálogo de substituição: escolha qual titular sai. Por padrão, só aparecem titulares da **mesma posição** do reserva. Ative o switch **"Permitir troca em qualquer posição"** para ver todos.
-
-### 5. Acessar o painel admin
-- Clique em **Admin** no canto superior direito do site, OU
-- Acesse a URL `https://seu-site.com/?admin`
-- Faça login com as credenciais configuradas
-- Adicione, edite ou remova jogadores do banco local
-- Clique em **Ver site** para voltar ao montador de times
-
-### 6. Persistência
-Seu time é salvo automaticamente no **localStorage** do navegador. Recarregue a página sem medo — o time continua montado.
+Test Files  7 passed (7)
+     Tests  144 passed (144)
+```
 
 ---
 
 ## Estrutura de Arquivos
 
 ```
-dungeon-and-soccer/
+.
 ├── prisma/
-│   ├── schema.prisma           # Schema do banco (Player + SavedTeam)
-│   └── seed.ts                 # Script de seed (bun run db:seed)
-│
+│   ├── schema.prisma          # Schema do banco (sqlite em dev, postgres em prod)
+│   └── seed.ts                # Popula jogadores iniciais
 ├── src/
 │   ├── app/
-│   │   ├── layout.tsx          # Layout root (metadata pt-BR, Sonner)
-│   │   ├── page.tsx            # Detecta ?admin e roteia para AdminApp ou TeamBuilderApp
-│   │   ├── globals.css         # Estilos globais (Tailwind 4)
-│   │   └── api/
-│   │       ├── players/
-│   │       │   └── search/route.ts   # GET /api/players/search (TheSportsDB + Wiki + Local)
-│   │       ├── seed/route.ts         # POST /api/seed (idempotente)
-│   │       ├── auth/
-│   │       │   ├── login/route.ts    # POST /api/auth/login
-│   │       │   ├── logout/route.ts   # POST /api/auth/logout
-│   │       │   └── me/route.ts       # GET /api/auth/me
-│   │       └── admin/
-│   │           └── players/route.ts  # GET/POST/PUT/DELETE /api/admin/players (CRUD)
-│   │
+│   │   ├── api/
+│   │   │   ├── auth/          # Admin auth
+│   │   │   ├── user/          # User auth, team, friends
+│   │   │   ├── match/         # Match CRUD, action, substitution, free-kick-resolve
+│   │   │   ├── cron/          # Cron cleanup-inactive
+│   │   │   ├── admin/         # Admin players management
+│   │   │   └── db/            # DB health
+│   │   ├── page.tsx           # Página principal
+│   │   ├── layout.tsx
+│   │   └── globals.css
 │   ├── components/
-│   │   ├── ui/                 # shadcn/ui (já instalado)
-│   │   ├── football/
-│   │   │   ├── Header.tsx             # Cabeçalho com botão Admin
-│   │   │   ├── Footer.tsx             # Rodapé
-│   │   │   ├── Toolbar.tsx            # Formação + stats + convocar
-│   │   │   ├── FormationSelector.tsx  # Select de formações
-│   │   │   ├── Field.tsx              # Campo SVG + marcações
-│   │   │   ├── PositionBall.tsx       # Bola flutuante clicável
-│   │   │   ├── PlayerSearchModal.tsx  # Modal de autocomplete (com badges de fonte)
-│   │   │   ├── ReserveTeam.tsx        # Painel de reservas
-│   │   │   ├── SubstitutionDialog.tsx # Diálogo de substituição
-│   │   │   ├── Instructions.tsx       # Modal "Como usar"
-│   │   │   └── TeamBuilderApp.tsx     # App principal do montador de times
-│   │   └── admin/
-│   │       ├── AdminApp.tsx           # Orquestra login <-> dashboard
-│   │       ├── AdminLogin.tsx         # Tela de login
-│   │       └── AdminDashboard.tsx     # Dashboard com CRUD de jogadores
-│   │
-│   └── lib/
-│       ├── db.ts                       # PrismaClient singleton
-│       ├── utils.ts                    # cn() helper
-│       ├── auth.ts                     # HMAC + cookie + verifyCredentials
-│       └── football/
-│           ├── players-data.ts         # 103 jogadores seed
-│           ├── formations.ts           # 6 formações táticas
-│           └── store.ts                # Zustand + persist
-│
-├── public/                     # Static assets
-├── .env.example                # Template de variáveis (inclui ADMIN_*, JWT_SECRET, THESPORTSDB_API_KEY)
-├── .gitignore
-├── next.config.ts              # Config Next.js (images, standalone)
-├── vercel.json                 # Config Vercel (functions, timeouts)
-├── tailwind.config.ts
-├── tsconfig.json
-├── package.json                # Scripts: dev, build, lint, db:*
-└── README.md                   # Este arquivo
+│   │   ├── match/             # MatchArena, SubstitutionModal, FreeKickDialog, etc
+│   │   ├── football/          # TeamBuilderApp, Field, ReserveTeam, etc
+│   │   ├── admin/             # AdminLogin, AdminApp, AdminDashboard
+│   │   ├── ui/                # shadcn/ui components
+│   │   ├── effects/           # EasterEggs
+│   │   ├── theme/             # ThemeToggle, ThemeProvider
+│   │   └── user/              # UserMenu
+│   ├── lib/
+│   │   ├── __tests__/         # 144 testes
+│   │   ├── football/          # store, formations, players-data
+│   │   ├── auth.ts            # Admin auth
+│   │   ├── user-auth.ts       # User auth
+│   │   ├── db.ts              # Prisma client
+│   │   ├── db-sync.ts         # DDL sync (postgres only)
+│   │   ├── match-engine.ts    # D&D + futebol rules
+│   │   ├── dnd-actions.ts     # 139 ações de futebol
+│   │   ├── free-kick-system.ts # NOVO: multiplicadores + cobrador
+│   │   ├── player-match-state.ts # NOVO: máquina de estados
+│   │   ├── xp-system.ts       # NOVO: XP, níveis, recompensas
+│   │   ├── player-rating.ts
+│   │   ├── sound.ts
+│   │   └── utils.ts
+│   └── hooks/
+├── RELATORIO_IMPLEMENTACAO.md # Detalhe das correções
+├── vercel.json                # Config Vercel + crons
+├── .env.example
+└── package.json
 ```
-
----
-
-## API Reference
-
-### `GET /api/players/search`
-
-Busca jogadores **em tempo real** em 3 fontes: TheSportsDB + Wikipedia + banco local.
-
-**Query params:**
-
-| Param | Tipo | Default | Descrição |
-|---|---|---|---|
-| `q` | string | — | Termo de busca (mínimo 2 caracteres) |
-| `limit` | number | 15 | Máximo de resultados (máx 30) |
-| `pos` | string | — | Filtra por posição: `GK`, `DF`, `MF`, `FW` |
-
-**Exemplo:**
-
-```bash
-curl "https://dungeon-and-soccer.vercel.app/api/players/search?q=messi&limit=5"
-```
-
-**Resposta 200:**
-
-```json
-{
-  "players": [
-    {
-      "id": "sdb_34146370",
-      "name": "Lionel Messi",
-      "fullName": "Lionel Messi",
-      "team": "Inter Miami",
-      "position": "FW",
-      "photoUrl": "https://r2.thesportsdb.com/images/media/player/thumb/kpfsvp1725295651.jpg",
-      "nationality": "Argentina",
-      "shirtNumber": null,
-      "source": "thesportsdb"
-    }
-  ],
-  "total": 1,
-  "query": "messi",
-  "sources": {
-    "thesportsdb": 1,
-    "wikipedia": 0,
-    "local": 0
-  }
-}
-```
-
-O campo `source` indica a origem: `thesportsdb`, `wikipedia` ou `local`.
-
----
-
-### `POST /api/auth/login`
-
-Autentica o admin e seta cookie HTTP-only.
-
-**Body:**
-
-```json
-{ "username": "admin", "password": "admin123" }
-```
-
-**Resposta 200:**
-
-```json
-{ "ok": true, "user": { "username": "admin", "role": "admin" } }
-```
-
-**Resposta 401:**
-
-```json
-{ "ok": false, "error": "Usuário ou senha incorretos." }
-```
-
----
-
-### `POST /api/auth/logout`
-
-Limpa o cookie de sessão.
-
-**Resposta 200:**
-
-```json
-{ "ok": true }
-```
-
----
-
-### `GET /api/auth/me`
-
-Verifica se há sessão admin ativa.
-
-**Resposta 200 (autenticado):**
-
-```json
-{ "ok": true, "authenticated": true, "user": { "username": "admin", "role": "admin" } }
-```
-
-**Resposta 401 (não autenticado):**
-
-```json
-{ "ok": false, "authenticated": false }
-```
-
----
-
-### `GET /api/admin/players`
-
-Lista jogadores do banco local. **Requer cookie admin.**
-
-**Query params:** `q` (busca), `limit`, `offset`
-
-**Resposta 200:**
-
-```json
-{
-  "ok": true,
-  "players": [...],
-  "total": 103,
-  "limit": 100,
-  "offset": 0
-}
-```
-
-### `POST /api/admin/players`
-
-Cria novo jogador. **Requer cookie admin.**
-
-**Body:**
-
-```json
-{
-  "name": "Cristiano Ronaldo",
-  "fullName": "Cristiano Ronaldo dos Santos Aveiro",
-  "position": "FW",
-  "team": "Al-Nassr",
-  "photoUrl": "https://...",
-  "nationality": "Portugal",
-  "shirtNumber": 7
-}
-```
-
-### `PUT /api/admin/players?id={id}`
-
-Atualiza jogador existente. **Requer cookie admin.**
-
-### `DELETE /api/admin/players?id={id}`
-
-Remove jogador. **Requer cookie admin.**
-
----
-
-### `POST /api/seed`
-
-Popula o banco com os 103 jogadores pré-definidos. **Idempotente.**
-
-```bash
-curl -X POST https://dungeon-and-soccer.vercel.app/api/seed
-```
-
----
-
-## Customização
-
-### Trocar credenciais admin
-
-Edite as variáveis de ambiente:
-
-```bash
-# .env (dev) ou painel da Vercel (prod)
-ADMIN_USERNAME="meu-usuario"
-ADMIN_PASSWORD="minha-senha-super-forte"
-JWT_SECRET="gere-com-openssl-rand-hex-32"
-```
-
-### Trocar chave da TheSportsDB
-
-Cadastre-se em [thesportsdb.com/api.php](https://www.thesportsdb.com/api.php) e obtenha sua chave gratuita:
-
-```bash
-THESPORTSDB_API_KEY="sua-chave-pessoal"
-```
-
-### Adicionar mais jogadores ao seed
-
-Edite `src/lib/football/players-data.ts` e adicione entradas ao array `PLAYERS_SEED`:
-
-```typescript
-{
-  name: 'Novo Jogador',
-  fullName: 'Nome Completo do Jogador',
-  position: 'FW',
-  team: 'Santos',
-  photoUrl: 'https://...',
-  nationality: 'Brasil',
-  shirtNumber: 11,
-}
-```
-
-Depois rode `bun run db:seed` (local) ou `curl -X POST .../api/seed` (prod).
-
-### Adicionar nova formação
-
-Edite `src/lib/football/formations.ts` e adicione um objeto ao array `FORMATIONS`.
-
-### Plugar outra API externa
-
-Edite `src/app/api/players/search/route.ts` e adicione uma nova função `searchMinhaApi()`, depois adicione-a ao `Promise.all` no endpoint.
 
 ---
 
 ## Troubleshooting
 
-### Login admin falha em produção
+### Erro: "FATAL: JWT_SECRET não configurado em produção"
 
-1. Verifique se `ADMIN_USERNAME` e `ADMIN_PASSWORD` estão definidas na Vercel.
-2. Verifique se `JWT_SECRET` está definido (sem ele, o token não é assinado).
-3. Limpe cookies do navegador e tente novamente.
+Você esqueceu de configurar `JWT_SECRET` na Vercel. Gere com:
+```bash
+openssl rand -hex 32
+```
 
-### Busca não retorna jogadores externos
+### Erro: "FATAL: ADMIN_PASSWORD não configurado ou inseguro em produção"
 
-1. Verifique se `THESPORTSDB_API_KEY` está definida (default: `3`).
-2. Teste a API diretamente:
-   ```bash
-   curl "https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=messi"
-   ```
-3. Se a chave `3` estiver rate-limited, cadastre sua própria chave.
-4. Verifique os logs da Vercel em **Functions → /api/players/search**.
+`ADMIN_PASSWORD` está como `admin123` (default) ou tem <8 caracteres.
+Configure uma senha forte.
 
-### Fotos não carregam
+### Cron retorna 401
 
-O `next.config.ts` já permite imagens de `commons.wikimedia.org`, `ui-avatars.com`, `www.thesportsdb.com` e `r2.thesportsdb.com`. Para adicionar outro domínio, edite `images.remotePatterns`.
+`CRON_SECRET` não configurado ou não bate com o header `Authorization:
+Bearer` enviado pela Vercel Scheduler. Verifique se o valor na Vercel
+bate com o que o cron está esperando.
 
-### Deploy na Vercel falha com "Prisma can't reach database"
+### Build quebra por erros TypeScript
 
-1. Confirme que a `DATABASE_URL` na Vercel tem `?sslmode=require` no final.
-2. Adicione `&connect_timeout=300` para evitar timeouts.
-3. Verifique no painel do Neon se o banco está ativo (não suspenso).
-4. Certifique-se de que o `provider` em `prisma/schema.prisma` é `"postgresql"` em produção.
+O `next.config.ts` tem `typescript.ignoreBuildErrors = false` (reativado).
+Se houver erros TS, o build falha — isso é intencional (qualidade).
+Rode `bunx tsc --noEmit` para ver os erros.
 
-### Painel admin abre mas mostra tela branca
+### `prisma db push` falha
 
-1. Abra o DevTools (F12) e verifique o console.
-2. Teste o endpoint `/api/auth/me` diretamente:
-   ```bash
-   curl "https://seu-site.com/api/auth/me"
-   ```
-3. Se retornar 401, está funcionando corretamente (precisa fazer login).
+Verifique:
+1. `DATABASE_URL` está correto no `.env`
+2. Para SQLite: o diretório `db/` existe e tem permissão de escrita
+3. Para Postgres: a connection string tem `?sslmode=require`
 
 ---
 
 ## Licença
 
-MIT — fique à vontade para usar, modificar e distribuir.
+Veja `LICENSE` para detalhes.
 
 ---
 
-## Créditos
+## Documentação adicional
 
-- Fotos dos jogadores: [TheSportsDB](https://www.thesportsdb.com/), [Wikipedia Commons](https://commons.wikimedia.org/) (CC BY-SA) e [UI Avatars](https://ui-avatars.com/) (fallback).
-- Dados de jogadores: TheSportsDB (tempo real, mundial) + base curada manualmente (103 jogadores do Brasileirão e ídolos brasileiros na Europa).
-- Stack: [Next.js](https://nextjs.org/), [Prisma](https://www.prisma.io/), [Tailwind CSS](https://tailwindcss.com/), [shadcn/ui](https://ui.shadcn.com/), [Neon](https://neon.tech/), [Vercel](https://vercel.com/), [TheSportsDB](https://www.thesportsdb.com/).
+- `RELATORIO_IMPLEMENTACAO.md` — auditoria completa, soluções aplicadas,
+  arquivos alterados, decisões de arquitetura, limitações conhecidas e
+  resultados dos testes.

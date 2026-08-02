@@ -68,6 +68,12 @@ export async function POST(req: NextRequest) {
     // Cria usuário
     const user = await createUser({ email, username, password, displayName })
 
+    // Marca lastLoginAt no registro (conta como primeiro acesso válido)
+    await db.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    }).catch((e) => console.error('[user/register] falha ao setar lastLoginAt:', e))
+
     // Cria time primário vazio para o usuário
     await db.userTeam.create({
       data: {

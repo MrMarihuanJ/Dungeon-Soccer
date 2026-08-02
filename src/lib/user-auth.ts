@@ -13,11 +13,30 @@ const USER_COOKIE_NAME = 'dungeon_user_session'
 const USER_TOKEN_TTL = 60 * 60 * 8 // 8 horas
 
 function getSecret(): string {
-  return (
-    process.env.JWT_SECRET ||
-    process.env.AUTH_SECRET ||
-    'dev-secret-change-in-production-please-use-a-long-random-string'
-  )
+  // Em produção, é obrigatório ter JWT_SECRET ou AUTH_SECRET configurado.
+  // Sem isso, qualquer atacante que conheça a string pública de fallback
+  // poderia forjar tokens de sessão válidos.
+  const secret = process.env.JWT_SECRET || process.env.AUTH_SECRET
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'FATAL: JWT_SECRET (ou AUTH_SECRET) não configurado em produção. ' +
+        'Recuse iniciar a aplicação — gerar com `openssl rand -hex 32`.',
+      )
+    }
+    // Apenas em dev: usa string pública de fallback com aviso
+    console.warn(
+      '[user-auth] AVISO: JWT_SECRET não configurado. Usando fallback de DEV. NÃO USE EM PRODUÇÃO.',
+    )
+    return 'dev-secret-change-in-production-please-use-a-long-random-string'
+  }
+  // Validação mínima de entropia
+  if (secret.length < 16) {
+    throw new Error(
+      'JWT_SECRET muito curto (mínimo 16 caracteres). Recomendado: 64 hex chars.',
+    )
+  }
+  return secret
 }
 
 export interface UserSessionPayload {

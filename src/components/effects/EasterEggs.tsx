@@ -227,6 +227,50 @@ export function EasterEggs({ onSecretTeam }: Props) {
         setTimeout(() => document.body.classList.remove('animate-pulse-glow'), 3000)
       }
 
+      // ===== Easter eggs cômicos adicionais (não intrusivos) =====
+      if (newBuffer.endsWith('tiki')) {
+        toast.info('🎲 Tiki-Taka detectado!', {
+          description: 'Xavi e Iniesta aprovam este estilo de jogo. 🟢🔵',
+          duration: 3000,
+        })
+      }
+      if (newBuffer.endsWith('catenaccio')) {
+        toast.info('🛡️ CATENACCIO!', {
+          description: '10 defensores, 1 atacante. Maldini sorri. ⚫🔵',
+          duration: 3000,
+        })
+      }
+      if (newBuffer.endsWith('gol')) {
+        toast.success('⚽ GOOOOL!', {
+          description: 'Narrador esportivo ativado: "É TETRA!"',
+          duration: 2500,
+        })
+      }
+      if (newBuffer.endsWith('d20')) {
+        toast.info('🎲 D20 rolado!', {
+          description: 'Natural 20! Critical hit no gol. 🎯',
+          duration: 2500,
+        })
+      }
+      if (newBuffer.endsWith('pelé') || newBuffer.endsWith('pele')) {
+        toast.success('👑 O REI!', {
+          description: 'Edson Arantes do Nascimento. 1281 gols. Sempre.',
+          duration: 4000,
+        })
+      }
+      if (newBuffer.endsWith('maradona')) {
+        toast.info('🇦🇷 El Diego!', {
+          description: 'A mão de Deus, mas o gol foi do diabo. ⚽',
+          duration: 4000,
+        })
+      }
+      if (newBuffer.endsWith('vampeta')) {
+        toast.warning('🦇 VAMPETA!', {
+          description: 'Easter egg brasileiro clássico. Edmílson sorri.',
+          duration: 3000,
+        })
+      }
+
       if (newBuffer.endsWith('brasil70') && onSecretTeam) {
         onSecretTeam('brasil70')
       }

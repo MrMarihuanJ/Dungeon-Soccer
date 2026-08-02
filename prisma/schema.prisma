@@ -1,9 +1,9 @@
 // ====================================================================
 // Prisma Schema - Dungeon and Soccer
 // --------------------------------------------------------------------
-// Usa PostgreSQL em todos os ambientes (dev e prod).
-// - DEV: rode um Postgres local OU use um branch "dev" no Neon
-// - PROD: Neon Postgres (connection string em DATABASE_URL)
+// Compatível com PostgreSQL (Neon/Vercel prod) e SQLite (testes locais).
+// O provider é controlado pela constante `provider` abaixo.
+// Em produção, trocar para "postgresql" e configurar DATABASE_URL do Neon.
 // ====================================================================
 
 generator client {
@@ -11,7 +11,17 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  // ============================================================
+  // PROVIDER NOTE
+  // ------------------------------------------------------------
+  // LOCAL DEV / TESTS:  provider = "sqlite"
+  // PROD (Vercel+Neon): provider = "postgresql"
+  //
+  // O código é compatível com ambos. O db-sync.ts detecta
+  // automaticamente via DATABASE_URL e só executa DDL bruto
+  // em Postgres. Em SQLite, confiamos em `prisma db push`.
+  // ============================================================
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -55,6 +65,19 @@ model User {
   username     String    @unique
   passwordHash String
   displayName  String?
+  // ===== Auditoria de acesso (para exclusão de contas inativas) =====
+  // Atualizado APÓS autenticação bem-sucedida em /api/user/login e /api/auth/login.
+  // NUNCA confiado a input do cliente. Usado pelo cron /api/cron/cleanup-inactive.
+  lastLoginAt  DateTime?
+  // ===== Papel administrativo =====
+  // Por padrão, todos os usuários são comuns. Admins via env-var continuam
+  // funcionando, mas Users marcados aqui têm acesso admin sem precisar de
+  // re-deploy. Protegido contra auto-promoção: somente um admin existente
+  // (env-var ou DB) pode promover.
+  isAdmin      Boolean   @default(false)
+  // Conta protegida contra exclusão automática pelo cron de limpeza
+  // (ex.: bots, contas de serviço, contas VIP marcadas manualmente).
+  isProtected  Boolean   @default(false)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   teams        UserTeam[]
@@ -62,6 +85,8 @@ model User {
   losses       Int       @default(0)
   draws        Int       @default(0)
   xp           Int       @default(0)
+  // ===== Histórico de XP (auditoria + idempotência) =====
+  xpHistory    XpGrant[]
   // Relations de amizade
   friendshipsA   Friendship[]   @relation("FriendA")
   friendshipsB   Friendship[]   @relation("FriendB")
@@ -187,10 +212,58 @@ model Match {
   // Timestamp do início do turno atual (para timer de decisão)
   turnStartedAt     DateTime?
 
+  // ===== Idempotência de XP =====
+  // Garante que uma mesma partida não conceda XP mais de uma vez, mesmo
+  // sob retries de rede, double-clicks ou concorrência. A concessão é feita
+  // em uma transação atômica que faz `UPDATE ... WHERE xpGranted = false`.
+  xpGranted          Boolean  @default(false)
+  // ===== Concorrência otimista =====
+  // Incrementado a cada mutação. Routes comparam `where: { id, version: expected }`
+  // e, se `updateMany` retornar count=0, respondem 409 Conflict.
+  version            Int      @default(0)
+  // ===== Evento de penalidade pendente (visível ao oponente) =====
+  // Quando uma jogada gera falta/pênalti, o estado pendente é persistido
+  // aqui para que o cliente do cobrador (mesmo que seja o AWAY) possa abrir
+  // o FreeKickDialog ao pollar. Limpo após a cobrança ser resolvida.
+  pendingPenaltyEventJson String?
+  // ===== Histórico de decisões de VAR (auditável) =====
+  varDecisionsJson   String   @default("[]")
+  // ===== Snapshot dos times no início da partida =====
+  // Permite reconstruir o contexto histórico mesmo se o usuário editar o
+  // time depois. Preenchido em /api/match/create.
+  homeTeamJson       String?
+  awayTeamJson       String?
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   @@index([homeUserId])
   @@index([awayUserId])
   @@index([inviteCode])
+  @@index([xpGranted])
+  @@index([version])
+}
+
+// ===== Histórico de concessões de XP (idempotência + auditoria) =====
+// Cada concessão é registrada com origem (match:matchId, achievement:slug, etc.)
+// e valor. A unicidade da origem previne duplicação — tentar conceder XP
+// para a mesma partida duas vezes falha com P2002 e é tratada como no-op.
+model XpGrant {
+  id        String   @id @default(cuid())
+  userId    String
+  // Origem da concessão. Formato: "match:<matchId>:win|loss|draw",
+  // "achievement:<slug>", "admin:<adminUserId>", etc.
+  source    String
+  amount    Int
+  // Tipo de recompensa (para UI: progress bar, histórico filtrável)
+  kind      String   @default("XP") // XP | LEVEL_UP | ACHIEVEMENT
+  note      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Uma mesma origem só pode conceder XP uma única vez por usuário.
+  @@unique([userId, source])
+  @@index([userId])
+  @@index([source])
 }

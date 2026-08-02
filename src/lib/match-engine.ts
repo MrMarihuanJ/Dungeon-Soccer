@@ -304,6 +304,20 @@ export interface TeamMatchState {
   yellowCards: number
   injuredPlayers: string[]   // IDs dos jogadores lesionados
   sentOffPlayers: string[]   // IDs dos jogadores expulsos
+  // ===== Campos estendidos (opcionais para compat. com partidas antigas) =====
+  // IDs dos jogadores que saíram por substituição — NÃO podem voltar.
+  substitutedOut?: string[]
+  // Estado granular por jogador (ver player-match-state.ts)
+  // Quando ausente, o código faz fallback para injuredPlayers/sentOffPlayers.
+  playerStates?: Array<{
+    playerId: string
+    status: 'ACTIVE' | 'RESERVE' | 'INJURED' | 'SUBSTITUTED' | 'SENT_OFF' | 'UNAVAILABLE'
+    enteredAtTurn?: number
+    exitedAtTurn?: number
+    exitReason?: 'SUBSTITUTED' | 'INJURY' | 'SENT_OFF' | 'LIMIT_EXHAUSTED'
+  }>
+  // ID do último cobrador de falta (anti-repetição)
+  lastFreeKickTakerId?: string
 }
 
 export interface MatchEvent {

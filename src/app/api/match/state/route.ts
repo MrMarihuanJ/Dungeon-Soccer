@@ -1,9 +1,13 @@
 // GET /api/match/state?id=... - retorna estado completo da partida
+// --------------------------------------------------------------------
+// Inclui pendingPenaltyEventJson (para o cliente do cobrador abrir o
+// FreeKickDialog) e os campos de controle (xpGranted, version).
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import type { TeamMatchState } from '@/lib/match-engine'
 import { ensureDbSync } from '@/lib/db-sync'
+import { deserializePendingFreeKick } from '@/lib/free-kick-system'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,9 +17,9 @@ export async function GET(req: NextRequest) {
 
   try {
     await ensureDbSync()
-  } catch (err: any) {
-    console.error('[match/state] DB sync failed:', err?.message?.slice(0, 200))
-    // Don't abort — tables might already exist
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[match/state] DB sync failed:', msg.slice(0, 200))
   }
 
   const { searchParams } = new URL(req.url)
@@ -31,13 +35,15 @@ export async function GET(req: NextRequest) {
   })
   if (!match) return NextResponse.json({ ok: false, error: 'Partida não encontrada.' }, { status: 404 })
 
-  // Verifica permissão
-  // awayUserId can be null during WAITING phase — homeUser can always access
-  if (match.homeUserId !== session.userId && match.awayUserId !== session.userId) {
+  // FIX H1: Autorização correta — participante OU home (se offline)
+  const isParticipant =
+    match.homeUserId === session.userId ||
+    (match.awayUserId !== null && match.awayUserId === session.userId)
+  if (!isParticipant) {
     return NextResponse.json({ ok: false, error: 'Sem acesso a esta partida.' }, { status: 403 })
   }
 
-  // Parse team states from JSON
+  // Parse team states
   const defaultTeamState: TeamMatchState = {
     substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
     injuredPlayers: [], sentOffPlayers: [], substitutedOut: [],
@@ -57,6 +63,9 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* use default */ }
 
+  // Decodifica o pending free kick (se houver) para o cliente saber abrir o dialog
+  const pendingFreeKick = deserializePendingFreeKick(match.pendingPenaltyEventJson)
+
   return NextResponse.json({
     ok: true,
     match: {
@@ -66,6 +75,18 @@ export async function GET(req: NextRequest) {
       awayProgress: match.awayProgress ?? 0,
       homeTeamState,
       awayTeamState,
+      // pendingPenaltyEventJson é exposto apenas ao cliente correto (o cobrador)
+      pendingFreeKick:
+        pendingFreeKick && pendingFreeKick.favoredPossession === (match.homeUserId === session.userId ? 'HOME' : 'AWAY')
+          ? {
+              multiplier: pendingFreeKick.assignment.multiplier,
+              taker: pendingFreeKick.assignment.taker,
+              nonce: pendingFreeKick.assignment.nonce,
+              favoredPossession: pendingFreeKick.favoredPossession,
+              penaltyType: pendingFreeKick.penaltyEvent.type,
+              description: pendingFreeKick.penaltyEvent.description,
+            }
+          : null,
       matchEndReason: match.status === 'FINISHED'
         ? (match.winner === 'DRAW' ? 'Empate!' : `Vitória de ${match.winner === 'HOME' ? match.homeUser?.username || 'Home' : match.awayUser?.username || 'Away'}!`)
         : '',

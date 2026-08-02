@@ -7,6 +7,12 @@
   "github": {
     "silent": false
   },
+  "crons": [
+    {
+      "path": "/api/cron/cleanup-inactive",
+      "schedule": "0 3 * * *"
+    }
+  ],
   "functions": {
     "src/app/api/players/search/route.ts": {
       "maxDuration": 30
@@ -37,6 +43,18 @@
     },
     "src/app/api/match/resume/route.ts": {
       "maxDuration": 15
+    },
+    "src/app/api/match/substitution/route.ts": {
+      "maxDuration": 15
+    },
+    "src/app/api/match/free-kick-resolve/route.ts": {
+      "maxDuration": 15
+    },
+    "src/app/api/match/var-decision/route.ts": {
+      "maxDuration": 15
+    },
+    "src/app/api/cron/cleanup-inactive/route.ts": {
+      "maxDuration": 60
     },
     "src/app/api/players/stats/route.ts": {
       "maxDuration": 30

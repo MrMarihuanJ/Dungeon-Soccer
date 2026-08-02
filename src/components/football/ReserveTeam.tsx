@@ -2,9 +2,20 @@
 
 // =====================================================================
 // ReserveTeam - Painel do time reserva (modo técnico)
-// NOVO: Seletor de posição designada (benchPosition) para cada reserva
+// --------------------------------------------------------------------
+// Funcionalidades:
+//   1. Listar reservas com foto, nome, posição, OVR
+//   2. Substituir (reserva entra no lugar de um titular — modal abre)
+//   3. Mover para o campo (reserva ocupa posição vazia — novo)
+//   4. Definir posição designada no banco (benchPosition)
+//   5. Remover do banco
+//
+// FIX C6/M1: Antes o prop `onSetBenchPosition` não era passado pelo
+// TeamBuilderApp, causando crash ao mudar o Select. Agora o componente
+// consome direto do store via hook, removendo a dependência de prop.
 // =====================================================================
 
+import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
@@ -12,16 +23,38 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ArrowLeftRight, Trash2, UserCircle2, Shirt, MapPin } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { toast } from 'sonner'
+import {
+  ArrowLeftRight,
+  Trash2,
+  UserCircle2,
+  Shirt,
+  MapPin,
+  MoveToField,
+  ChevronDown,
+} from './icons'
 import type { SelectedPlayer } from '@/lib/football/store'
+import { useTeamStore } from '@/lib/football/store'
 import type { SimplifiedPosition } from '@/lib/football/formations'
+import { getFormation } from '@/lib/football/formations'
 
 interface Props {
   reserves: SelectedPlayer[]
   startersCount: number
   onSubstitute: (reserve: SelectedPlayer) => void
   onRemove: (id: string) => void
-  onSetBenchPosition: (reserveId: string, benchPosition: SimplifiedPosition) => void
+  // Opcional: se ausente, usa o store diretamente
+  onSetBenchPosition?: (reserveId: string, benchPosition: SimplifiedPosition) => void
+  // Opcional: se ausente, usa o store diretamente
+  onMoveToField?: (positionId: string, reserveId: string) => { ok: boolean; error?: string }
 }
 
 const POS_LABEL: Record<string, string> = {
@@ -44,7 +77,50 @@ const POS_COLOR: Record<string, string> = {
 
 const BENCH_POSITION_OPTIONS: SimplifiedPosition[] = ['GK', 'DF', 'LD', 'LE', 'MF', 'FW']
 
-export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, onSetBenchPosition }: Props) {
+export function ReserveTeam({
+  reserves,
+  startersCount,
+  onSubstitute,
+  onRemove,
+  onSetBenchPosition,
+  onMoveToField,
+}: Props) {
+  // Acessa o store apenas para os setters que podem não ter sido passados por props
+  // (mantém compatibilidade, mas corrige o bug C6 onde o prop era obrigatório).
+  const storeSetBenchPosition = useTeamStore((s) => s.setBenchPosition)
+  const storeMoveReserveToField = useTeamStore((s) => s.moveReserveToField)
+  const formationId = useTeamStore((s) => s.formationId)
+  const starters = useTeamStore((s) => s.starters)
+
+  const handleSetBenchPosition = (reserveId: string, pos: SimplifiedPosition) => {
+    if (onSetBenchPosition) {
+      onSetBenchPosition(reserveId, pos)
+    } else {
+      storeSetBenchPosition(reserveId, pos)
+    }
+  }
+
+  const handleMoveToField = (positionId: string, reserveId: string, reserveName: string) => {
+    const result = onMoveToField
+      ? onMoveToField(positionId, reserveId)
+      : storeMoveReserveToField(positionId, reserveId)
+    if (result.ok) {
+      toast.success(`${reserveName} movido para o campo.`, {
+        description: 'A escalação foi atualizada.',
+      })
+    } else {
+      toast.error('Não foi possível mover.', {
+        description: result.error ?? 'Erro desconhecido.',
+      })
+    }
+  }
+
+  // Lista de posições vazias na formação atual (para o dropdown "Mover para o campo")
+  const emptyPositions = (() => {
+    const formation = getFormation(formationId)
+    return formation.positions.filter((p) => !starters[p.id])
+  })()
+
   return (
     <Card className="border-emerald-500/30 bg-card/95 backdrop-blur">
       <CardHeader className="pb-3">
@@ -56,7 +132,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
           <Badge className="bg-emerald-600 text-white">{reserves.length} no banco</Badge>
         </CardTitle>
         <CardDescription>
-          Atue como técnico: convoque reservas, defina posições e faça substituições.
+          Atue como técnico: convoque reservas, defina posições, mova para o campo ou faça substituições.
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-0">
@@ -75,6 +151,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
                 {reserves.map((r) => {
                   const effectivePosition = (r.benchPosition || r.position) as SimplifiedPosition
                   const hasCustomPosition = r.benchPosition && r.benchPosition !== r.position
+                  const canMoveToField = emptyPositions.length > 0
 
                   return (
                     <motion.li
@@ -128,6 +205,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
                               className="h-7 gap-1 bg-emerald-600 px-2 text-[11px] hover:bg-emerald-700"
                               onClick={() => onSubstitute(r)}
                               disabled={startersCount === 0}
+                              aria-label={`Substituir ${r.name} por um titular`}
                             >
                               <ArrowLeftRight className="h-3 w-3" />
                               Entrar
@@ -137,6 +215,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
                               variant="ghost"
                               className="h-7 gap-1 px-2 text-[11px] text-red-500 hover:bg-red-500/10 hover:text-red-600"
                               onClick={() => onRemove(r.id)}
+                              aria-label={`Remover ${r.name} do banco`}
                             >
                               <Trash2 className="h-3 w-3" />
                               Remover
@@ -153,7 +232,7 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
                           <Select
                             value={effectivePosition}
                             onValueChange={(value: string) => {
-                              onSetBenchPosition(r.id, value as SimplifiedPosition)
+                              handleSetBenchPosition(r.id, value as SimplifiedPosition)
                             }}
                           >
                             <SelectTrigger className="h-6 flex-1 border-emerald-500/30 text-[11px] bg-transparent">
@@ -173,6 +252,48 @@ export function ReserveTeam({ reserves, startersCount, onSubstitute, onRemove, o
                             </Badge>
                           )}
                         </div>
+
+                        {/* Ação: Mover para o campo (nova funcionalidade) */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 w-full gap-1 border-emerald-500/40 text-[11px] text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-400"
+                              disabled={!canMoveToField}
+                              aria-label={`Mover ${r.name} para uma posição no campo`}
+                            >
+                              <MoveToField className="h-3 w-3" />
+                              Mover para o campo
+                              <ChevronDown className="h-3 w-3 opacity-60" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-56">
+                            <DropdownMenuLabel className="text-xs">
+                              Posições vazias
+                            </DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            {emptyPositions.length === 0 ? (
+                              <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                                Nenhuma posição vazia no campo
+                              </DropdownMenuItem>
+                            ) : (
+                              emptyPositions.map((p) => (
+                                <DropdownMenuItem
+                                  key={p.id}
+                                  className="text-xs"
+                                  onClick={() => handleMoveToField(p.id, r.id, r.name)}
+                                >
+                                  <MapPin className="h-3 w-3 mr-2" />
+                                  <span className="font-mono">{p.id}</span>
+                                  <span className="ml-2 text-muted-foreground">
+                                    ({p.role})
+                                  </span>
+                                </DropdownMenuItem>
+                              ))
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </motion.li>
                   )

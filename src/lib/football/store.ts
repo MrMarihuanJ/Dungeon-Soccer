@@ -35,6 +35,19 @@ export interface SelectedPlayer {
   isRetired?: boolean
   isInactive?: boolean
   source?: string
+  // ===== Posição designada no banco (opcional) =====
+  // Quando o usuário escolhe uma posição diferente da posição natural
+  // do jogador para a reserva no banco (ex.: um ZAG jogando como LD).
+  // Se ausente, a posição efetiva é `position`.
+  benchPosition?: string
+}
+
+/**
+ * Retorna a posição efetiva de uma reserva (benchPosition se definida,
+ * senão a posição natural).
+ */
+export function getEffectivePosition(player: SelectedPlayer): string {
+  return player.benchPosition ?? player.position
 }
 
 // Map: positionId -> SelectedPlayer | null
@@ -52,8 +65,21 @@ interface TeamState {
   removeStarter: (positionId: string) => void
   addReserve: (player: SelectedPlayer) => void
   removeReserve: (id: string) => void
-  // Substitui titular por reserva: reserva entra na posição e titular vai ao banco
+  /**
+   * Substitui titular por reserva: reserva entra na posição e titular vai ao banco.
+   * Também usada pela UI de mover-do-banco-para-o-campo.
+   */
   substitute: (positionId: string, reserveId: string) => void
+  /**
+   * Move uma reserva diretamente para uma posição livre no campo (sem tirar ninguém).
+   * Valida que a posição está vazia e que a posição natural (ou benchPosition)
+   * do jogador é compatível com a posição-alvo.
+   */
+  moveReserveToField: (positionId: string, reserveId: string) => { ok: boolean; error?: string }
+  /**
+   * Define a posição designada no banco para uma reserva.
+   */
+  setBenchPosition: (reserveId: string, position: string) => void
   clearTeam: () => void
   // Inicializa starters com base na formação atual (chaves nulas)
   initStarters: () => void
@@ -147,6 +173,70 @@ export const useTeamStore = create<TeamState>()(
           }
           return { starters: newStarters, reserves: newReserves }
         }),
+
+      // ===== NOVO: Mover reserva diretamente para posição livre no campo =====
+      // Permite que uma reserva ocupe uma posição vazia sem precisar tirar
+      // um titular. Valida compatibilidade de posição para evitar escalações
+      // impossíveis (ex.: um GK como atacante).
+      moveReserveToField: (positionId, reserveId) => {
+        const state = get()
+        const reserve = state.reserves.find((r) => r.id === reserveId)
+        if (!reserve) {
+          return { ok: false, error: 'Reserva não encontrado.' }
+        }
+        const formation = getFormation(state.formationId)
+        const targetPos = formation.positions.find((p) => p.id === positionId)
+        if (!targetPos) {
+          return { ok: false, error: 'Posição de destino inválida.' }
+        }
+        if (state.starters[positionId]) {
+          return { ok: false, error: 'Posição já ocupada. Use substituir para trocar.' }
+        }
+        // Validação de compatibilidade de posição
+        const playerEffectivePos = reserve.benchPosition ?? reserve.position
+        const POS_GROUPS: Record<string, string[]> = {
+          GK: ['GK'],
+          DF: ['DF', 'LD', 'LE', 'CB', 'LB', 'RB'],
+          MF: ['MF', 'CM', 'DM', 'AM', 'RM', 'LM'],
+          FW: ['FW', 'ST', 'CF', 'RW', 'LW'],
+        }
+        const playerGroup = Object.entries(POS_GROUPS).find(([, list]) =>
+          list.includes(playerEffectivePos),
+        )?.[0]
+        const targetGroup = Object.entries(POS_GROUPS).find(([, list]) =>
+          list.includes(targetPos.role),
+        )?.[0]
+        // PermiteMesmo grupo OU adjacente (DF↔MF, MF↔FW). Proibe GK↔outra coisa.
+        if (playerGroup !== targetGroup) {
+          if (playerGroup === 'GK' || targetGroup === 'GK') {
+            return { ok: false, error: `Goleiro não pode jogar em ${targetPos.role}.` }
+          }
+          const adjacent: Record<string, string[]> = {
+            DF: ['MF'],
+            MF: ['DF', 'FW'],
+            FW: ['MF'],
+          }
+          if (!adjacent[playerGroup ?? '']?.includes(targetGroup ?? '')) {
+            return {
+              ok: false,
+              error: `${reserve.name} (${playerEffectivePos}) não pode jogar em ${targetPos.role}.`,
+            }
+          }
+        }
+        // Aplica a movimentação
+        set((s) => ({
+          starters: { ...s.starters, [positionId]: reserve },
+          reserves: s.reserves.filter((r) => r.id !== reserveId),
+        }))
+        return { ok: true }
+      },
+
+      setBenchPosition: (reserveId, position) =>
+        set((state) => ({
+          reserves: state.reserves.map((r) =>
+            r.id === reserveId ? { ...r, benchPosition: position } : r,
+          ),
+        })),
 
       clearTeam: () =>
         set(() => ({

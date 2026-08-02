@@ -12,7 +12,24 @@ const COOKIE_NAME = 'dungeon_admin_session'
 const TOKEN_TTL_SECONDS = 60 * 60 * 8 // 8 horas
 
 function getSecret(): string {
-  return process.env.JWT_SECRET || process.env.AUTH_SECRET || 'dev-secret-change-in-production-please'
+  // Em produção, JWT_SECRET é OBRIGATÓRIO. Sem ele, tokens admin podem ser
+  // forjados por qualquer um que conheça a string pública de fallback.
+  const secret = process.env.JWT_SECRET || process.env.AUTH_SECRET
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'FATAL: JWT_SECRET (ou AUTH_SECRET) não configurado em produção.',
+      )
+    }
+    console.warn(
+      '[auth] AVISO: JWT_SECRET não configurado. Usando fallback de DEV.',
+    )
+    return 'dev-secret-change-in-production-please'
+  }
+  if (secret.length < 16) {
+    throw new Error('JWT_SECRET muito curto (mínimo 16 caracteres).')
+  }
+  return secret
 }
 
 export interface AdminPayload {
@@ -55,24 +72,46 @@ export function verifyToken(token: string | undefined | null): AdminPayload | nu
 }
 
 export function getAdminCredentials(): { username: string; password: string } {
+  const username = process.env.ADMIN_USERNAME
+  const password = process.env.ADMIN_PASSWORD
+  // Em produção, recusar usar defaults públicos
+  if (process.env.NODE_ENV === 'production') {
+    if (!password || password === 'admin123' || password.length < 8) {
+      throw new Error(
+        'FATAL: ADMIN_PASSWORD não configurado ou inseguro em produção. ' +
+        'Deve ter ao menos 8 caracteres e não ser o default.',
+      )
+    }
+    if (!username) {
+      throw new Error('FATAL: ADMIN_USERNAME não configurado em produção.')
+    }
+  }
   return {
-    username: process.env.ADMIN_USERNAME || 'admin',
-    password: process.env.ADMIN_PASSWORD || 'admin123',
+    username: username || 'admin',
+    password: password || 'admin123',
   }
 }
 
 export function verifyCredentials(username: string, password: string): boolean {
   const creds = getAdminCredentials()
-  // Constant-time comparison
-  const uMatch = crypto.timingSafeEqual(
-    Buffer.from(username.padEnd(creds.username.length)),
-    Buffer.from(creds.username.padEnd(creds.username.length)),
-  )
-  const pMatch = crypto.timingSafeEqual(
-    Buffer.from(password.padEnd(creds.password.length)),
-    Buffer.from(creds.password.padEnd(creds.password.length)),
-  )
-  return uMatch && pMatch && username.length === creds.username.length && password.length === creds.password.length
+  // Rejeitar inputs que excedam o tamanho esperado antes de chamar timingSafeEqual
+  // (que lançaria RangeError em buffers de tamanhos diferentes)
+  if (username.length > 256 || password.length > 256) return false
+  if (username.length !== creds.username.length) return false
+  if (password.length !== creds.password.length) return false
+  try {
+    const uMatch = crypto.timingSafeEqual(
+      Buffer.from(username),
+      Buffer.from(creds.username),
+    )
+    const pMatch = crypto.timingSafeEqual(
+      Buffer.from(password),
+      Buffer.from(creds.password),
+    )
+    return uMatch && pMatch
+  } catch {
+    return false
+  }
 }
 
 export const ADMIN_COOKIE = COOKIE_NAME

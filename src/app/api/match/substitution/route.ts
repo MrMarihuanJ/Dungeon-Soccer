@@ -4,18 +4,36 @@
 // Body:
 //   { matchId, outPlayerId, inPlayerId, isForced }
 //
-// Atualiza o teamStateJson (homeTeamStateJson ou awayTeamStateJson)
-// incrementando substitutionsUsed e removendo o jogador lesionado
-// da lista de injuredPlayers, se houver.
-//
-// Isso garante que a contagem de substituições seja persistida corretamente
-// entre jogadas, inclusive quando a substituição é por lesão.
+// CORREÇÕES APLICADAS:
+//   - C3: Agora é efetivamente chamado pelo cliente (SubstitutionModal
+//     e MatchArena.handleSubstitution).
+//   - C7-style: Autorização via `isParticipant` (sem bypass em awayUserId null).
+//   - H4: Optimistic concurrency via version field.
+//   - Limite de 5: Táticas e por lesão contam no mesmo contador.
+//   - Quando limite é atingido e há lesão: jogador fica UNAVAILABLE
+//     (não retorna a campo), time joga com um a menos.
+//   - Validações anti-cheat:
+//     * outPlayerId deve estar ACTIVE
+//     * inPlayerId deve estar RESERVE
+//     * Não pode substituir jogador já substituído/expulso/lesionado
+//     * Não pode entrar reserva já usado
+//   - Usa a máquina de estados (player-match-state.ts) para transições.
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { Prisma } from '@prisma/client'
 import type { TeamMatchState } from '@/lib/match-engine'
+import {
+  normalizeTeamState,
+  performSubstitution,
+  markPlayerUnavailable,
+  getPlayerStatus,
+  isSubstitutionLimitReached,
+  getRemainingSubstitutions,
+  type ExtendedTeamMatchState,
+} from '@/lib/player-match-state'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,8 +43,8 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}))
   const matchId = String(body.matchId ?? '')
-  const outPlayerId = String(body.outPlayerId ?? '')
-  const inPlayerId = String(body.inPlayerId ?? '')
+  const outPlayerId = String(body.outPlayerId ?? '').trim()
+  const inPlayerId = String(body.inPlayerId ?? '').trim()
   const isForced = Boolean(body.isForced ?? false)
 
   if (!matchId) {
@@ -35,80 +53,139 @@ export async function POST(req: NextRequest) {
 
   const match = await db.match.findUnique({ where: { id: matchId } })
   if (!match) return NextResponse.json({ ok: false, error: 'Partida não encontrada.' }, { status: 404 })
-  if (match.homeUserId !== session.userId && match.awayUserId !== session.userId) {
-    return NextResponse.json({ ok: false, error: 'Sem acesso.' }, { status: 403 })
+
+  // FIX H1: Autorização correta
+  const isParticipant =
+    match.homeUserId === session.userId ||
+    (match.awayUserId !== null && match.awayUserId === session.userId)
+  if (!isParticipant) {
+    return NextResponse.json({ ok: false, error: 'Sem acesso a esta partida.' }, { status: 403 })
   }
   if (match.status === 'FINISHED') {
     return NextResponse.json({ ok: false, error: 'Partida já encerrada.' }, { status: 400 })
   }
+  if (match.status !== 'IN_PROGRESS' && match.status !== 'PAUSED' && match.status !== 'HALFTIME') {
+    return NextResponse.json({ ok: false, error: 'Partida não está em andamento.' }, { status: 400 })
+  }
 
   const isHome = match.homeUserId === session.userId
 
-  // Parse team states from JSON
+  // Parse team state
   const defaultTeamState: TeamMatchState = {
     substitutionsUsed: 0, maxSubstitutions: 5, redCards: 0, yellowCards: 0,
     injuredPlayers: [], sentOffPlayers: [],
   }
 
-  let teamState: TeamMatchState = defaultTeamState
-
+  let teamState: ExtendedTeamMatchState = defaultTeamState
   const stateJson = isHome ? match.homeTeamStateJson : match.awayTeamStateJson
   try {
     if (stateJson && stateJson !== '{}') {
-      teamState = JSON.parse(stateJson) as TeamMatchState
+      teamState = normalizeTeamState(JSON.parse(stateJson) as TeamMatchState)
+    } else {
+      teamState = normalizeTeamState(defaultTeamState)
     }
   } catch { /* use default */ }
 
-  // Verificar limite de substituições
-  if (teamState.substitutionsUsed >= teamState.maxSubstitutions) {
-    // Se for lesão e já atingiu limite, o time joga com um a menos
-    // Retornamos sucesso mas indicamos que não foi possível substituir
-    if (isForced) {
-      // Remover o jogador lesionado da lista de injuredPlayers
-      // (ele sai do campo mas nenhum reserva entra)
-      if (outPlayerId) {
-        teamState.injuredPlayers = teamState.injuredPlayers.filter(id => id !== outPlayerId)
+  // ===== Validação: limite de substituições =====
+  if (isSubstitutionLimitReached(teamState)) {
+    if (isForced && outPlayerId) {
+      // Lesão após limite esgotado: jogador fica UNAVAILABLE, time joga com 1 a menos.
+      const outStatus = getPlayerStatus(teamState, outPlayerId)
+      if (outStatus !== 'ACTIVE' && outStatus !== 'INJURED') {
+        return NextResponse.json({
+          ok: false,
+          error: `Jogador não pode ser processado: status = ${outStatus}.`,
+        }, { status: 400 })
       }
-      const updatedJson = JSON.stringify(teamState)
-      await db.match.update({
-        where: { id: matchId },
-        data: isHome ? { homeTeamStateJson: updatedJson } : { awayTeamStateJson: updatedJson },
-      })
+      const updatedState = markPlayerUnavailable(teamState, outPlayerId)
+      try {
+        await db.match.update({
+          where: { id: matchId, version: match.version },
+          data: {
+            ...(isHome ? { homeTeamStateJson: JSON.stringify(updatedState) } : { awayTeamStateJson: JSON.stringify(updatedState) }),
+            version: { increment: 1 },
+          },
+        })
+      } catch (err) {
+        console.error('[match/substitution] concurrency conflict:', err)
+        return NextResponse.json(
+          { ok: false, error: 'Conflito de concorrência. Recarregue e tente novamente.' },
+          { status: 409 },
+        )
+      }
       return NextResponse.json({
         ok: true,
         playedWithLess: true,
-        message: 'Limite atingido. Time joga com um jogador a menos.',
-        teamState,
+        message: 'Limite de substituições atingido. Time joga com um jogador a menos.',
+        substitutionsUsed: updatedState.substitutionsUsed,
+        maxSubstitutions: updatedState.maxSubstitutions,
+        remaining: 0,
+        teamState: updatedState,
       })
     }
-    return NextResponse.json({ ok: false, error: 'Limite de 5 substituições atingido.' }, { status: 400 })
+    return NextResponse.json({
+      ok: false,
+      error: `Limite de ${teamState.maxSubstitutions} substituições atingido. Nenhuma substituição adicional é permitida.`,
+      substitutionsUsed: teamState.substitutionsUsed,
+      maxSubstitutions: teamState.maxSubstitutions,
+    }, { status: 400 })
   }
 
-  // Incrementar contagem de substituições
-  teamState.substitutionsUsed += 1
-
-  // Remover jogador lesionado da lista de injuredPlayers
-  if (outPlayerId) {
-    teamState.injuredPlayers = teamState.injuredPlayers.filter(id => id !== outPlayerId)
+  // ===== Validações de input =====
+  if (!outPlayerId || !inPlayerId) {
+    return NextResponse.json({
+      ok: false,
+      error: 'outPlayerId e inPlayerId são obrigatórios.',
+    }, { status: 400 })
   }
 
-  // Persistir no banco
-  const updatedJson = JSON.stringify(teamState)
+  if (outPlayerId === inPlayerId) {
+    return NextResponse.json({
+      ok: false,
+      error: 'Não é possível substituir um jogador por ele mesmo.',
+    }, { status: 400 })
+  }
+
+  // ===== Aplicar substituição via máquina de estados =====
   try {
-    await db.match.update({
-      where: { id: matchId },
-      data: isHome ? { homeTeamStateJson: updatedJson } : { awayTeamStateJson: updatedJson },
+    const updatedState = performSubstitution(
+      teamState,
+      outPlayerId,
+      inPlayerId,
+      match.turnCount,
+      isForced,
+    )
+
+    // Persistir com optimistic concurrency
+    try {
+      await db.match.update({
+        where: { id: matchId, version: match.version },
+        data: {
+          ...(isHome ? { homeTeamStateJson: JSON.stringify(updatedState) } : { awayTeamStateJson: JSON.stringify(updatedState) }),
+          version: { increment: 1 },
+        },
+      })
+    } catch (err) {
+      console.error('[match/substitution] concurrency conflict:', err)
+      return NextResponse.json(
+        { ok: false, error: 'Conflito de concorrência. Recarregue e tente novamente.' },
+        { status: 409 },
+      )
+    }
+
+    return NextResponse.json({
+      ok: true,
+      playedWithLess: false,
+      substitutionsUsed: updatedState.substitutionsUsed,
+      maxSubstitutions: updatedState.maxSubstitutions,
+      remaining: getRemainingSubstitutions(updatedState),
+      teamState: updatedState,
+      outPlayerId,
+      inPlayerId,
+      isForced,
     })
   } catch (err) {
-    console.error('[match/substitution] update error:', err)
-    return NextResponse.json({ ok: false, error: 'Erro ao salvar substituição.' }, { status: 500 })
+    const msg = err instanceof Error ? err.message : 'Erro ao processar substituição.'
+    return NextResponse.json({ ok: false, error: msg }, { status: 400 })
   }
-
-  return NextResponse.json({
-    ok: true,
-    playedWithLess: false,
-    substitutionsUsed: teamState.substitutionsUsed,
-    maxSubstitutions: teamState.maxSubstitutions,
-    teamState,
-  })
 }
