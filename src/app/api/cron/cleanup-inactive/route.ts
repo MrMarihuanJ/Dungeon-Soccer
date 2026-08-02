@@ -33,6 +33,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60 // Vercel: até 60s para concluir a limpeza
@@ -90,6 +91,13 @@ export async function GET(req: NextRequest) {
   console.log(`[cron/cleanup-inactive] ${runId} iniciando. Cutoff: ${cutoffDate.toISOString()}`)
 
   try {
+    // Garante que as colunas lastLoginAt, isAdmin, isProtected existem.
+    try {
+      await ensureDbSync()
+    } catch (syncErr) {
+      console.error('[cron/cleanup-inactive] DB sync falhou (não fatal):', syncErr)
+    }
+
     // Busca usuários inativos que NÃO são protegidos/admin/bot:
     //   - lastLoginAt < cutoff (logou há >180 dias)
     //   - OU (lastLoginAt IS NULL AND createdAt < cutoff) (criado há >180 dias, nunca logou)

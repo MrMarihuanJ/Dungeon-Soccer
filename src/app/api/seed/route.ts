@@ -6,12 +6,20 @@
 
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 import { PLAYERS_SEED } from '@/lib/football/players-data'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST() {
   try {
+    // Garante que a tabela Player existe com todas as colunas.
+    try {
+      await ensureDbSync()
+    } catch (syncErr) {
+      console.error('[api/seed] DB sync falhou (não fatal):', syncErr)
+    }
+
     const existing = await db.player.count()
     if (existing > 0) {
       return NextResponse.json({

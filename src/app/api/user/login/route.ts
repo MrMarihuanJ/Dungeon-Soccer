@@ -16,11 +16,21 @@ import {
   buildUserCookieHeader,
 } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   try {
+    // Garante que as tabelas/colunas existem antes de qualquer query.
+    // Sem isso, em deploy fresco no Vercel/Neon, o SELECT falha com
+    // "column lastLoginAt does not exist" → "Erro interno no login".
+    try {
+      await ensureDbSync()
+    } catch (syncErr) {
+      console.error('[user/login] DB sync falhou (não fatal):', syncErr)
+    }
+
     const body = await req.json().catch(() => ({}))
     const identifier = String(body.identifier ?? '').trim()
     const password = String(body.password ?? '')

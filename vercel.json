@@ -50,9 +50,6 @@
     "src/app/api/match/free-kick-resolve/route.ts": {
       "maxDuration": 15
     },
-    "src/app/api/match/var-decision/route.ts": {
-      "maxDuration": 15
-    },
     "src/app/api/cron/cleanup-inactive/route.ts": {
       "maxDuration": 60
     },

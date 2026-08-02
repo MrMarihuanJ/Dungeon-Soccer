@@ -17,6 +17,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -128,6 +129,12 @@ async function searchTheSportsDB(query: string, limit: number): Promise<UnifiedP
 // -------- Banco interno --------
 async function searchLocal(query: string, limit: number, pos?: string | null, mode?: string | null): Promise<UnifiedPlayer[]> {
   try {
+    // Garante que a tabela Player tem as colunas de rating — DBs antigos
+    // criados pelo db-sync anterior não as tinham, fazendo a busca falhar.
+    try {
+      await ensureDbSync()
+    } catch {}
+
     const posFilter = pos
       ? (pos === 'DF' || pos === 'LD' || pos === 'LE')
         ? { position: { in: ['DF', 'LD', 'LE'] } }

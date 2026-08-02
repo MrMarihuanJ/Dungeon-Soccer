@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,6 +15,12 @@ export async function GET(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) {
     return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
+  }
+
+  try {
+    await ensureDbSync()
+  } catch (syncErr) {
+    console.error('[user/team GET] DB sync falhou (não fatal):', syncErr)
   }
 
   const team = await db.userTeam.findFirst({
@@ -43,6 +50,12 @@ export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
   if (!session) {
     return NextResponse.json({ ok: false, error: 'Não autenticado.' }, { status: 401 })
+  }
+
+  try {
+    await ensureDbSync()
+  } catch (syncErr) {
+    console.error('[user/team POST] DB sync falhou (não fatal):', syncErr)
   }
 
   try {

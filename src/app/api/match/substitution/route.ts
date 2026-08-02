@@ -23,6 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 import { Prisma } from '@prisma/client'
 import type { TeamMatchState } from '@/lib/match-engine'
 import {
@@ -49,6 +50,12 @@ export async function POST(req: NextRequest) {
 
   if (!matchId) {
     return NextResponse.json({ ok: false, error: 'matchId obrigatório.' }, { status: 400 })
+  }
+
+  try {
+    await ensureDbSync()
+  } catch (syncErr) {
+    console.error('[match/substitution] DB sync falhou (não fatal):', syncErr)
   }
 
   const match = await db.match.findUnique({ where: { id: matchId } })

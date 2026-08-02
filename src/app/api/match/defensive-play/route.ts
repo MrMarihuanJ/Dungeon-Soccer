@@ -30,6 +30,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 import type { DefensivePlayResult } from '@/lib/match-engine'
 
 export const dynamic = 'force-dynamic'
@@ -44,6 +45,12 @@ export async function POST(req: NextRequest) {
 
   if (!matchId || !result) {
     return NextResponse.json({ ok: false, error: 'matchId e result obrigatórios.' }, { status: 400 })
+  }
+
+  try {
+    await ensureDbSync()
+  } catch (syncErr) {
+    console.error('[match/defensive-play] DB sync falhou (não fatal):', syncErr)
   }
 
   const match = await db.match.findUnique({ where: { id: matchId } })

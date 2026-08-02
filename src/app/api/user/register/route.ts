@@ -13,12 +13,20 @@ import {
   buildUserCookieHeader,
 } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { ensureDbSync } from '@/lib/db-sync'
 import { Prisma } from '@prisma/client'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest) {
   try {
+    // Garante que as tabelas/colunas existem antes de qualquer query.
+    try {
+      await ensureDbSync()
+    } catch (syncErr) {
+      console.error('[user/register] DB sync falhou (não fatal):', syncErr)
+    }
+
     const body = await req.json().catch(() => ({}))
     const username = String(body.username ?? '').trim()
     const email = String(body.email ?? '').trim()

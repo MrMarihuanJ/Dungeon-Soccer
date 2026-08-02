@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getAdminFromRequest } from '@/lib/auth'
+import { ensureDbSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -32,6 +33,11 @@ export async function GET(req: NextRequest) {
   if (authError) return authError
 
   try {
+    // Garante que a tabela Player tem todas as colunas (overall, age, pace,
+    // etc.) — DBs antigos criados pelo db-sync anterior não as tinham,
+    // fazendo findMany falhar e o admin ver lista vazia.
+    await ensureDbSync()
+
     const { searchParams } = new URL(req.url)
     const q = (searchParams.get('q') ?? '').trim().toLowerCase()
     const limit = Math.min(Number(searchParams.get('limit') ?? 100), 500)

@@ -65,6 +65,49 @@ implementação de correções críticas. Os principais destaques:
 - **C6:** Reserva pode ser movida para o campo (corrige crash em runtime).
 - **C7:** Admin auth com hard-fail em produção sem `JWT_SECRET`/`ADMIN_PASSWORD`.
 
+### Hotfix v2 — 4 erros em produção (agora corrigidos)
+Esta é uma revisão **pós-deploy** que endereça os 4 erros reportados em
+produção (`dungeonnsoccer.vercel.app`):
+
+- **H1: "Erro interno no login"** — `db-sync.ts` não adicionava as colunas
+  `lastLoginAt`, `isAdmin`, `isProtected` ao `User`. Prisma gerava SELECT
+  com colunas inexistentes → SQL error 500. **Fix:** `db-sync.ts` agora
+  cria essas colunas no `CREATE TABLE` e no `ADD COLUMN IF NOT EXISTS`.
+- **H2: "Erro ao salvar o time"** — cascade do H1. Sem login, sem sessão,
+  sem salvar time. **Fix:** corrigido pelo H1. Adicionalmente,
+  `/api/user/team` agora chama `ensureDbSync()` antes de upsert.
+- **H3: "Erro ao iniciar partida"** — `db-sync.ts` não adicionava as
+  colunas `xpGranted`, `version`, `pendingPenaltyEventJson`,
+  `varDecisionsJson`, `homeTeamJson`, `awayTeamJson` ao `Match`, nem
+  criava a tabela `XpGrant`. `db.match.create` falhava no `RETURNING`.
+  **Fix:** `db-sync.ts` agora cria todas essas colunas e a tabela
+  `XpGrant` (com constraint unique em `[userId, source]`).
+- **H4: "Jogadores sumiram do admin"** — `db-sync.ts` anterior criava
+  `Player` com colunas de rating (overall, age, pace, ...) no
+  `CREATE TABLE IF NOT EXISTS`, mas **não** adicionava essas colunas
+  via `ADD COLUMN IF NOT EXISTS` para DBs já existentes. Prisma
+  `findMany` falhava com "column overall does not exist" → admin via
+  lista vazia. Adicionalmente, deploy fresco no Neon deixava a tabela
+  vazia (sem seed). **Fix:** `db-sync.ts` agora adiciona todas as
+  colunas de rating via `ADD COLUMN IF NOT EXISTS`, e faz **auto-seed**
+  da tabela `Player` (a partir de `PLAYERS_SEED`) quando encontra o
+  banco vazio — funciona em Postgres e SQLite.
+
+Arquivos principais alterados no hotfix:
+- `src/lib/db-sync.ts` — reescrito: adicionadas todas as colunas
+  faltantes (User, Match, Player) + tabela XpGrant + auto-seed.
+- `src/app/api/user/login/route.ts` — chama `ensureDbSync()`.
+- `src/app/api/user/register/route.ts` — chama `ensureDbSync()`.
+- `src/app/api/user/team/route.ts` — chama `ensureDbSync()` (GET + POST).
+- `src/app/api/admin/players/route.ts` — chama `ensureDbSync()`.
+- `src/app/api/players/search/route.ts` — chama `ensureDbSync()`.
+- `src/app/api/cron/cleanup-inactive/route.ts` — chama `ensureDbSync()`.
+- `src/app/api/seed/route.ts` — chama `ensureDbSync()`.
+- `src/app/api/match/substitution/route.ts` — chama `ensureDbSync()`.
+- `src/app/api/match/defensive-play/route.ts` — chama `ensureDbSync()`.
+- `vercel.json` — removida referência a `var-decision/route.ts`
+  (rota nunca existiu; fazia o build da Vercel reclamar).
+
 ### Novos sistemas
 - **Máquina de estados de jogador** (ACTIVE/RESERVE/INJURED/SUBSTITUTED/
   SENT_OFF/UNAVAILABLE) com transições validadas no servidor.
@@ -336,6 +379,52 @@ Test Files  7 passed (7)
 
 ## Troubleshooting
 
+### Erro: "Erro interno no login" / "Erro ao salvar o time" / "Erro ao iniciar partida"
+
+Estes três erros têm a mesma causa raiz: o banco de dados está com
+colunas faltando em relação ao schema Prisma. Isso acontece quando o
+banco foi criado por uma versão antiga do `db-sync.ts` (que não incluía
+`lastLoginAt`, `isAdmin`, `isProtected`, `xpGranted`, `version`, etc.).
+
+**Solução automática (já aplicada nesta versão):** O `db-sync.ts` agora
+adiciona todas as colunas faltantes via `ADD COLUMN IF NOT EXISTS` e
+chamadas `ensureDbSync()` foram adicionadas em todos os endpoints que
+tocam o banco. Após fazer deploy desta versão, o primeiro request
+automaticamente sincroniza o schema.
+
+**Solução manual (se o problema persistir):**
+```bash
+# Em produção (Neon Postgres), a sincronização é automática no primeiro
+# request após o deploy. Se ainda assim falhar, force um re-deploy na
+# Vercel (redeploy sem mudar o código já basta — cold start roda db-sync).
+
+# Em dev local (SQLite):
+bun run db:push      # sincroniza schema SQLite
+bun run db:seed      # popula jogadores (opcional — auto-seed já faz isso)
+```
+
+### Erro: "Jogadores sumiram do admin"
+
+Causa: a tabela `Player` foi criada sem as colunas de rating (`overall`,
+`age`, `pace`, ...) por uma versão antiga do `db-sync.ts`, OU o banco
+foi resetado sem re-rodar o seed.
+
+**Solução automática (já aplicada):** O `db-sync.ts` agora:
+1. Adiciona as colunas de rating via `ADD COLUMN IF NOT EXISTS`.
+2. Faz **auto-seed** se a tabela `Player` estiver vazia (em qualquer
+   banco, Postgres ou SQLite).
+
+**Para popular manualmente:**
+```bash
+# Opção 1: Script CLI (limpa e repovoa)
+bun run db:seed
+
+# Opção 2: HTTP endpoint (idempotente, não limpa)
+curl -X POST https://dungeonnsoccer.vercel.app/api/seed
+# ou local:
+curl -X POST http://localhost:3000/api/seed
+```
+
 ### Erro: "FATAL: JWT_SECRET não configurado em produção"
 
 Você esqueceu de configurar `JWT_SECRET` na Vercel. Gere com:
@@ -366,6 +455,21 @@ Verifique:
 1. `DATABASE_URL` está correto no `.env`
 2. Para SQLite: o diretório `db/` existe e tem permissão de escrita
 3. Para Postgres: a connection string tem `?sslmode=require`
+
+### Como forçar o sync do banco em produção
+
+Em produção (Vercel + Neon), o sync roda automaticamente no primeiro
+request após cada cold start. Para forçar:
+1. Vá no dashboard da Vercel → Deployments → encontre o deploy mais recente.
+2. Clique no menu `...` → **Redeploy** (não precisa mudar nada).
+3. Após o novo deploy ficar pronto, faça qualquer request (ex.: abra o
+   site e faça login). O `db-sync` roda no cold start.
+
+Para verificar se o sync funcionou, chame o endpoint de health:
+```bash
+curl https://dungeonnsoccer.vercel.app/api/db/health
+```
+Ele deve retornar `{ ok: true, ... }`.
 
 ---
 
