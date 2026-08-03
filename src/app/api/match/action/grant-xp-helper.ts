@@ -5,12 +5,22 @@
 // Esta função é atômica e idempotente: a transação db.$transaction
 // garante que apenas uma das chamadas concorrentes consiga conceder XP
 // para uma mesma partida.
+//
+// v3.2: Agora computa estatísticas de partida (gols, cartões, faltas,
+// roubadas de bola, defesas do goleiro, impedimentos) a partir dos
+// eventos e incorpora ao cálculo de XP via calculateMatchXp(stats).
 // =====================================================================
 
 import { db } from '@/lib/db'
 import { Prisma } from '@prisma/client'
 import type { GameMode } from '@/lib/match-engine'
-import { calculateMatchXp, matchXpSource, getLevelFromXp } from '@/lib/xp-system'
+import {
+  calculateMatchXp,
+  matchXpSource,
+  getLevelFromXp,
+  computeTeamMatchStats,
+  type TeamMatchStats,
+} from '@/lib/xp-system'
 
 export async function grantMatchXp(input: {
   matchId: string
@@ -19,7 +29,7 @@ export async function grantMatchXp(input: {
   winner: string | null
   gameMode: GameMode
   isOffline: boolean
-}): Promise<{ granted: boolean; homeXp?: number; awayXp?: number }> {
+}): Promise<{ granted: boolean; homeXp?: number; awayXp?: number; homeStats?: TeamMatchStats; awayStats?: TeamMatchStats }> {
   const { matchId, homeUserId, awayUserId, winner, gameMode, isOffline } = input
 
   const homeResult: 'WIN' | 'LOSS' | 'DRAW' =
@@ -27,9 +37,13 @@ export async function grantMatchXp(input: {
   const awayResult: 'WIN' | 'LOSS' | 'DRAW' =
     winner === 'AWAY' ? 'WIN' : winner === 'HOME' ? 'LOSS' : 'DRAW'
 
-  const [homeUser, awayUser] = await Promise.all([
+  const [homeUser, awayUser, matchRecord] = await Promise.all([
     db.user.findUnique({ where: { id: homeUserId }, select: { xp: true } }),
     db.user.findUnique({ where: { id: awayUserId }, select: { xp: true } }),
+    db.match.findUnique({
+      where: { id: matchId },
+      select: { eventsJson: true, homeScore: true, awayScore: true, homeTeamRating: true, awayTeamRating: true },
+    }),
   ])
 
   if (!homeUser) {
@@ -41,6 +55,19 @@ export async function grantMatchXp(input: {
     return { granted: false }
   }
 
+  // ===== Computa estatísticas de partida a partir dos eventos =====
+  let homeStats: TeamMatchStats | undefined
+  let awayStats: TeamMatchStats | undefined
+  if (matchRecord) {
+    try {
+      const events = JSON.parse(matchRecord.eventsJson || '[]') as any[]
+      homeStats = computeTeamMatchStats(events, 'HOME')
+      awayStats = computeTeamMatchStats(events, 'AWAY')
+    } catch (err) {
+      console.error('[grantMatchXp] failed to compute stats:', err)
+    }
+  }
+
   const homeLevel = getLevelFromXp(homeUser.xp).level
   const awayLevel = awayUser ? getLevelFromXp(awayUser.xp).level : 1
 
@@ -49,12 +76,20 @@ export async function grantMatchXp(input: {
     result: homeResult,
     userLevel: homeLevel,
     cap: 100,
+    goalDifference: matchRecord ? Math.abs(matchRecord.homeScore - matchRecord.awayScore) : undefined,
+    opponentRating: matchRecord?.awayTeamRating ?? undefined,
+    ownRating: matchRecord?.homeTeamRating ?? undefined,
+    stats: homeStats,
   })
   const awayXpBreakdown = calculateMatchXp({
     gameMode,
     result: awayResult,
     userLevel: awayLevel,
     cap: 100,
+    goalDifference: matchRecord ? Math.abs(matchRecord.homeScore - matchRecord.awayScore) : undefined,
+    opponentRating: matchRecord?.homeTeamRating ?? undefined,
+    ownRating: matchRecord?.awayTeamRating ?? undefined,
+    stats: awayStats,
   })
 
   try {
@@ -122,7 +157,13 @@ export async function grantMatchXp(input: {
         }
       }
     })
-    return { granted: true, homeXp: homeXpBreakdown.totalXp, awayXp: awayXpBreakdown.totalXp }
+    return {
+      granted: true,
+      homeXp: homeXpBreakdown.totalXp,
+      awayXp: awayXpBreakdown.totalXp,
+      homeStats,
+      awayStats,
+    }
   } catch (err) {
     if (err instanceof Error && err.message === 'XP_ALREADY_GRANTED') {
       return { granted: false }

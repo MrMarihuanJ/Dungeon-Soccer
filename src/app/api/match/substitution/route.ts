@@ -34,8 +34,8 @@ import {
   isSubstitutionLimitReached,
   getRemainingSubstitutions,
   type ExtendedTeamMatchState,
-  type PlayerMatchState,
 } from '@/lib/player-match-state'
+import { hydrateTeamStateFromUserId } from '@/lib/team-state-hydration'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,75 +49,14 @@ export const dynamic = 'force-dynamic'
  * `'ACTIVE'` for any playerId not found in `playerStates` — which is
  * correct for starters, but WRONG for reserves (they should be RESERVE).
  *
- * Result: every substitution attempt failed with
- *   "Reserva não pode entrar: status atual = ACTIVE"
- * because the reserve being sent in was unknown to the state machine
- * and defaulted to ACTIVE.
- *
- * FIX: before validating the substitution, we hydrate `playerStates` by
- * fetching the user's primary `UserTeam` from the DB. Starter IDs become
- * ACTIVE, reserve IDs become RESERVE. Players already in `playerStates`
- * (e.g. previously substituted) keep their existing status.
- *
- * This is idempotent and self-healing — existing matches with empty
- * state get fixed on the first substitution request.
+ * v3.2 fix: match-create now hydrates teamStateJson at creation time.
+ * This route keeps the hydration fallback for legacy matches.
  */
 async function hydrateTeamStateFromUserTeam(
   userId: string,
   state: ExtendedTeamMatchState,
 ): Promise<ExtendedTeamMatchState> {
-  const hydrated = normalizeTeamState({
-    ...state,
-    playerStates: [...(state.playerStates ?? [])],
-  })
-
-  try {
-    const userTeam = await db.userTeam.findFirst({
-      where: { userId, isPrimary: true },
-    })
-    if (!userTeam) {
-      // No saved team — can't determine starters vs reserves.
-      // Return state as-is; the subsequent validation will reject with
-      // a clear error message about the missing team.
-      return hydrated
-    }
-
-    // UserTeam.starters is a JSON string of { [positionId]: { id, name, ... } | null }
-    // UserTeam.reserves is a JSON string of [{ id, name, ... }, ...]
-    const startersMap = JSON.parse(userTeam.starters || '{}') as Record<string, { id?: string } | null>
-    const reservesList = JSON.parse(userTeam.reserves || '[]') as Array<{ id?: string }>
-
-    const starterIds = Object.values(startersMap)
-      .filter((p): p is { id: string } => Boolean(p && p.id))
-      .map((p) => p.id)
-    const reserveIds = reservesList
-      .filter((p): p is { id: string } => Boolean(p && p.id))
-      .map((p) => p.id)
-
-    const existingIds = new Set((hydrated.playerStates ?? []).map((p) => p.playerId))
-    const newEntries: PlayerMatchState[] = []
-
-    for (const id of starterIds) {
-      if (!existingIds.has(id)) {
-        newEntries.push({ playerId: id, status: 'ACTIVE' })
-        existingIds.add(id)
-      }
-    }
-    for (const id of reserveIds) {
-      if (!existingIds.has(id)) {
-        newEntries.push({ playerId: id, status: 'RESERVE' })
-        existingIds.add(id)
-      }
-    }
-
-    if (newEntries.length > 0) {
-      hydrated.playerStates = [...(hydrated.playerStates ?? []), ...newEntries]
-    }
-    return hydrated
-  } catch (err) {
-    console.error('[match/substitution] hydrateTeamStateFromUserTeam failed:', err)
-    return hydrated // proceed with un-hydrated state; validation will fail clearly
-  }
+  return hydrateTeamStateFromUserId(userId, state)
 }
 
 export async function POST(req: NextRequest) {

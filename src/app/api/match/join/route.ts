@@ -13,8 +13,37 @@ import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import { ensureDbSync } from '@/lib/db-sync'
 import { flipCoin, coinToPossession } from '@/lib/match-engine'
+import { createInitialTeamState } from '@/lib/player-match-state'
 
 export const dynamic = 'force-dynamic'
+
+// =====================================================================
+// HYDRATION: Builds initial teamStateJson for the AWAY user.
+// Same logic as /api/match/create/buildInitialTeamStateJson — kept
+// inline to avoid circular imports. See that file for rationale.
+// =====================================================================
+async function buildInitialTeamStateJson(userId: string): Promise<string> {
+  try {
+    const userTeam = await db.userTeam.findFirst({
+      where: { userId, isPrimary: true },
+    })
+    if (!userTeam) {
+      return JSON.stringify(createInitialTeamState([], []))
+    }
+    const startersMap = JSON.parse(userTeam.starters || '{}') as Record<string, { id?: string } | null>
+    const reservesList = JSON.parse(userTeam.reserves || '[]') as Array<{ id?: string }>
+    const starterIds = Object.values(startersMap)
+      .filter((p): p is { id: string } => Boolean(p && p.id))
+      .map((p) => p.id)
+    const reserveIds = reservesList
+      .filter((p): p is { id: string } => Boolean(p && p.id))
+      .map((p) => p.id)
+    return JSON.stringify(createInitialTeamState(starterIds, reserveIds))
+  } catch (err) {
+    console.error('[match/join] buildInitialTeamStateJson failed:', err)
+    return JSON.stringify(createInitialTeamState([], []))
+  }
+}
 
 export async function POST(req: NextRequest) {
   const session = getUserFromRequest(req)
@@ -100,6 +129,9 @@ export async function POST(req: NextRequest) {
   const startingSide = coinToPossession(coin)
   const startingUserId = startingSide === 'HOME' ? match.homeUserId : session.userId
 
+  // ===== HYDRATION: inicializa awayTeamStateJson com playerStates do awayUser =====
+  const initialAwayTeamStateJson = await buildInitialTeamStateJson(session.userId)
+
   try {
     const updatedMatch = await db.match.update({
       where: { id: match.id },
@@ -111,6 +143,8 @@ export async function POST(req: NextRequest) {
         currentPossession: startingSide,
         matchStartedAt: new Date(),
         turnStartedAt: new Date(),
+        // Hydrate away team state so substitutions work for the away user
+        awayTeamStateJson: initialAwayTeamStateJson,
       },
       include: {
         homeUser: { select: { id: true, username: true, displayName: true, wins: true, losses: true, draws: true, xp: true } },

@@ -16,6 +16,7 @@ import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
 import { ensureDbSync } from '@/lib/db-sync'
 import { GAME_MODE_CONFIG, type GameMode } from '@/lib/match-engine'
+import { createInitialTeamState, type PlayerMatchState } from '@/lib/player-match-state'
 import { randomUUID } from 'crypto'
 
 export const dynamic = 'force-dynamic'
@@ -30,6 +31,47 @@ function generateInviteCode(): string {
     code += chars[Math.floor(Math.random() * chars.length)]
   }
   return code
+}
+
+// =====================================================================
+// HYDRATION: Builds initial teamStateJson with proper playerStates.
+// ---------------------------------------------------------------------
+// This fixes the root cause of "Reserva não pode entrar: status atual =
+// ACTIVE" — before this fix, teamStateJson was initialized to '{}', so
+// playerStates was empty and getPlayerStatus() defaulted everyone to
+// ACTIVE (including reserves, which should be RESERVE).
+//
+// Now, at match creation, we read the user's primary UserTeam and
+// pre-populate playerStates: starters as ACTIVE, reserves as RESERVE.
+// This way, every endpoint that reads teamStateJson (action, substitution,
+// state) has correct status data from the very first request.
+// =====================================================================
+async function buildInitialTeamStateJson(userId: string): Promise<string> {
+  try {
+    const userTeam = await db.userTeam.findFirst({
+      where: { userId, isPrimary: true },
+    })
+    if (!userTeam) {
+      // Sem time salvo — retorna estado vazio (fallback para legado)
+      return JSON.stringify(createInitialTeamState([], []))
+    }
+
+    const startersMap = JSON.parse(userTeam.starters || '{}') as Record<string, { id?: string } | null>
+    const reservesList = JSON.parse(userTeam.reserves || '[]') as Array<{ id?: string }>
+
+    const starterIds = Object.values(startersMap)
+      .filter((p): p is { id: string } => Boolean(p && p.id))
+      .map((p) => p.id)
+    const reserveIds = reservesList
+      .filter((p): p is { id: string } => Boolean(p && p.id))
+      .map((p) => p.id)
+
+    const initialState = createInitialTeamState(starterIds, reserveIds)
+    return JSON.stringify(initialState)
+  } catch (err) {
+    console.error('[match/create] buildInitialTeamStateJson failed:', err)
+    return JSON.stringify(createInitialTeamState([], []))
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -83,6 +125,10 @@ export async function POST(req: NextRequest) {
       // Bot user may already exist — ignore
     }
 
+    // ===== HYDRATION: Initialize teamStateJson with proper playerStates =====
+    // This fixes the substitution bug where reserves were defaulting to ACTIVE.
+    const initialHomeTeamStateJson = await buildInitialTeamStateJson(session.userId)
+
     try {
       const match = await db.match.create({
         data: {
@@ -99,7 +145,7 @@ export async function POST(req: NextRequest) {
           homeProgress: 0,
           awayProgress: 0,
           eventsJson: '[]',
-          homeTeamStateJson: '{}',
+          homeTeamStateJson: initialHomeTeamStateJson,
           awayTeamStateJson: '{}',
           xpReward: modeConfig.xpWin,
           totalPausedMs: 0,
@@ -148,7 +194,7 @@ export async function POST(req: NextRequest) {
               homeProgress: 0,
               awayProgress: 0,
               eventsJson: '[]',
-              homeTeamStateJson: '{}',
+              homeTeamStateJson: initialHomeTeamStateJson,
               awayTeamStateJson: '{}',
               xpReward: modeConfig.xpWin,
               totalPausedMs: 0,
@@ -204,6 +250,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ===== HYDRATION: Initialize home team state with proper playerStates =====
+  const initialHomeTeamStateJson = await buildInitialTeamStateJson(session.userId)
+
   // Cria a partida em status WAITING — oponente ainda não definido
   // awayUserId é null até que alguém entre via invite
   const matchData = {
@@ -220,7 +269,7 @@ export async function POST(req: NextRequest) {
     homeProgress: 0,
     awayProgress: 0,
     eventsJson: '[]',
-    homeTeamStateJson: '{}',
+    homeTeamStateJson: initialHomeTeamStateJson,
     awayTeamStateJson: '{}',
     xpReward: modeConfig.xpWin,
     totalPausedMs: 0,

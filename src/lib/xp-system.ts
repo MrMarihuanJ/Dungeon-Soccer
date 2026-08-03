@@ -7,6 +7,8 @@
 //   3. Definir recompensas por nível (bônus, habilidades, desbloqueios)
 //   4. Garantir idempotência — uma mesma origem (ex.: matchId) não concede
 //      XP mais de uma vez
+//   5. Computar estatísticas de partida (gols, cartões, faltas, etc.)
+//      a partir dos eventos e incorporá-las ao cálculo de XP
 //
 // IDempotência:
 //   - Cada concessão é registrada na tabela `XpGrant` com `source` único
@@ -127,6 +129,157 @@ export function getXpMultiplierForLevel(level: number): number {
 }
 
 // ---------------------------------------------------------------------
+// ===== ESTATÍSTICAS DE PARTIDA (NOVO v3.2) =====
+// ---------------------------------------------------------------------
+// O usuário pediu que o XP considerasse: gols, cartões, faltas cometidas
+// e sofridas, impedimentos, roubadas de bola e defesas do goleiro.
+// Esta função extrai essas estatísticas dos eventos da partida.
+// ---------------------------------------------------------------------
+
+/**
+ * Estatísticas de um time em uma partida, extraídas dos eventos.
+ * Cada valor é computado a partir do array de MatchEvent.
+ */
+export interface TeamMatchStats {
+  /** Gols marcados pelo time */
+  goals: number
+  /** Cartões amarelos recebidos */
+  yellowCards: number
+  /** Cartões vermelhos recebidos */
+  redCards: number
+  /** Faltas cometidas pelo time (FOUL + PENALTY_KICK) */
+  foulsCommitted: number
+  /** Faltas sofridas pelo time (quando o adversário cometeu falta) */
+  foulsSuffered: number
+  /** Impedimentos cometidos */
+  offsides: number
+  /** Roubadas de bola (defensive plays bem-sucedidas com ballStolen) */
+  ballSteals: number
+  /** Defesas do goleiro (defensive plays bem-sucedidas sem ballStolen, por goleiro) */
+  goalkeeperSaves: number
+  /** Total de jogadas (turnos) */
+  totalPlays: number
+  /** Jogadas bem-sucedidas (sucesso no dado) */
+  successfulPlays: number
+  /** Eventos especiais (crit hits, gols, etc.) */
+  specialEvents: number
+}
+
+/**
+ * Tipo minimalista para MatchEvent — usado para não criar dependência
+ * circular com match-engine.ts. Apenas os campos necessários.
+ */
+interface MinimalMatchEvent {
+  possession: string
+  isGoal?: boolean
+  roll?: { success?: boolean; critical?: string }
+  penaltyEvent?: {
+    type: string
+    possession: string
+    favoredPossession: string
+  } | null
+  // Eventos de jogada defensiva (roubada de bola / defesa)
+  defensivePlay?: {
+    possession: string  // quem defendeu
+    ballStolen?: boolean
+    success?: boolean
+    isGoalkeeper?: boolean
+  } | null
+  // Eventos de cobrança de falta
+  freeKickMultiplier?: { value?: number; kind?: string } | null
+}
+
+/**
+ * Computa estatísticas de um time a partir dos eventos da partida.
+ *
+ * @param events Array de eventos (do eventsJson)
+ * @param teamSide 'HOME' ou 'AWAY' — qual time estamos computando
+ * @returns Estatísticas agregadas
+ */
+export function computeTeamMatchStats(
+  events: MinimalMatchEvent[],
+  teamSide: 'HOME' | 'AWAY',
+): TeamMatchStats {
+  const opponentSide = teamSide === 'HOME' ? 'AWAY' : 'HOME'
+  const stats: TeamMatchStats = {
+    goals: 0,
+    yellowCards: 0,
+    redCards: 0,
+    foulsCommitted: 0,
+    foulsSuffered: 0,
+    offsides: 0,
+    ballSteals: 0,
+    goalkeeperSaves: 0,
+    totalPlays: 0,
+    successfulPlays: 0,
+    specialEvents: 0,
+  }
+
+  for (const ev of events) {
+    // Total de jogadas do time
+    if (ev.possession === teamSide) {
+      stats.totalPlays += 1
+      if (ev.roll?.success) stats.successfulPlays += 1
+      if (ev.isGoal) {
+        stats.goals += 1
+        stats.specialEvents += 1
+      }
+      if (ev.roll?.critical === 'crit_hit') stats.specialEvents += 1
+    }
+
+    // Penalty events
+    if (ev.penaltyEvent) {
+      const pe = ev.penaltyEvent
+      // Time que COMETEU a falta = pe.possession (quem estava com a bola)
+      if (pe.possession === teamSide) {
+        // Este time cometeu a infração
+        switch (pe.type) {
+          case 'FOUL':
+            stats.foulsCommitted += 1
+            break
+          case 'PENALTY_KICK':
+            stats.foulsCommitted += 1 // pênalti é falta grave
+            break
+          case 'YELLOW_CARD':
+            stats.yellowCards += 1
+            stats.foulsCommitted += 1 // amarelo geralmente vem de falta
+            break
+          case 'RED_CARD':
+            stats.redCards += 1
+            stats.foulsCommitted += 1
+            break
+          case 'OFFSIDE':
+            stats.offsides += 1
+            break
+        }
+      }
+      // Time que SOFREU a falta = pe.favoredPossession
+      if (pe.favoredPossession === teamSide) {
+        if (pe.type === 'FOUL' || pe.type === 'PENALTY_KICK') {
+          stats.foulsSuffered += 1
+        }
+      }
+    }
+
+    // Defensive plays (roubada de bola / defesa)
+    if (ev.defensivePlay) {
+      const dp = ev.defensivePlay
+      if (dp.possession === teamSide) {
+        if (dp.ballStolen) {
+          stats.ballSteals += 1
+          stats.specialEvents += 1
+        } else if (dp.success && dp.isGoalkeeper) {
+          stats.goalkeeperSaves += 1
+          stats.specialEvents += 1
+        }
+      }
+    }
+  }
+
+  return stats
+}
+
+// ---------------------------------------------------------------------
 // Cálculo de XP por partida (REGRAS_DE_XP)
 // ---------------------------------------------------------------------
 
@@ -136,6 +289,7 @@ export interface XpBreakdown {
   performanceBonus: number
   specialBonus: number
   levelMultiplier: number
+  statsBonus: number
   totalXp: number
   cap: number
   capped: boolean
@@ -157,6 +311,8 @@ export interface MatchXpInput {
   specialEvents?: number
   /** Cap de XP por partida — default 100 */
   cap?: number
+  /** Estatísticas detalhadas do time (NOVO v3.2) — habilita bônus por stats */
+  stats?: TeamMatchStats
 }
 
 /**
@@ -167,8 +323,18 @@ export interface MatchXpInput {
  *   - Bônus de dificuldade: se opponentRating > ownRating, +2 por ponto de diferença (cap +20)
  *   - Bônus de desempenho: vitória com goalDifference ≥ 3 dá +10 XP
  *   - Bônus de eventos especiais: +5 por evento (cap +30)
+ *   - Bônus de estatísticas (NOVO v3.2):
+ *       * +3 por gol marcado (cap +15)
+ *       * +2 por roubo de bola (cap +10)
+ *       * +3 por defesa do goleiro (cap +12)
+ *       * +1 por falta sofrida (cap +5)
+ *       * -1 por cartão amarelo (cap -6)
+ *       * -3 por cartão vermelho (cap -9)
+ *       * -1 por impedimento (cap -3)
  *   - Multiplicador de nível: aplica getXpMultiplierForLevel
  *   - Cap final: 100 XP por partida (configurável)
+ *
+ * NOTA: Penalidades (cartões, impedimentos) reduzem XP mas nunca abaixo de 0.
  */
 export function calculateMatchXp(input: MatchXpInput): XpBreakdown {
   const config = GAME_MODE_CONFIG[input.gameMode]
@@ -202,8 +368,58 @@ export function calculateMatchXp(input: MatchXpInput): XpBreakdown {
     breakdown.push({ label: `${input.specialEvents} evento(s) especial(is)`, amount: specialBonus, sign: '+' })
   }
 
+  // ===== BÔNUS DE ESTATÍSTICAS (NOVO v3.2) =====
+  let statsBonus = 0
+  if (input.stats) {
+    const s = input.stats
+
+    // Positivos
+    const goalsBonus = Math.min(15, s.goals * 3)
+    if (goalsBonus > 0) {
+      statsBonus += goalsBonus
+      breakdown.push({ label: `${s.goals} gol(s) marcado(s)`, amount: goalsBonus, sign: '+' })
+    }
+
+    const stealsBonus = Math.min(10, s.ballSteals * 2)
+    if (stealsBonus > 0) {
+      statsBonus += stealsBonus
+      breakdown.push({ label: `${s.ballSteals} roubo(s) de bola`, amount: stealsBonus, sign: '+' })
+    }
+
+    const savesBonus = Math.min(12, s.goalkeeperSaves * 3)
+    if (savesBonus > 0) {
+      statsBonus += savesBonus
+      breakdown.push({ label: `${s.goalkeeperSaves} defesa(s) do goleiro`, amount: savesBonus, sign: '+' })
+    }
+
+    const foulsSufferedBonus = Math.min(5, s.foulsSuffered)
+    if (foulsSufferedBonus > 0) {
+      statsBonus += foulsSufferedBonus
+      breakdown.push({ label: `${s.foulsSuffered} falta(s) sofrida(s)`, amount: foulsSufferedBonus, sign: '+' })
+    }
+
+    // Negativos (penalidades por Fair Play)
+    const yellowPenalty = Math.min(6, s.yellowCards * 1)
+    if (yellowPenalty > 0) {
+      statsBonus -= yellowPenalty
+      breakdown.push({ label: `${s.yellowCards} cartão(ões) amarelo(s)`, amount: yellowPenalty, sign: '-' })
+    }
+
+    const redPenalty = Math.min(9, s.redCards * 3)
+    if (redPenalty > 0) {
+      statsBonus -= redPenalty
+      breakdown.push({ label: `${s.redCards} cartão(ões) vermelho(s)`, amount: redPenalty, sign: '-' })
+    }
+
+    const offsidePenalty = Math.min(3, s.offsides * 1)
+    if (offsidePenalty > 0) {
+      statsBonus -= offsidePenalty
+      breakdown.push({ label: `${s.offsides} impedimento(s)`, amount: offsidePenalty, sign: '-' })
+    }
+  }
+
   // Subtotal antes do multiplicador
-  const subtotal = baseXp + difficultyBonus + performanceBonus + specialBonus
+  const subtotal = baseXp + difficultyBonus + performanceBonus + specialBonus + statsBonus
 
   // Multiplicador de nível
   const levelMultiplier = getXpMultiplierForLevel(input.userLevel)
@@ -217,7 +433,7 @@ export function calculateMatchXp(input: MatchXpInput): XpBreakdown {
     })
   }
 
-  const uncapped = subtotal + multiplierBonus
+  const uncapped = Math.max(0, subtotal + multiplierBonus) // nunca negativo
   const cap = input.cap ?? 100
   const capped = uncapped > cap
   const totalXp = Math.min(cap, uncapped)
@@ -232,6 +448,7 @@ export function calculateMatchXp(input: MatchXpInput): XpBreakdown {
     performanceBonus,
     specialBonus,
     levelMultiplier,
+    statsBonus,
     totalXp,
     cap,
     capped,

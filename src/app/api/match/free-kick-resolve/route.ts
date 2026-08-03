@@ -34,6 +34,7 @@ import {
   applyFreeKickMultiplier,
 } from '@/lib/free-kick-system'
 import { normalizeTeamState, type ExtendedTeamMatchState } from '@/lib/player-match-state'
+import { hydrateTeamStateFromUserId } from '@/lib/team-state-hydration'
 import { grantMatchXp } from './../action/grant-xp-helper'
 
 export const dynamic = 'force-dynamic'
@@ -114,6 +115,14 @@ export async function POST(req: NextRequest) {
       awayTeamState = normalizeTeamState(JSON.parse(match.awayTeamStateJson) as TeamMatchState)
     }
   } catch { /* default */ }
+
+  // ===== HYDRATION FALLBACK (v3.2) =====
+  if ((homeTeamState.playerStates ?? []).length === 0) {
+    homeTeamState = await hydrateTeamStateFromUserId(match.homeUserId, homeTeamState)
+  }
+  if ((awayTeamState.playerStates ?? []).length === 0 && match.awayUserId) {
+    awayTeamState = await hydrateTeamStateFromUserId(match.awayUserId, awayTeamState)
+  }
 
   const state: MatchState = {
     matchId: match.id,

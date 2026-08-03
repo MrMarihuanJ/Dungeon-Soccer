@@ -18,6 +18,7 @@ import {
   getRewardsForLevel,
   getAllEarnedRewards,
   getXpMultiplierForLevel,
+  computeTeamMatchStats,
   MAX_LEVEL,
 } from '../xp-system'
 
@@ -259,6 +260,166 @@ describe('xp-system', () => {
     it('nível 25+: 10%', () => {
       expect(getXpMultiplierForLevel(25)).toBe(0.10)
       expect(getXpMultiplierForLevel(40)).toBe(0.10)
+    })
+  })
+
+  // ====================================================================
+  // NOVOS TESTES v3.2: Estatísticas de partida e bônus por stats
+  // ====================================================================
+  describe('computeTeamMatchStats', () => {
+    it('retorna zeros para array vazio', () => {
+      const stats = computeTeamMatchStats([], 'HOME')
+      expect(stats.goals).toBe(0)
+      expect(stats.foulsCommitted).toBe(0)
+      expect(stats.ballSteals).toBe(0)
+    })
+
+    it('conta gols marcados pelo time HOME', () => {
+      const events = [
+        { possession: 'HOME', isGoal: true, roll: { success: true } },
+        { possession: 'HOME', isGoal: true, roll: { success: true } },
+        { possession: 'AWAY', isGoal: true, roll: { success: true } },
+      ]
+      const homeStats = computeTeamMatchStats(events, 'HOME')
+      const awayStats = computeTeamMatchStats(events, 'AWAY')
+      expect(homeStats.goals).toBe(2)
+      expect(awayStats.goals).toBe(1)
+    })
+
+    it('conta faltas cometidas (FOUL + PENALTY_KICK)', () => {
+      const events = [
+        { possession: 'HOME', penaltyEvent: { type: 'FOUL', possession: 'HOME', favoredPossession: 'AWAY' } },
+        { possession: 'HOME', penaltyEvent: { type: 'PENALTY_KICK', possession: 'HOME', favoredPossession: 'AWAY' } },
+        { possession: 'AWAY', penaltyEvent: { type: 'FOUL', possession: 'AWAY', favoredPossession: 'HOME' } },
+      ]
+      const homeStats = computeTeamMatchStats(events, 'HOME')
+      expect(homeStats.foulsCommitted).toBe(2)
+      expect(homeStats.foulsSuffered).toBe(1)
+    })
+
+    it('conta cartões amarelos e vermelhos', () => {
+      const events = [
+        { possession: 'HOME', penaltyEvent: { type: 'YELLOW_CARD', possession: 'HOME', favoredPossession: 'AWAY' } },
+        { possession: 'HOME', penaltyEvent: { type: 'RED_CARD', possession: 'HOME', favoredPossession: 'AWAY' } },
+      ]
+      const homeStats = computeTeamMatchStats(events, 'HOME')
+      expect(homeStats.yellowCards).toBe(1)
+      expect(homeStats.redCards).toBe(1)
+    })
+
+    it('conta impedimentos', () => {
+      const events = [
+        { possession: 'HOME', penaltyEvent: { type: 'OFFSIDE', possession: 'HOME', favoredPossession: 'AWAY' } },
+        { possession: 'HOME', penaltyEvent: { type: 'OFFSIDE', possession: 'HOME', favoredPossession: 'AWAY' } },
+      ]
+      const homeStats = computeTeamMatchStats(events, 'HOME')
+      expect(homeStats.offsides).toBe(2)
+    })
+
+    it('conta roubadas de bola e defesas do goleiro', () => {
+      const events = [
+        { defensivePlay: { possession: 'HOME', ballStolen: true } },
+        { defensivePlay: { possession: 'HOME', success: true, isGoalkeeper: true } },
+        { defensivePlay: { possession: 'AWAY', ballStolen: true } },
+      ]
+      const homeStats = computeTeamMatchStats(events, 'HOME')
+      expect(homeStats.ballSteals).toBe(1)
+      expect(homeStats.goalkeeperSaves).toBe(1)
+    })
+  })
+
+  describe('calculateMatchXp com stats', () => {
+    it('concede bônus por gols marcados', () => {
+      const withoutStats = calculateMatchXp({
+        gameMode: 'QUICK_MATCH',
+        result: 'WIN',
+        userLevel: 1,
+        cap: 100,
+      })
+      const withStats = calculateMatchXp({
+        gameMode: 'QUICK_MATCH',
+        result: 'WIN',
+        userLevel: 1,
+        cap: 100,
+        stats: {
+          goals: 3,
+          yellowCards: 0, redCards: 0,
+          foulsCommitted: 0, foulsSuffered: 0,
+          offsides: 0, ballSteals: 0,
+          goalkeeperSaves: 0,
+          totalPlays: 0, successfulPlays: 0, specialEvents: 0,
+        },
+      })
+      // 3 gols * 3 = 9 XP extra
+      expect(withStats.totalXp).toBe(withoutStats.totalXp + 9)
+    })
+
+    it('aplica penalidade por cartões', () => {
+      const withoutStats = calculateMatchXp({
+        gameMode: 'QUICK_MATCH',
+        result: 'WIN',
+        userLevel: 1,
+        cap: 100,
+      })
+      const withCards = calculateMatchXp({
+        gameMode: 'QUICK_MATCH',
+        result: 'WIN',
+        userLevel: 1,
+        cap: 100,
+        stats: {
+          goals: 0,
+          yellowCards: 2, redCards: 1,
+          foulsCommitted: 3, foulsSuffered: 0,
+          offsides: 1, ballSteals: 0,
+          goalkeeperSaves: 0,
+          totalPlays: 0, successfulPlays: 0, specialEvents: 0,
+        },
+      })
+      // -2 (amarelos) -3 (vermelho) -1 (impedimento) = -6
+      expect(withCards.totalXp).toBe(Math.max(0, withoutStats.totalXp - 6))
+    })
+
+    it('nunca retorna XP negativo', () => {
+      const result = calculateMatchXp({
+        gameMode: 'QUICK_MATCH',
+        result: 'LOSS',
+        userLevel: 1,
+        cap: 100,
+        stats: {
+          goals: 0,
+          yellowCards: 10, redCards: 10,
+          foulsCommitted: 20, foulsSuffered: 0,
+          offsides: 10, ballSteals: 0,
+          goalkeeperSaves: 0,
+          totalPlays: 0, successfulPlays: 0, specialEvents: 0,
+        },
+      })
+      expect(result.totalXp).toBeGreaterThanOrEqual(0)
+    })
+
+    it('inclui bônus de roubo de bola e defesa do goleiro', () => {
+      const withoutStats = calculateMatchXp({
+        gameMode: 'QUICK_MATCH',
+        result: 'WIN',
+        userLevel: 1,
+        cap: 100,
+      })
+      const withDefensiveStats = calculateMatchXp({
+        gameMode: 'QUICK_MATCH',
+        result: 'WIN',
+        userLevel: 1,
+        cap: 100,
+        stats: {
+          goals: 0,
+          yellowCards: 0, redCards: 0,
+          foulsCommitted: 0, foulsSuffered: 0,
+          offsides: 0,
+          ballSteals: 2, goalkeeperSaves: 2,
+          totalPlays: 0, successfulPlays: 0, specialEvents: 0,
+        },
+      })
+      // 2 roubos * 2 = 4 + 2 defesas * 3 = 6 = 10 XP extra
+      expect(withDefensiveStats.totalXp).toBe(withoutStats.totalXp + 10)
     })
   })
 })

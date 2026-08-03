@@ -22,7 +22,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Swords, Trophy, ArrowLeft, Coins, Play, Loader2, History, ChevronRight,
-  AlertTriangle, Users, Pause, RotateCcw, Clock, Coffee, Zap, Share2,
+  AlertTriangle, Users, Pause, RotateCcw, Clock, Coffee, Zap, Share2, Sparkles,
 } from 'lucide-react'
 import { CoinFlip } from './CoinFlip'
 import { DiceRoll } from './DiceRoll'
@@ -32,6 +32,8 @@ import { VARReview } from './VARReview'
 import { FreeKickDialog } from './FreeKickDialog'
 import { DefensivePlayDialog } from './DefensivePlayDialog'
 import { MatchInviteDialog } from './MatchInviteDialog'
+import { EventHistoryPanel } from './EventHistoryPanel'
+import { XpPanel } from '@/components/user/XpPanel'
 import {
   sampleActions, sampleMixedActions, CATEGORY_META,
   type FootballAction,
@@ -177,6 +179,14 @@ export function MatchArena({
     exceptional: boolean
   } | null>(null)
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
+
+  // ===== XP granted info (mostrado na tela de FINISHED) =====
+  // Populado quando uma jogada finaliza a partida e concede XP.
+  const [xpGrantedInfo, setXpGrantedInfo] = useState<{
+    amount: number
+    leveledUp: boolean
+    newLevel: number
+  } | null>(null)
 
   // ===== Defensive Play State (roubada de bola) =====
   // Controla o diálogo de jogada defensiva que aparece durante o turno
@@ -772,6 +782,33 @@ export function MatchArena({
         }))
         setDiceRolling(false)
 
+        // ===== FIX: Captura XP concedido quando a partida termina =====
+        if (data.newState.status === 'FINISHED' && data.xpGranted) {
+          // Busca o profile para verificar level-up
+          try {
+            const profileRes = await fetch('/api/user/profile', { cache: 'no-store' })
+            const profileData = await profileRes.json()
+            if (profileData.ok) {
+              // Heurística simples: se a partida terminou e XP foi concedido,
+              // mostramos o amount base do modo. Level-up é detectado comparando
+              // o nível atual com o nível anterior (que não temos, então
+              // apenas mostramos o nível atual).
+              const xpAmount = winnerIsMe
+                ? modeConfig.xpWin
+                : data.newState.winner === 'DRAW'
+                ? modeConfig.xpDraw
+                : modeConfig.xpLose
+              setXpGrantedInfo({
+                amount: xpAmount,
+                leveledUp: false, // não temos como saber sem estado anterior
+                newLevel: profileData.profile.level,
+              })
+            }
+          } catch (err) {
+            console.error('[MatchArena] profile fetch error:', err)
+          }
+        }
+
         // Toast para eventos especiais
         if (data.event.isGoal) {
           const scorer = data.event.possession === 'HOME' ? homeUser.username : awayUser.username
@@ -810,6 +847,21 @@ export function MatchArena({
             duration: 4000,
             style: { background: pe.type === 'RED_CARD' ? '#7f1d1d' : pe.type === 'INJURY' ? '#78350f' : '#1e293b' },
           })
+
+          // ===== FIX: Persiste o pendingFreeKick retornado pela action API =====
+          // O servidor já sorteou multiplicador + cobrador. Sem isto, o
+          // FreeKickDialog abria com pendingFreeKickInfo=null e não renderizava,
+          // deixando o jogo travado (processing=true para sempre).
+          if (data.pendingFreeKick && pe.favoredPossession === mySide) {
+            setPendingFreeKickInfo({
+              multiplier: data.pendingFreeKick.multiplier,
+              taker: data.pendingFreeKick.taker,
+              nonce: data.pendingFreeKick.nonce,
+              favoredPossession: data.pendingFreeKick.favoredPossession,
+              penaltyType: pe.type,
+              description: pe.description,
+            })
+          }
 
           setTimeout(() => {
             handlePenaltyFlow(pe)
@@ -861,6 +913,9 @@ export function MatchArena({
       }
       setSubInjuredPlayer(injPlayer)
       setSubOpen(true)
+      // FIX: Libera processing para o usuário interagir com o SubstitutionModal.
+      // Antes, processing continuava true e o modal não respondia.
+      setProcessing(false)
       return
     }
     // BUG FIX: Only show FreeKickDialog if the free kick favors MY team.
@@ -869,6 +924,10 @@ export function MatchArena({
       if (pe.favoredPossession === mySide) {
         setFreeKickPossession(pe.favoredPossession)
         setFreeKickOpen(true)
+        // FIX: Libera processing para o usuário escolher a jogada de cobrança.
+        // O `resolving` do FreeKickDialog fica false até o usuário clicar;
+        // então `handleFreeKickPlay` re-seta processing=true durante o fetch.
+        setProcessing(false)
         return
       }
       // Free kick favors opponent — skip dialog and transition to their turn
@@ -879,6 +938,7 @@ export function MatchArena({
       if (pe.favoredPossession === mySide) {
         setFreeKickPossession(pe.favoredPossession)
         setFreeKickOpen(true)
+        setProcessing(false)
         return
       }
       // Penalty favors opponent — skip dialog and transition to their turn
@@ -959,6 +1019,8 @@ export function MatchArena({
         toast.error('Falha na cobrança de falta', {
           description: data.error || `HTTP ${res.status}`,
         })
+        // FIX: Limpa pendingFreeKickInfo para não reabrir o dialog
+        setPendingFreeKickInfo(null)
         finishPenaltyAndContinue()
         return
       }
@@ -979,6 +1041,9 @@ export function MatchArena({
         matchEndReason: ns.matchEndReason,
         events: [...s.events, data.event],
       }))
+
+      // FIX: Limpa pendingFreeKickInfo (já foi resolvida)
+      setPendingFreeKickInfo(null)
 
       // Exibe o multiplicador como toast (feedback visual)
       if (data.multiplier) {
@@ -1244,6 +1309,22 @@ export function MatchArena({
         coinResult: serverState.coinResult || s.coinResult,
         matchEndReason: serverState.matchEndReason || '',
       }))
+
+      // ===== FIX: Sincroniza pendingFreeKickInfo com o servidor =====
+      // Para o jogador que NÃO gerou a falta (ex.: bot em modo offline, ou
+      // o oponente em multiplayer), o pendingFreeKick chega via polling.
+      // Sem isto, o FreeKickDialog nunca abria para o cobrador correto.
+      if (serverState.pendingFreeKick && serverState.pendingFreeKick.favoredPossession === mySide) {
+        setPendingFreeKickInfo(serverState.pendingFreeKick)
+        // Se o dialog ainda não está aberto, abre agora
+        if (!freeKickOpen && !processing) {
+          setFreeKickPossession(serverState.pendingFreeKick.favoredPossession)
+          setFreeKickOpen(true)
+        }
+      } else if (!serverState.pendingFreeKick && pendingFreeKickInfo) {
+        // Servidor já não tem pending — limpa local
+        setPendingFreeKickInfo(null)
+      }
 
       // Update phase based on new status
       if (serverState.status === 'COIN_FLIP' && !serverState.coinResult) {
@@ -2103,105 +2184,78 @@ export function MatchArena({
 
         {/* ===== FASE: FINISHED ===== */}
         {phase === 'FINISHED' && (
-          <Card className="border-amber-500/40 bg-gray-900/60">
-            <CardContent className="flex flex-col items-center gap-6 p-8">
-              <motion.div
-                initial={{ scale: 0, rotate: -180 }}
-                animate={{ scale: 1, rotate: 0 }}
-                transition={{ type: 'spring', stiffness: 200, damping: 15 }}
-              >
-                <Trophy className={`h-20 w-20 ${winnerIsMe ? 'text-amber-400' : 'text-gray-500'}`} />
-              </motion.div>
-              <div className="text-center">
-                <h2 className="text-3xl font-bold text-amber-400">
-                  {state.winner === 'DRAW' ? 'EMPATE!' : winnerIsMe ? 'VITÓRIA!' : 'DERROTA'}
-                </h2>
-                {state.matchEndReason && (
-                  <p className="mt-1 text-sm text-gray-400">{state.matchEndReason}</p>
-                )}
-                <p className="mt-2 text-sm text-gray-400">
-                  Placar final: <strong className="text-emerald-400">{homeUser.username} {state.homeScore}</strong> ·{' '}
-                  <strong className="text-sky-400">{state.awayScore} {awayUser.username}</strong>
-                </p>
-                <p className="mt-1 text-xs text-gray-500">
-                  {winnerIsMe ? `+${modeConfig.xpWin} XP` : state.winner === 'DRAW' ? `+${modeConfig.xpDraw} XP` : `+${modeConfig.xpLose} XP`}
-                  {' '}({modeConfig.emoji} {modeConfig.label})
-                </p>
-              </div>
-              <Button onClick={onExit} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
-                <ArrowLeft className="h-4 w-4" />
-                Voltar ao Lobby
-              </Button>
-            </CardContent>
-          </Card>
+          <div className="space-y-4">
+            <Card className="border-amber-500/40 bg-gray-900/60">
+              <CardContent className="flex flex-col items-center gap-6 p-8">
+                <motion.div
+                  initial={{ scale: 0, rotate: -180 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+                >
+                  <Trophy className={`h-20 w-20 ${winnerIsMe ? 'text-amber-400' : 'text-gray-500'}`} />
+                </motion.div>
+                <div className="text-center">
+                  <h2 className="text-3xl font-bold text-amber-400">
+                    {state.winner === 'DRAW' ? 'EMPATE!' : winnerIsMe ? 'VITÓRIA!' : 'DERROTA'}
+                  </h2>
+                  {state.matchEndReason && (
+                    <p className="mt-1 text-sm text-gray-400">{state.matchEndReason}</p>
+                  )}
+                  <p className="mt-2 text-sm text-gray-400">
+                    Placar final: <strong className="text-emerald-400">{homeUser.username} {state.homeScore}</strong> ·{' '}
+                    <strong className="text-sky-400">{state.awayScore} {awayUser.username}</strong>
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {winnerIsMe ? `+${modeConfig.xpWin} XP base` : state.winner === 'DRAW' ? `+${modeConfig.xpDraw} XP base` : `+${modeConfig.xpLose} XP base`}
+                    {' '}({modeConfig.emoji} {modeConfig.label})
+                  </p>
+                  {xpGrantedInfo && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.5 }}
+                      className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-4 py-1.5"
+                    >
+                      <Sparkles className="h-4 w-4 text-emerald-400" />
+                      <span className="text-sm font-bold text-emerald-300">
+                        +{xpGrantedInfo.amount} XP concedido!
+                      </span>
+                      {xpGrantedInfo.leveledUp && (
+                        <Badge variant="outline" className="border-amber-400/50 bg-amber-400/20 text-amber-200">
+                          🎉 Subiu para o nível {xpGrantedInfo.newLevel}!
+                        </Badge>
+                      )}
+                    </motion.div>
+                  )}
+                </div>
+                <Button onClick={onExit} className="gap-2 bg-emerald-600 hover:bg-emerald-700">
+                  <ArrowLeft className="h-4 w-4" />
+                  Voltar ao Lobby
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* ===== XP Panel: mostra progresso de nível após a partida ===== */}
+            <XpPanel />
+          </div>
         )}
 
-        {/* ===== Histórico de jogadas ===== */}
+        {/* ===== Histórico de jogadas (EventHistoryPanel) =====
+            Substitui a lista simples por um painel mais rico com:
+            - Badges para GOL, Crit, Fail
+            - Cores por categoria de jogada
+            - Destaque para o último evento
+            - Indicadores visuais para faltas, cartões, lesões */}
         {state.events.length > 0 && (
           <Card className="mt-6 border-gray-700/50 bg-gray-900/40">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm text-gray-300">
                 <History className="h-4 w-4" />
-                Histórico ({state.events.length})
+                Histórico de Eventos ({state.events.length})
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <ScrollArea className="h-[200px] pr-2">
-                <ul className="space-y-1">
-                  {[...state.events].reverse().map((e, i) => {
-                    const scorer = e.possession === 'HOME' ? homeUser : awayUser
-                    return (
-                      <li
-                        key={i}
-                        className="flex items-center gap-2 rounded bg-gray-800/40 p-2 text-xs"
-                      >
-                        <span className="font-mono text-gray-500">#{e.turn}</span>
-                        <span className="text-lg">{e.action.emoji}</span>
-                        <span className="flex-1 truncate">
-                          <strong className={e.possession === 'HOME' ? 'text-emerald-400' : 'text-sky-400'}>
-                            {scorer.username}
-                          </strong>{' '}
-                          {e.narrative ? (
-                            <span className="text-amber-200">{e.narrative}</span>
-                          ) : (
-                            <>
-                              {e.playerName && (
-                                <span className="text-amber-300">{e.playerName} </span>
-                              )}
-                              fez <strong>{e.action.name}</strong>
-                            </>
-                          )}
-                        </span>
-                        <span className="font-mono text-gray-400">
-                          🎲{e.roll.dice}+{e.roll.bonus}={e.roll.total}
-                        </span>
-                        {e.isGoal && <span className="text-amber-400">⚽ GOL!</span>}
-                        {e.penaltyEvent && (
-                          <span className={
-                            e.penaltyEvent.type === 'RED_CARD' ? 'text-red-400' :
-                            e.penaltyEvent.type === 'YELLOW_CARD' ? 'text-yellow-400' :
-                            e.penaltyEvent.type === 'INJURY' ? 'text-orange-400' :
-                            e.penaltyEvent.type === 'PENALTY_KICK' ? 'text-white' :
-                            'text-gray-400'
-                          }>
-                            {e.penaltyEvent.type === 'FOUL' && '🟨'}
-                            {e.penaltyEvent.type === 'OFFSIDE' && '🚫'}
-                            {e.penaltyEvent.type === 'YELLOW_CARD' && '🟡'}
-                            {e.penaltyEvent.type === 'RED_CARD' && '🔴'}
-                            {e.penaltyEvent.type === 'INJURY' && '🏥'}
-                            {e.penaltyEvent.type === 'PENALTY_KICK' && '⚪'}
-                            {e.penaltyEvent.type === 'VAR_REVIEW' && '📺'}
-                            {e.penaltyEvent.type === 'CORNER' && '🚩'}
-                            {e.penaltyEvent.type === 'BALL_OUT' && '📤'}
-                          </span>
-                        )}
-                        {!e.isGoal && !e.penaltyEvent && e.roll.success && <span className="text-emerald-400">✓</span>}
-                        {!e.isGoal && !e.penaltyEvent && !e.roll.success && <span className="text-red-400">✗</span>}
-                      </li>
-                    )
-                  })}
-                </ul>
-              </ScrollArea>
+              <EventHistoryPanel events={state.events} maxItems={30} highlightLast />
             </CardContent>
           </Card>
         )}

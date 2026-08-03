@@ -32,6 +32,7 @@ import { MatchArena } from '@/components/match/MatchArena'
 import { InviteCodeEntryDialog } from '@/components/match/InviteCodeEntryDialog'
 import { TeamRatingCard } from '@/components/football/TeamRatingCard'
 import { GameModeSelector } from '@/components/football/GameModeSelector'
+import { XpPanel } from '@/components/user/XpPanel'
 import { useTeamStore, hydrateTeamStore, type SelectedPlayer } from '@/lib/football/store'
 import { getFormation, type FieldPosition } from '@/lib/football/formations'
 import { toast } from 'sonner'
@@ -598,6 +599,9 @@ export function TeamBuilderApp({ inviteCode }: Props) {
             {/* Team Rating Card + Stats/Share buttons */}
             <div className="mt-4 space-y-3">
               <TeamRatingCard starters={starters} reserves={reserves} />
+
+              {/* XP Panel — só mostra se o usuário estiver logado */}
+              {currentUser && <XpPanel />}
 
               {/* Quick action buttons */}
               {startersCount > 0 && (

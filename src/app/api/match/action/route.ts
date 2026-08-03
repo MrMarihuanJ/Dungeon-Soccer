@@ -41,6 +41,7 @@ import {
   applyYellowCard,
   type ExtendedTeamMatchState,
 } from '@/lib/player-match-state'
+import { hydrateTeamStateFromUserId } from '@/lib/team-state-hydration'
 import { assignFreeKick, serializePendingFreeKick, type PendingFreeKickState } from '@/lib/free-kick-system'
 import { grantMatchXp } from './grant-xp-helper'
 
@@ -268,6 +269,18 @@ export async function POST(req: NextRequest) {
         awayTeamState = normalizeTeamState(JSON.parse(match.awayTeamStateJson) as TeamMatchState)
       }
     } catch { /* use default */ }
+
+    // ===== HYDRATION FALLBACK (v3.2) =====
+    // Para partidas legadas (criadas antes da hidratação em match-create),
+    // playerStates pode estar vazio — o que faria getPlayerStatus() retornar
+    // ACTIVE para todos (incluindo reservas). Hidratamos aqui para garantir
+    // que o filtro de candidatos a cobrador (status === 'ACTIVE') funcione.
+    if ((homeTeamState.playerStates ?? []).length === 0) {
+      homeTeamState = await hydrateTeamStateFromUserId(match.homeUserId, homeTeamState)
+    }
+    if ((awayTeamState.playerStates ?? []).length === 0 && match.awayUserId) {
+      awayTeamState = await hydrateTeamStateFromUserId(match.awayUserId, awayTeamState)
+    }
 
     const state: MatchState = {
       matchId: match.id,
