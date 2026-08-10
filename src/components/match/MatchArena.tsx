@@ -48,6 +48,7 @@ import {
   shouldOfferDefensivePlay, initialDefensiveOfferDelayMs, nextDefensiveOfferDelayMs,
 } from '@/lib/match-engine'
 import { useTeamStore, hydrateTeamStore, type SelectedPlayer } from '@/lib/football/store'
+import type { ExtendedTeamMatchState } from '@/lib/player-match-state'
 import { toast } from 'sonner'
 
 interface Player {
@@ -166,6 +167,13 @@ export function MatchArena({
       }
     | null
   >(null)
+  // ===== Passo 6: Lista de cobradores elegíveis para pênalti =====
+  // Populada via /api/match/penalty-taker-select quando o FreeKickDialog
+  // abre para um pênalti. Permite ao usuário escolher quem cobra.
+  const [penaltyEligibleTakers, setPenaltyEligibleTakers] = useState<
+    Array<{ id: string; name: string; position: string; overall?: number }>
+  >([])
+  const [selectingTaker, setSelectingTaker] = useState(false)
   // ===== Última rolagem de dado (para animação) =====
   const [lastDiceRoll, setLastDiceRoll] = useState<number | null>(null)
   const [lastRollResult, setLastRollResult] = useState<{
@@ -227,11 +235,28 @@ export function MatchArena({
   // Usado para o DefensivePlayDialog (roubada de bola) — não faz sentido
   // oferecer uma jogada defensiva para um jogador que não está em campo.
   const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
+  // ===== Passo 10-11: Filtra titulares ativos em campo =====
+  // --------------------------------------------------------------------
+  // Jogadores lesionados, expulsos, substituídos ou indisponíveis NÃO
+  // aparecem como titulares ativos. Isto garante que a UI reflita o
+  // estado real da partida: um jogador lesionado/substituído não pode
+  // mais ser alvo de ações, não aparece como titular disponível e não
+  // é elegível para cobranças, fintas, ou qualquer jogada posterior.
+  // --------------------------------------------------------------------
   const activeStarters = useMemo(() => {
+    const extended = myTeamState as ExtendedTeamMatchState
+    const playerStates = extended.playerStates ?? []
     return myStarters.filter((p) => {
       if (!p) return false
+      // Caminho granular: usa o status real do jogador se disponível
+      const ps = playerStates.find((s) => s.playerId === p.id)
+      if (ps) {
+        return ps.status === 'ACTIVE'
+      }
+      // Fallback legado: exclui por arrays
       if (myTeamState.sentOffPlayers.includes(p.id)) return false
       if (myTeamState.injuredPlayers.includes(p.id)) return false
+      if (extended.substitutedOut?.includes(p.id)) return false
       return true
     })
   }, [myStarters, myTeamState])
@@ -1083,6 +1108,113 @@ export function MatchArena({
       console.error('[MatchArena] free-kick-resolve error:', err)
       toast.error('Erro de rede na cobrança. Tente novamente.')
       finishPenaltyAndContinue()
+    }
+  }
+
+  // ====================================================================
+  // Passo 6: Fetch eligible penalty takers when FreeKickDialog opens
+  // --------------------------------------------------------------------
+  // Quando o pendingFreeKick é um PENALTY_KICK e favorece o meu time,
+  // buscamos a lista de jogadores elegíveis para o usuário escolher quem
+  // cobra. A lista vem do servidor, que valida elegibilidade (ativo,
+  // em campo, não lesionado, não expulso, não substituído).
+  // ====================================================================
+  useEffect(() => {
+    if (!freeKickOpen || !pendingFreeKickInfo) {
+      setPenaltyEligibleTakers([])
+      return
+    }
+    if (pendingFreeKickInfo.penaltyType !== 'PENALTY_KICK') {
+      setPenaltyEligibleTakers([])
+      return
+    }
+    if (pendingFreeKickInfo.favoredPossession !== mySide) {
+      setPenaltyEligibleTakers([])
+      return
+    }
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(
+          `/api/match/penalty-taker-select?matchId=${encodeURIComponent(state.matchId)}`,
+          { cache: 'no-store' },
+        )
+        if (!res.ok) return
+        const data = await res.json()
+        if (!data.ok || cancelled) return
+
+        // Cross-reference com myStarters (para nomes/overall).
+        // O servidor retorna apenas IDs + status; precisamos dos nomes
+        // para exibir na UI. Se não achar no myStarters, usa fallback.
+        const eligible = (data.eligiblePlayers ?? []).map((ep: { id: string; status: string }) => {
+          const player = myStarters.find((p) => p.id === ep.id)
+          return {
+            id: ep.id,
+            name: player?.name ?? ep.id,
+            position: player?.position ?? 'MF',
+            overall: player?.overall,
+          }
+        })
+        if (!cancelled) setPenaltyEligibleTakers(eligible)
+      } catch (err) {
+        console.error('[MatchArena] fetch eligible takers failed:', err)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [freeKickOpen, pendingFreeKickInfo?.nonce, mySide, myStarters, state.matchId])
+
+  // ====================================================================
+  // Passo 6: User selected a penalty taker
+  // --------------------------------------------------------------------
+  // Chama /api/match/penalty-taker-select com o playerId escolhido.
+  // O servidor valida elegibilidade e atualiza o pending. Em sucesso,
+  // atualizamos o pendingFreeKickInfo local com o novo taker.
+  // ====================================================================
+  const handleSelectPenaltyTaker = async (playerId: string) => {
+    setSelectingTaker(true)
+    try {
+      // Envia players map para o servidor ter nomes/posições
+      const playersMap: Record<string, { name: string; position: string; overall?: number }> = {}
+      for (const p of myStarters) {
+        playersMap[p.id] = { name: p.name, position: p.position, overall: p.overall }
+      }
+
+      const res = await fetch('/api/match/penalty-taker-select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matchId: state.matchId,
+          takerPlayerId: playerId,
+          players: playersMap,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        toast.error('Falha ao selecionar cobrador', {
+          description: data.error || `HTTP ${res.status}`,
+        })
+        return
+      }
+
+      // Atualiza pendingFreeKickInfo com o novo taker
+      setPendingFreeKickInfo((prev) =>
+        prev
+          ? {
+              ...prev,
+              taker: data.taker,
+            }
+          : prev,
+      )
+      toast.success(`✅ ${data.taker.playerName} é o novo cobrador!`)
+    } catch (err) {
+      console.error('[MatchArena] taker select error:', err)
+      toast.error('Erro de rede ao selecionar cobrador.')
+    } finally {
+      setSelectingTaker(false)
     }
   }
 
@@ -2290,6 +2422,9 @@ export function MatchArena({
         pendingFreeKick={pendingFreeKickInfo}
         onResolve={handleFreeKickPlay}
         resolving={processing}
+        eligibleTakers={penaltyEligibleTakers}
+        onSelectTaker={handleSelectPenaltyTaker}
+        selectingTaker={selectingTaker}
       />
 
       {/* ===== Defensive Play Dialog (roubada de bola) =====

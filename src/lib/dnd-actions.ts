@@ -279,6 +279,15 @@ export function sampleFreeKickActions(count: number): FootballAction[] {
   return shuffled.slice(0, Math.min(count, pool.length))
 }
 
+// Sorteia N jogadas de chute ao gol (usadas em cobranças de pênalti)
+// Passo 4: em pênaltis, oferecemos também chutes diretos ao gol,
+// além das jogadas de cobrança de falta.
+export function sampleShootActions(count: number): FootballAction[] {
+  const pool = getActionsByCategory('SHOOT')
+  const shuffled = [...pool].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, Math.min(count, pool.length))
+}
+
 export const CATEGORY_META: Record<ActionCategory, { label: string; color: string; emoji: string }> = {
   KICKOFF:  { label: 'Saída de Bola',    color: 'from-blue-500 to-blue-700',        emoji: '🥅' },
   PASS:     { label: 'Passe',            color: 'from-emerald-500 to-emerald-700',  emoji: '⚽' },
@@ -287,4 +296,23 @@ export const CATEGORY_META: Record<ActionCategory, { label: string; color: strin
   DEFEND:   { label: 'Defesa',           color: 'from-amber-500 to-amber-700',      emoji: '🛡️' },
   SPECIAL:  { label: 'Especial',         color: 'from-yellow-400 to-orange-600',    emoji: '✨' },
   FREE_KICK: { label: 'Cobrança de Falta', color: 'from-teal-500 to-teal-700',         emoji: '🎯' },
+}
+
+// =====================================================================
+// Passo 4: Quando uma jogada for um pênalti, a descrição exibida ao
+// usuário deve ser "Chute na marca do pênalti" (não "Chute ao Gol").
+// --------------------------------------------------------------------
+// Esta função é usada por componentes de UI para obter o rótulo correto
+// do rótulo da categoria, considerando se o contexto é de um pênalti.
+// =====================================================================
+export const PENALTY_KICK_LABEL = 'Chute na marca do pênalti'
+
+export function getCategoryLabelForContext(
+  category: ActionCategory,
+  isPenaltyKick: boolean = false,
+): string {
+  if (isPenaltyKick && (category === 'SHOOT' || category === 'FREE_KICK')) {
+    return PENALTY_KICK_LABEL
+  }
+  return CATEGORY_META[category].label
 }

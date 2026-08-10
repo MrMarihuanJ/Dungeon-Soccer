@@ -295,6 +295,15 @@ export interface PenaltyEvent {
   requiresVAR: boolean      // se precisa revisão do VAR
   varDecision?: 'CONFIRMED' | 'OVERTURNED'  // decisão do VAR
   requiresFreeKick: boolean  // se precisa cobrança de falta
+  // ===== REFAZER PÊNALTI: só válido quando a falta ocorre dentro da área =====
+  // Regra crítica do Passo 5: um pênalti somente pode ocorrer quando existir
+  // uma falta cometida dentro da área penal. O campo `inPenaltyArea` é
+  // populado pelo `applyActionToState` com base no progresso do time que
+  // defende (progresso do ADVERSÁRIO >= 75 significa que a jogada está
+  // dentro da área penal). Quando `inPenaltyArea=false`, qualquer
+  // `PENALTY_KICK` sorteado por `generatePenaltyEvent` é re-rolado como
+  // `FOUL` (falta comum fora da área).
+  inPenaltyArea?: boolean
 }
 
 export interface TeamMatchState {
@@ -466,9 +475,10 @@ const PENALTY_DESCRIPTIONS: Record<PenaltyEventType, string[]> = {
     'Colisão forte! Jogador no chão!',
   ],
   PENALTY_KICK: [
-    'PÊNALTI! Falta dentro da área!',
-    'Mão na bola do defensor! Pênalti marcado!',
-    'Carrinho na área! Pênalti!',
+    'PÊNALTI! Falta dentro da área! Cobrança da marca do pênalti.',
+    'Mão na bola do defensor! Pênalti marcado, chute na marca do pênalti.',
+    'Carrinho na área! Pênalti! Cobrança da marca do pênalti.',
+    'Falta dura dentro da área penal. Chute na marca do pênalti.',
   ],
   VAR_REVIEW: [
     '📺 VAR! Juiz pede revisão!',
@@ -481,6 +491,7 @@ export function generatePenaltyEvent(
   dice: number,
   possession: Possession,
   playerIds: string[] = [],
+  inPenaltyArea: boolean = false,
 ): PenaltyEvent | null {
   // Only trigger penalties on low dice rolls (1-5) or critical fails
   if (dice > 5 && dice !== 1) return null
@@ -489,21 +500,50 @@ export function generatePenaltyEvent(
   
   // Weight-based random selection depending on dice value
   const roll = Math.random()
+
+  // ===== REFAZER PÊNALTI (Passo 5) =====
+  // Pênalti só é permitido quando a falta ocorre dentro da área penal.
+  // Se `inPenaltyArea=false`, qualquer sorteio que resultaria em
+  // PENALTY_KICK é convertido em FOUL (falta comum) — a jogada acontece
+  // fora da área e o time favorecido cobra falta em vez de pênalti.
+  // Isto garante no nível da engine que nunca existirá um pênalti
+  // sem falta dentro da área, independentemente de chamadas da API.
+  const canPenalize = inPenaltyArea
+
+  // Helper para construir um evento de pênalti válido (apenas dentro da área)
+  const buildPenaltyKick = (): PenaltyEvent => ({
+    type: 'PENALTY_KICK',
+    possession,
+    favoredPossession: opponent,
+    description: PENALTY_DESCRIPTIONS.PENALTY_KICK[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.PENALTY_KICK.length)],
+    requiresSubstitution: false,
+    requiresVAR: Math.random() < 0.7,
+    requiresFreeKick: false,
+    inPenaltyArea: true,
+  })
+
+  // Helper para construir uma falta comum (sempre fora da área quando
+  // `inPenaltyArea=false`, ou dentro quando true mas sem pênalti)
+  const buildFoul = (): PenaltyEvent => ({
+    type: 'FOUL',
+    possession,
+    favoredPossession: opponent,
+    description: PENALTY_DESCRIPTIONS.FOUL[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.FOUL.length)],
+    requiresSubstitution: false,
+    requiresVAR: Math.random() < 0.2,
+    requiresFreeKick: true,
+    inPenaltyArea,
+  })
   
   // Dice 1 (critical fail) = much more likely to get severe penalties
   if (dice === 1) {
-    // Critical fail: 40% red card, 25% penalty, 20% injury, 10% yellow, 5% foul
-    if (roll < 0.25) {
-      const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
-      return {
-        type: 'PENALTY_KICK',
-        possession,
-        favoredPossession: opponent,
-        description: PENALTY_DESCRIPTIONS.PENALTY_KICK[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.PENALTY_KICK.length)],
-        requiresSubstitution: false,
-        requiresVAR: Math.random() < 0.7, // Penalty often goes to VAR
-        requiresFreeKick: false,
-      }
+    // Critical fail: 40% red card, 25% penalty (apenas se na área), 20% injury, 10% yellow, 5% foul
+    if (roll < 0.25 && canPenalize) {
+      return buildPenaltyKick()
+    }
+    if (roll < 0.25 && !canPenalize) {
+      // Sem área: converte pênalti em falta comum (fora da área)
+      return buildFoul()
     }
     if (roll < 0.65) {
       const pid = playerIds.length > 0 ? playerIds[Math.floor(Math.random() * playerIds.length)] : undefined
@@ -516,6 +556,7 @@ export function generatePenaltyEvent(
         requiresSubstitution: false,
         requiresVAR: Math.random() < 0.5,
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
     if (roll < 0.85) {
@@ -529,6 +570,7 @@ export function generatePenaltyEvent(
         requiresSubstitution: true,
         requiresVAR: false,
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
     if (roll < 0.95) {
@@ -542,32 +584,17 @@ export function generatePenaltyEvent(
         requiresSubstitution: false,
         requiresVAR: Math.random() < 0.3,
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
-    return {
-      type: 'FOUL',
-      possession,
-      favoredPossession: opponent,
-      description: PENALTY_DESCRIPTIONS.FOUL[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.FOUL.length)],
-      requiresSubstitution: false,
-      requiresVAR: Math.random() < 0.2,
-      requiresFreeKick: true,
-    }
+    return buildFoul()
   }
 
   // Dice 2-5: less severe but still possible
-  // 35% foul, 20% offside, 15% ball out, 12% corner, 8% yellow, 5% injury, 3% penalty, 2% VAR direct
+  // 35% foul, 20% offside, 15% ball out, 12% corner, 8% yellow, 5% injury, 3% penalty (apenas se na área), 2% VAR direct
   if (dice <= 5) {
     if (roll < 0.35) {
-      return {
-        type: 'FOUL',
-        possession,
-        favoredPossession: opponent,
-        description: PENALTY_DESCRIPTIONS.FOUL[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.FOUL.length)],
-        requiresSubstitution: false,
-        requiresVAR: Math.random() < 0.2,
-        requiresFreeKick: true,
-      }
+      return buildFoul()
     }
     if (roll < 0.55) {
       return {
@@ -578,6 +605,7 @@ export function generatePenaltyEvent(
         requiresSubstitution: false,
         requiresVAR: Math.random() < 0.6, // Offside commonly goes to VAR
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
     if (roll < 0.70) {
@@ -589,6 +617,7 @@ export function generatePenaltyEvent(
         requiresSubstitution: false,
         requiresVAR: false,
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
     if (roll < 0.82) {
@@ -600,6 +629,7 @@ export function generatePenaltyEvent(
         requiresSubstitution: false,
         requiresVAR: false,
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
     if (roll < 0.90) {
@@ -613,6 +643,7 @@ export function generatePenaltyEvent(
         requiresSubstitution: false,
         requiresVAR: Math.random() < 0.3,
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
     if (roll < 0.95) {
@@ -626,18 +657,15 @@ export function generatePenaltyEvent(
         requiresSubstitution: true,
         requiresVAR: false,
         requiresFreeKick: false,
+        inPenaltyArea,
       }
     }
-    if (roll < 0.98) {
-      return {
-        type: 'PENALTY_KICK',
-        possession,
-        favoredPossession: opponent,
-        description: PENALTY_DESCRIPTIONS.PENALTY_KICK[Math.floor(Math.random() * PENALTY_DESCRIPTIONS.PENALTY_KICK.length)],
-        requiresSubstitution: false,
-        requiresVAR: Math.random() < 0.8,
-        requiresFreeKick: false,
-      }
+    if (roll < 0.98 && canPenalize) {
+      return buildPenaltyKick()
+    }
+    if (roll < 0.98 && !canPenalize) {
+      // Sem área: pênalti vira falta
+      return buildFoul()
     }
     return {
       type: 'VAR_REVIEW',
@@ -647,6 +675,7 @@ export function generatePenaltyEvent(
       requiresSubstitution: false,
       requiresVAR: true,
       requiresFreeKick: false,
+      inPenaltyArea,
     }
   }
 
@@ -923,10 +952,33 @@ export function applyActionToState(
 
   newState.turnCount += 1
 
+  // ===== DETERMINA SE A JOGADA OCORREU DENTRO DA ÁREA PENAL =====
+  // --------------------------------------------------------------------
+  // Passo 5 (regra crítica): um pênalti somente pode ocorrer quando
+  // existir uma falta cometida dentro da área penal.
+  //
+  // Interpretação adotada (compatível com a engine atual):
+  //   - O `possession` (time com a bola) é quem "cometeu" a infração.
+  //   - O `favoredPossession` (oponente) é quem recebe a cobrança.
+  //   - Para que o oponente receba um PÊNALTI, a falta precisa ter
+  //     ocorrido dentro da área penal do time que cometeu (ou seja,
+  //     perto do gol do `possession`).
+  //   - O progresso de ataque do OPONENTE representa o quão perto ele
+  //     está do gol do `possession`. Se esse progresso for alto (≥75),
+  //     a jogada ocorreu no terço final, dentro ou muito próximo da
+  //     área penal do `possession`.
+  //   - Quando `inPenaltyArea=true`, o `generatePenaltyEvent` pode
+  //     sortear `PENALTY_KICK`; caso contrário, qualquer sorteio de
+  //     pênalti é convertido em `FOUL` (falta comum fora da área).
+  // --------------------------------------------------------------------
+  const opponentSide: Possession = possession === 'HOME' ? 'AWAY' : 'HOME'
+  const opponentAttackProgress = opponentSide === 'HOME' ? newState.homeProgress : newState.awayProgress
+  const inPenaltyArea = opponentAttackProgress >= 75
+
   // ===== PENALTY EVENT GENERATION =====
   // Generate penalty events on low dice rolls
   if (!roll.success && roll.dice <= 5) {
-    const penaltyEvent = generatePenaltyEvent(roll.dice, possession)
+    const penaltyEvent = generatePenaltyEvent(roll.dice, possession, [], inPenaltyArea)
     if (penaltyEvent) {
       event.penaltyEvent = penaltyEvent
       
@@ -981,7 +1033,7 @@ export function applyActionToState(
   }
   // Critical fail always generates a penalty
   if (roll.critical === 'crit_fail') {
-    const penaltyEvent = generatePenaltyEvent(1, possession)
+    const penaltyEvent = generatePenaltyEvent(1, possession, [], inPenaltyArea)
     if (penaltyEvent && !event.penaltyEvent) {
       event.penaltyEvent = penaltyEvent
       
@@ -995,6 +1047,16 @@ export function applyActionToState(
       }
       if (penaltyEvent.type === 'YELLOW_CARD') {
         teamState.yellowCards += 1
+      }
+      // ===== PÊNALTI em critical fail: também deve favorecer o oponente =====
+      if (penaltyEvent.type === 'PENALTY_KICK') {
+        newState.currentPossession = penaltyEvent.favoredPossession
+        event.possessionChanged = true
+        if (penaltyEvent.favoredPossession === 'HOME') {
+          newState.homeProgress = Math.min(100, newState.homeProgress + 60)
+        } else {
+          newState.awayProgress = Math.min(100, newState.awayProgress + 60)
+        }
       }
     }
   }

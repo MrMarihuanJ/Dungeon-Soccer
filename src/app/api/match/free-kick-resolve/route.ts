@@ -95,6 +95,31 @@ export async function POST(req: NextRequest) {
     }, { status: 400 })
   }
 
+  // ===== Passo 5/12: DEFESA NO BACKEND =====
+  // Se a pendência for PENALTY_KICK mas `inPenaltyArea !== true`, converte
+  // para uma cobrança de falta comum (sem pênalti). Isto nunca deveria
+  // acontecer porque o /api/match/action já protege, mas mantemos a
+  // verificação aqui por defesa em profundidade.
+  if (isPenaltyKick && pending.penaltyEvent.inPenaltyArea !== true) {
+    console.warn(
+      '[match/free-kick-resolve] PENALTY_KICK pendente sem inPenaltyArea=true — ' +
+      'abortando cobrança de pênalti. Possível bug ou manipulação.',
+      { matchId },
+    )
+    // Limpa o pendente e retorna erro
+    await db.match.update({
+      where: { id: matchId, version: match.version },
+      data: {
+        pendingPenaltyEventJson: null,
+        version: { increment: 1 },
+      },
+    }).catch(() => {})
+    return NextResponse.json(
+      { ok: false, error: 'Pênalti inválido: falta não ocorreu dentro da área. Cobrança cancelada.' },
+      { status: 400 },
+    )
+  }
+
   // ===== Reconstrói estado =====
   const gameMode = (match.gameMode || 'QUICK_MATCH') as GameMode
   const modeConfig = GAME_MODE_CONFIG[gameMode]

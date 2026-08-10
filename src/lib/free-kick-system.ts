@@ -319,6 +319,12 @@ export interface PendingFreeKickState {
   createdAt: number
   /** ID do último cobrador antes desta cobrança (para a próxima) */
   previousTakerId?: string
+  // ===== Passo 6: indica se o cobrador foi escolhido pelo usuário =====
+  // true  = o taker em `assignment.taker` foi escolhido pelo cliente
+  //         (após validação no servidor de que é elegível)
+  // false = o taker foi sorteado automaticamente pelo servidor (default)
+  // -------------------------------------------------------------------------
+  takerSelectedByUser?: boolean
 }
 
 export function serializePendingFreeKick(state: PendingFreeKickState): string {
@@ -335,5 +341,42 @@ export function deserializePendingFreeKick(json: string | null | undefined): Pen
     return null
   } catch {
     return null
+  }
+}
+
+// =====================================================================
+// Passo 6: Substituir o cobrador sorteado por um cobrador escolhido pelo
+// usuário. Esta função é chamada APENAS no servidor (API route), depois
+// de validar que o jogador escolhido é elegível (ativo, em campo, não
+// lesionado, não expulso, não substituído).
+// =====================================================================
+
+/**
+ * Valida que um jogador é um cobrador elegível.
+ * Elegibilidade = estar na lista de candidatos ativos.
+ */
+export function isEligibleTaker(
+  candidateIds: string[],
+  playerId: string,
+): boolean {
+  return candidateIds.includes(playerId)
+}
+
+/**
+ * Cria um novo PendingFreeKickState com o cobrador escolhido pelo usuário.
+ * Preserva o multiplicador (que continua aleatório e gerado no servidor).
+ * Marca `takerSelectedByUser = true` para auditoria.
+ */
+export function setTakerByUser(
+  pending: PendingFreeKickState,
+  taker: FreeKickTaker,
+): PendingFreeKickState {
+  return {
+    ...pending,
+    assignment: {
+      ...pending.assignment,
+      taker,
+    },
+    takerSelectedByUser: true,
   }
 }

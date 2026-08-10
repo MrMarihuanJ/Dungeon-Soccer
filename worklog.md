@@ -69,3 +69,79 @@ Stage Summary:
 - New UI: XpPanel, PlayerStatusBadge, EventHistoryPanel components
 - New API: /api/user/profile, /api/user/xp-history
 - 154 tests pass, 0 lint errors
+
+---
+Task ID: v3.3-penalty-fixes
+Agent: Super Z (main)
+Task: Implementar Passos 4-12 do brief: pênalti exige falta na área, escolha de cobrador, bônus aleatórios, lesão definitiva, proteção no backend.
+
+Work Log:
+- Mapeou arquitetura: match-engine.ts (gera PenaltyEvent), free-kick-system.ts (multiplicador + cobrador), player-match-state.ts (máquina de estados), action/free-kick-resolve/substitution routes (orquestração), FreeKickDialog/SubstitutionModal/MatchArena (UI).
+- Corrigido schema.prisma quebrado (`fields: omeUserId]` → `fields: [homeUserId]`, `@@index(omeUserId])` → `@@index([homeUserId])`). Prisma generate agora funciona.
+- Atualizado next.config.ts com `turbopack.root` para corrigir erro "Turbopack Error: Next.js package not found".
+
+Passo 4 (chute na marca do pênalti):
+- src/lib/match-engine.ts: PENALTY_DESCRIPTIONS.PENALTY_KICK reescrito para incluir "marca do pênalti" em todas as 4 variantes.
+- src/lib/dnd-actions.ts: Adicionado PENALTY_KICK_LABEL = 'Chute na marca do pênalti' e helper getCategoryLabelForContext(category, isPenaltyKick).
+- src/lib/dnd-actions.ts: Adicionado sampleShootActions(count) para sortear jogadas de SHOOT em cobranças de pênalti.
+- src/components/match/FreeKickDialog.tsx: Usa getCategoryLabelForContext para exibir "Chute na marca do pênalti" quando isPenaltyKick.
+
+Passo 5 (pênalti só com falta na área):
+- src/lib/match-engine.ts: PenaltyEvent ganhou campo `inPenaltyArea?: boolean`.
+- src/lib/match-engine.ts: generatePenaltyEvent agora aceita `inPenaltyArea: boolean = false`. Quando false, qualquer sorteio de PENALTY_KICK é convertido em FOUL (falta comum). Quando true, pênalti pode ser sorteado normalmente.
+- src/lib/match-engine.ts: applyActionToState calcula `inPenaltyArea` baseado no progresso de ataque do oponente (>= 75 = dentro da área penal) e passa para generatePenaltyEvent.
+- src/app/api/match/action/route.ts: Defesa em profundidade — se PENALTY_KICK chegar sem `inPenaltyArea=true`, converte para FOUL com log de aviso.
+- src/app/api/match/free-kick-resolve/route.ts: Defesa em profundidade — se pending for PENALTY_KICK sem `inPenaltyArea=true`, aborta cobrança e limpa pending.
+
+Passo 6 (escolha do cobrador de pênalti):
+- src/lib/free-kick-system.ts: PendingFreeKickState ganhou campo `takerSelectedByUser?: boolean`. Adicionadas funções isEligibleTaker(candidateIds, playerId) e setTakerByUser(pending, taker).
+- Novo endpoint: src/app/api/match/penalty-taker-select/route.ts (POST + GET). Valida autenticação, participação, que é pênalti, que usuário é o favorecido, e que takerPlayerId é elegível (status ACTIVE). Persiste com optimistic concurrency.
+- src/components/match/FreeKickDialog.tsx: Adicionada fase de seleção de cobrador. Props novas: eligibleTakers, onSelectTaker, selectingTaker. Mostra lista de jogadores ativos em campo; usuário clica para escolher.
+- src/components/match/MatchArena.tsx: Adicionado estado penaltyEligibleTakers e selectingTaker. useEffect busca /api/match/penalty-taker-select quando FreeKickDialog abre para pênalti. handleSelectPenaltyTaker chama o endpoint POST.
+- src/components/match/MatchArena.tsx: FreeKickDialog renderizado com os novos props.
+
+Passo 7-8 (bônus aleatórios não fixos):
+- Verificado que generateFreeKickMultiplier já é aleatório (weightedPick de -4 a +5, três targets). Nenhuma vantagem fixa por jogador.
+- pickFreeKickTaker usa pesos por posição (FW > MF > DF > GK) — isto é uma regra de jogo, não uma vantagem permanente de jogador específico.
+- Bônus varia entre partidas e entre jogadas (gerado fresh em cada assignFreeKick).
+- Testes adicionados garantem que nenhum valor aparece em >50% das chamadas.
+
+Passo 9 (aleatoriedade no servidor):
+- assignFreeKick e generateFreeKickMultiplier são chamados APENAS em API routes (/api/match/action e /api/match/penalty-taker-select). Nunca no cliente.
+- O multiplicador é persistido em pendingPenaltyEventJson e nunca muda após a geração (consistência após reload).
+- free-kick-resolve rola o d20 no servidor e aplica o multiplicador persistido.
+
+Passo 10-11 (lesão + substituição remove jogador):
+- src/components/match/MatchArena.tsx: activeStarters agora usa getPlayerStatus granular (filtra por status ACTIVE). Antes filtrava apenas por sentOffPlayers e injuredPlayers — não checava SUBSTITUTED ou UNAVAILABLE.
+- Agora jogadores lesionados, substituídos, expulsos e indisponíveis NÃO aparecem em activeStarters, logo não podem ser alvo de ações nem aparecer como disponíveis.
+
+Passo 12 (proteção no backend):
+- /api/match/action: PENALTY_KICK sem inPenaltyArea=true → convertido em FOUL.
+- /api/match/free-kick-resolve: PENALTY_KICK sem inPenaltyArea=true → cobrança abortada, pending limpo.
+- /api/match/penalty-taker-select: Valida que takerPlayerId está na lista de candidatos ACTIVE. Rejeita jogadores lesionados, substituídos, expulsos, indisponíveis, reservas não-entrados.
+- Todos os endpoints validam autenticação, participação, e usam optimistic concurrency via campo `version`.
+
+Passo 13 (schema do banco):
+- Nenhuma alteração de schema necessária. `inPenaltyArea` é armazenado dentro do JSON `eventsJson` e `pendingPenaltyEventJson`, não como coluna separada. Compatível com partidas existentes (campo opcional).
+
+Passo 15 (testes):
+- Novo arquivo: src/lib/__tests__/penalty-rules.test.ts com 39 testes cobrindo Passos 4-12.
+- Total: 193 testes passando (154 existentes + 39 novos).
+- Cobertura: rótulo pênalti, falta na área, seleção de cobrador, bônus aleatório, persistência, lesão definitiva, defesa backend.
+
+Passo 16 (verificações):
+- Lint: 0 erros, 2 warnings pré-existentes (não introduzidos).
+- Testes: 193/193 passando.
+- Build de produção: ✓ bem-sucedido, todas as rotas compiladas (incluindo nova /api/match/penalty-taker-select).
+- Dev server: ✓ HTTP 200 na home, sem erros no console.
+- Agent Browser: registrou usuário, navegou na home — sem erros.
+
+Stage Summary:
+- Schema quebrado CORRIGIDO (fields: omeUserId] → fields: [homeUserId]).
+- Pênalti agora EXIGE falta dentro da área (inPenaltyArea=true), validado em engine + 2 endpoints backend.
+- Cobrador de pênalti pode ser ESCOLHIDO pelo usuário entre jogadores ativos em campo.
+- Bônus são ALEATÓRIOS no servidor, nunca fixos, persistidos para consistência.
+- Jogadores lesionados/substituídos são DEFINITIVAMENTE removidos das listas de titulares ativos.
+- Rótulo "Chute na marca do pênalti" aparece em pênaltis (não "Chute ao Gol").
+- 39 novos testes validam todas as regras. Total: 193 testes passando.
+- Build de produção bem-sucedido. Aplicação roda sem erros no dev server.

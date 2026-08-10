@@ -350,6 +350,27 @@ export async function POST(req: NextRequest) {
       // ===== FREE KICK assignment =====
       // Se a jogada gerou uma cobrança de falta, persiste o estado pendente
       // para o cliente do cobrador abrir o FreeKickDialog.
+      //
+      // ===== Passo 5/12: DEFESA NO BACKEND =====
+      // Um pênalti somente pode ocorrer quando existir uma falta cometida
+      // dentro da área penal. O match-engine.ts já marca `inPenaltyArea`
+      // no PenaltyEvent com base no progresso de ataque do oponente.
+      // Aqui fazemos uma verificação adicional: se por qualquer motivo
+      // (bug, manipulação, evento legado) chegar um PENALTY_KICK sem
+      // `inPenaltyArea=true`, convertemos para FOUL (falta comum).
+      // Isto garante que NUNCA existirá um pênalti sem falta dentro da
+      // área, mesmo sob requisições diretas ao backend.
+      if (pe.type === 'PENALTY_KICK' && pe.inPenaltyArea !== true) {
+        console.warn(
+          '[match/action] PENALTY_KICK gerado sem inPenaltyArea=true — convertendo para FOUL. ' +
+          'Possível bug ou tentativa de manipulação.',
+          { matchId, type: pe.type, inPenaltyArea: pe.inPenaltyArea },
+        )
+        pe.type = 'FOUL'
+        pe.requiresFreeKick = true
+        pe.description = 'Falta fora da área. Cobrança de falta comum.'
+      }
+
       if (pe.requiresFreeKick || pe.type === 'PENALTY_KICK') {
         const favoredSide = pe.favoredPossession
         // Candidatos a cobrador: jogadores ativos do time favorecido.

@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   output: "standalone",
@@ -34,6 +35,12 @@ const nextConfig: NextConfig = {
         hostname: "thesportsdb.com",
       },
     ],
+  },
+  // Turbopack root: garante que o Next.js encontre o pacote `next` mesmo
+  // quando o projeto é servido a partir de um subdiretório.
+  // Isto corrige o erro "Turbopack Error: Next.js package not found".
+  turbopack: {
+    root: path.join(__dirname),
   },
 };
 
