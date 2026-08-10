@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest'
 import {
   sampleMixedActions,
   sampleFreeKickActions,
+  samplePenaltyKickActions,
   sampleActions,
   getActionsByCategory,
   ALL_ACTIONS,
@@ -33,6 +34,26 @@ describe('dnd-actions', () => {
         const actions = sampleMixedActions(5)
         actions.forEach((a) => {
           expect(a.category).not.toBe('KICKOFF')
+        })
+      }
+    })
+
+    it('NUNCA inclui o chute s12 ("Chute na Marca do Pênalti") em jogadas normais', () => {
+      // O s12 foi renomeado de "Pênalti" para "Chute na Marca do Pênalti"
+      // e removido do pool normal — só aparece em pênaltis (via falta na área).
+      for (let i = 0; i < 1000; i++) {
+        const actions = sampleMixedActions(5)
+        actions.forEach((a) => {
+          expect(a.id).not.toBe('s12')
+        })
+      }
+    })
+
+    it('NUNCA inclui jogadas de pênalti (id começa com "pk") em jogadas normais', () => {
+      for (let i = 0; i < 1000; i++) {
+        const actions = sampleMixedActions(5)
+        actions.forEach((a) => {
+          expect(a.id.startsWith('pk')).toBe(false)
         })
       }
     })
@@ -87,6 +108,27 @@ describe('dnd-actions', () => {
     it('retorna o número solicitado', () => {
       const actions = sampleFreeKickActions(3)
       expect(actions).toHaveLength(3)
+    })
+  })
+
+  describe('samplePenaltyKickActions', () => {
+    it('retorna apenas jogadas de pênalti (id começa com "pk")', () => {
+      for (let i = 0; i < 100; i++) {
+        const actions = samplePenaltyKickActions(3)
+        actions.forEach((a) => {
+          expect(a.id.startsWith('pk')).toBe(true)
+        })
+      }
+    })
+
+    it('retorna o número solicitado (até o tamanho do pool de 4)', () => {
+      const actions = samplePenaltyKickActions(3)
+      expect(actions).toHaveLength(3)
+    })
+
+    it('não excede o tamanho do pool', () => {
+      const actions = samplePenaltyKickActions(99)
+      expect(actions.length).toBeLessThanOrEqual(4) // temos 4 jogadas pk01-pk04
     })
   })
 

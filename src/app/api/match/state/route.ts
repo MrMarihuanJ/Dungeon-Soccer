@@ -66,6 +66,35 @@ export async function GET(req: NextRequest) {
   // Decodifica o pending free kick (se houver) para o cliente saber abrir o dialog
   const pendingFreeKick = deserializePendingFreeKick(match.pendingPenaltyEventJson)
 
+  // Constrói o payload do pendingFreeKick de forma segura (lida com pênalti
+  // — onde `assignment` é undefined e `penaltyKickPrep` contém os elegíveis).
+  let pendingFreeKickPayload: unknown = null
+  if (pendingFreeKick && pendingFreeKick.favoredPossession === (match.homeUserId === session.userId ? 'HOME' : 'AWAY')) {
+    const isPenaltyKick = pendingFreeKick.isPenaltyKick === true || pendingFreeKick.penaltyEvent.type === 'PENALTY_KICK'
+    if (isPenaltyKick && pendingFreeKick.penaltyKickPrep) {
+      // Modo pênalti: retorna lista de elegíveis com marcadores de bônus
+      pendingFreeKickPayload = {
+        isPenaltyKick: true,
+        eligibleTakers: pendingFreeKick.penaltyKickPrep.eligibleTakers,
+        nonce: pendingFreeKick.penaltyKickPrep.nonce,
+        favoredPossession: pendingFreeKick.favoredPossession,
+        penaltyType: 'PENALTY_KICK',
+        description: pendingFreeKick.penaltyEvent.description,
+      }
+    } else if (pendingFreeKick.assignment) {
+      // Modo falta normal: retorna cobrador sorteado + multiplicador
+      pendingFreeKickPayload = {
+        isPenaltyKick: false,
+        multiplier: pendingFreeKick.assignment.multiplier,
+        taker: pendingFreeKick.assignment.taker,
+        nonce: pendingFreeKick.assignment.nonce,
+        favoredPossession: pendingFreeKick.favoredPossession,
+        penaltyType: pendingFreeKick.penaltyEvent.type,
+        description: pendingFreeKick.penaltyEvent.description,
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     match: {
@@ -76,17 +105,7 @@ export async function GET(req: NextRequest) {
       homeTeamState,
       awayTeamState,
       // pendingPenaltyEventJson é exposto apenas ao cliente correto (o cobrador)
-      pendingFreeKick:
-        pendingFreeKick && pendingFreeKick.favoredPossession === (match.homeUserId === session.userId ? 'HOME' : 'AWAY')
-          ? {
-              multiplier: pendingFreeKick.assignment.multiplier,
-              taker: pendingFreeKick.assignment.taker,
-              nonce: pendingFreeKick.assignment.nonce,
-              favoredPossession: pendingFreeKick.favoredPossession,
-              penaltyType: pendingFreeKick.penaltyEvent.type,
-              description: pendingFreeKick.penaltyEvent.description,
-            }
-          : null,
+      pendingFreeKick: pendingFreeKickPayload,
       matchEndReason: match.status === 'FINISHED'
         ? (match.winner === 'DRAW' ? 'Empate!' : `Vitória de ${match.winner === 'HOME' ? match.homeUser?.username || 'Home' : match.awayUser?.username || 'Away'}!`)
         : '',

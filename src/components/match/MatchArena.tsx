@@ -154,11 +154,20 @@ export function MatchArena({
   const [myReserves, setMyReserves] = useState<SelectedPlayer[]>([])
   const [myStarters, setMyStarters] = useState<SelectedPlayer[]>([])
   const [pendingPenalty, setPendingPenalty] = useState<PenaltyEvent | null>(null)
-  // ===== Free kick pendente (multiplicador + cobrador sorteados pelo servidor) =====
+  // ===== Free kick pendente (vindo do servidor) =====
+  // Para FALTA NORMAL: inclui `multiplier` + `taker` (sorteados no servidor).
+  // Para PÊNALTI: inclui `eligibleTakers` (lista de cobradores com marcadores
+  // de bônus aleatórios). O usuário ESCOLHE o cobrador antes de escolher
+  // a jogada de pênalti.
   const [pendingFreeKickInfo, setPendingFreeKickInfo] = useState<
     | {
-        multiplier: { value: number; kind: 'BONUS' | 'PENALTY' | 'NEUTRAL'; target: 'SUCCESS_CHANCE' | 'DICE_BONUS' | 'GOAL_CHANCE'; label: string; description: string }
-        taker: { playerId: string; playerName: string; position: string }
+        isPenaltyKick?: boolean
+        multiplier?: { value: number; kind: 'BONUS' | 'PENALTY' | 'NEUTRAL'; target: 'SUCCESS_CHANCE' | 'DICE_BONUS' | 'GOAL_CHANCE'; label: string; description: string }
+        taker?: { playerId: string; playerName: string; position: string }
+        eligibleTakers?: Array<{
+          taker: { playerId: string; playerName: string; position: string }
+          bonusMarker: { value: number; kind: 'BONUS' | 'PENALTY' | 'NEUTRAL'; target: 'SUCCESS_CHANCE' | 'DICE_BONUS' | 'GOAL_CHANCE'; label: string; description: string }
+        }>
         nonce: string
         favoredPossession: 'HOME' | 'AWAY'
         penaltyType: string
@@ -223,15 +232,29 @@ export function MatchArena({
   const myUser = isHome ? homeUser : awayUser
   const oppUser = isHome ? awayUser : homeUser
 
-  // ===== activeStarters: titulares filtrando expulsos/lesionados =====
-  // Usado para o DefensivePlayDialog (roubada de bola) — não faz sentido
-  // oferecer uma jogada defensiva para um jogador que não está em campo.
+  // ===== activeStarters: titulares filtrando expulsos/lesionados/SUBSTITUÍDOS =====
+  // CRÍTICO: Um jogador que saiu por substituição NÃO pode aparecer em campo
+  // de novo durante a partida. O mesmo vale para expulsos e lesionados.
+  // Filtramos via:
+  //   - myTeamState.sentOffPlayers (legado)
+  //   - myTeamState.injuredPlayers (legado)
+  //   - myTeamState.substitutedOut (novo esquema granular)
+  //   - myTeamState.playerStates com status !== 'ACTIVE' (novo esquema)
   const myTeamState = isHome ? state.homeTeamState : state.awayTeamState
   const activeStarters = useMemo(() => {
+    const substitutedOutSet = new Set(myTeamState.substitutedOut ?? [])
+    const inactiveStatuses = new Set(['INJURED', 'SUBSTITUTED', 'SENT_OFF', 'UNAVAILABLE'])
+    const playerStatusMap = new Map<string, string>()
+    for (const ps of (myTeamState.playerStates ?? [])) {
+      playerStatusMap.set(ps.playerId, ps.status)
+    }
     return myStarters.filter((p) => {
       if (!p) return false
       if (myTeamState.sentOffPlayers.includes(p.id)) return false
       if (myTeamState.injuredPlayers.includes(p.id)) return false
+      if (substitutedOutSet.has(p.id)) return false
+      const status = playerStatusMap.get(p.id)
+      if (status && inactiveStatuses.has(status)) return false
       return true
     })
   }, [myStarters, myTeamState])
@@ -522,12 +545,12 @@ export function MatchArena({
     const actions = sampleMixedActions(1, true)
     const action = actions[0]
     if (action) {
-      // Seleciona jogador automaticamente
-      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
+      // Seleciona jogador automaticamente — apenas dos ATIVOS em campo
+      // (exclui lesionados, expulsos, SUBSTITUÍDOS — não podem reaparecer)
       let autoPlayerName: string | undefined
-      if (startersList.length > 0) {
+      if (activeStarters.length > 0) {
         const { player } = pickPlayerForAction(
-          startersList.map(p => ({ name: p.name, position: p.position })),
+          activeStarters.map(p => ({ name: p.name, position: p.position })),
           action.category,
         )
         autoPlayerName = player
@@ -697,13 +720,13 @@ export function MatchArena({
     setLastRoll(null)
     setLastEvent(null)
 
-    // Seleciona jogador para narrativa
+    // Seleciona jogador para narrativa — apenas dos ATIVOS em campo
+    // (exclui lesionados, expulsos, SUBSTITUÍDOS — não podem reaparecer)
     let playerName = forcedPlayerName
     let targetPlayerName: string | undefined
     if (!playerName) {
-      const startersList = Object.values(storeStarters).filter((p): p is SelectedPlayer => p !== null)
       const { player, target } = pickPlayerForAction(
-        startersList.map(p => ({ name: p.name, position: p.position })),
+        activeStarters.map(p => ({ name: p.name, position: p.position })),
         action.category,
       )
       playerName = player
@@ -849,18 +872,34 @@ export function MatchArena({
           })
 
           // ===== FIX: Persiste o pendingFreeKick retornado pela action API =====
-          // O servidor já sorteou multiplicador + cobrador. Sem isto, o
-          // FreeKickDialog abria com pendingFreeKickInfo=null e não renderizava,
-          // deixando o jogo travado (processing=true para sempre).
+          // O servidor já sorteou multiplicador + cobrador (falta normal) OU
+          // retorna a lista de elegíveis com marcadores (pênalti). Sem isto,
+          // o FreeKickDialog abria com pendingFreeKickInfo=null e não
+          // renderizava, deixando o jogo travado (processing=true para sempre).
           if (data.pendingFreeKick && pe.favoredPossession === mySide) {
+            const pf = data.pendingFreeKick
             setPendingFreeKickInfo({
-              multiplier: data.pendingFreeKick.multiplier,
-              taker: data.pendingFreeKick.taker,
-              nonce: data.pendingFreeKick.nonce,
-              favoredPossession: data.pendingFreeKick.favoredPossession,
+              isPenaltyKick: pf.isPenaltyKick === true || pe.type === 'PENALTY_KICK',
+              multiplier: pf.multiplier,
+              taker: pf.taker,
+              eligibleTakers: pf.eligibleTakers,
+              nonce: pf.nonce,
+              favoredPossession: pf.favoredPossession,
               penaltyType: pe.type,
               description: pe.description,
             })
+          }
+
+          // ===== Exibe o per-play bonus marker (bônus aleatório da jogada) =====
+          // Requisito: "tudo o que tiver marcador de pontos bônus por jogada
+          // deve mudar de forma aleatória sempre."
+          if (data.playBonusMarker && data.playBonusMarker.value !== 0) {
+            const bm = data.playBonusMarker
+            if (bm.kind === 'BONUS') {
+              toast.success(`🎲 ${bm.label} aplicado a esta jogada!`, { duration: 2500 })
+            } else if (bm.kind === 'PENALTY') {
+              toast.error(`🎲 ${bm.label} aplicado a esta jogada!`, { duration: 2500 })
+            }
           }
 
           setTimeout(() => {
@@ -874,6 +913,20 @@ export function MatchArena({
         // visible for ~2.2s after processing, allowing the player to submit
         // another action in the same turn.
         setAvailableActions([])
+
+        // ===== Exibe o per-play bonus marker (bônus aleatório da jogada) =====
+        // Mesmo em jogadas normais (sem penalty event), o servidor rola um
+        // bônus aleatório que muda a cada jogada — não há vantagem fixa por
+        // jogador.
+        if (data.playBonusMarker && data.playBonusMarker.value !== 0 && !data.event?.penaltyEvent) {
+          const bm = data.playBonusMarker
+          if (bm.kind === 'BONUS') {
+            toast.success(`🎲 ${bm.label} aplicado a esta jogada!`, { duration: 2500 })
+          } else if (bm.kind === 'PENALTY') {
+            toast.error(`🎲 ${bm.label} aplicado a esta jogada!`, { duration: 2500 })
+          }
+        }
+
         // No penalty: normal flow
         proceedToNextTurn(data)
         // Keep processing=true until phase transition completes (inside proceedToNextTurn)
@@ -1001,7 +1054,7 @@ export function MatchArena({
   //   4. Atualiza estado da partida e limpa o pending.
   // O cliente apenas exibe o resultado animado.
   // --------------------------------------------------------------------
-  const handleFreeKickPlay = async (actionId: string) => {
+  const handleFreeKickPlay = async (actionId: string, takerId?: string) => {
     setFreeKickOpen(false)
     setProcessing(true)
     setDiceRolling(true)
@@ -1012,6 +1065,9 @@ export function MatchArena({
         body: JSON.stringify({
           matchId: state.matchId,
           actionId,
+          // Para pênaltis: takerId é o cobrador escolhido pelo usuário.
+          // Para faltas normais: undefined (o servidor já sorteou).
+          takerId: takerId || undefined,
         }),
       })
       const data = await res.json()

@@ -314,9 +314,14 @@ export function applyFreeKickMultiplier(
 /** Estado pendente que fica salvo no `pendingPenaltyEventJson` da Match */
 export interface PendingFreeKickState {
   penaltyEvent: PenaltyEvent
-  assignment: FreeKickAssignment
+  /** Presente apenas para cobranças de falta normais (auto-atribuídas) */
+  assignment?: FreeKickAssignment
+  /** Presente apenas para pênaltis (escolha do cobrador pelo usuário) */
+  penaltyKickPrep?: PenaltyKickPreparation
   favoredPossession: Possession
   createdAt: number
+  /** Flag para identificar pênalti (escolha do usuário) vs falta normal */
+  isPenaltyKick?: boolean
   /** ID do último cobrador antes desta cobrança (para a próxima) */
   previousTakerId?: string
 }
@@ -329,11 +334,187 @@ export function deserializePendingFreeKick(json: string | null | undefined): Pen
   if (!json) return null
   try {
     const parsed = JSON.parse(json)
-    if (typeof parsed === 'object' && parsed !== null && 'assignment' in parsed && 'penaltyEvent' in parsed) {
+    if (typeof parsed === 'object' && parsed !== null && 'penaltyEvent' in parsed) {
       return parsed as PendingFreeKickState
     }
     return null
   } catch {
     return null
   }
+}
+
+// =====================================================================
+// PÊNALTI — preparação com escolha do cobrador pelo usuário
+// ---------------------------------------------------------------------
+// Diferente da cobrança de falta normal (onde o cobrador é sorteado
+// automaticamente), no PÊNALTI o usuário ESCOLHE quem vai bater. Cada
+// cobrador elegível recebe um MARCADOR DE BÔNUS ALEATÓRIO (positivo OU
+// negativo) que é exibido na UI antes da escolha. O bônus é RE-SORTEADO
+// a cada pênalti — não há vantagem fixa por jogador.
+//
+// Requisitos do usuário:
+//   - "Os jogadores terão marcadores de pontos bônus na batida do pênalti
+//      de forma aleatória."
+//   - "tudo o que tiver marcador de pontos bônus por jogada deve mudar de
+//      forma aleatória sempre. Não mantenha uma vantagem fixa por jogador.
+//      Cada um deve ter pontos bônus aleatórios que mudam conforme a
+//      partida."
+// =====================================================================
+
+export interface PenaltyTakerOption {
+  taker: FreeKickTaker
+  /** Marcador de bônus aleatório (positivo OU negativo), exibido na UI */
+  bonusMarker: FreeKickMultiplier
+}
+
+export interface PenaltyKickPreparation {
+  /** Lista de cobradores elegíveis, cada um com seu marcador de bônus */
+  eligibleTakers: PenaltyTakerOption[]
+  favoredPossession: Possession
+  nonce: string
+  createdAt: number
+}
+
+/**
+ * Prepara um pênalti: retorna a lista de cobradores elegíveis, cada um
+ * com um marcador de bônus aleatório. O usuário vai ESCOLHER qual
+ * cobrador usar (a UI mostra os marcadores para a decisão).
+ *
+ * Regras:
+ *   - Apenas jogadores ACTIVE (em campo, não lesionados/expulsos/substituídos)
+ *   - Marcador de bônus é RE-SORTEADO por jogador a cada pênalti
+ *   - Não há vantagem fixa por jogador (cada pênalti é independente)
+ *   - Atacantes e meias continuam tendo pesos MAIORES para aparecerem
+ *     primeiro na lista (mas todos aparecem para o usuário escolher)
+ *
+ * @param candidates Lista de jogadores elegíveis (já filtrados por disponibilidade)
+ */
+export function preparePenaltyKick(
+  candidates: TakerCandidate[],
+  favoredPossession: Possession,
+): PenaltyKickPreparation {
+  if (candidates.length === 0) {
+    throw new Error('preparePenaltyKick: nenhum candidato elegível')
+  }
+
+  // Pesos por posição para ordenar a lista (não para escolher — o usuário escolhe)
+  const POSITION_WEIGHT: Record<string, number> = {
+    FW: 3,
+    ST: 3, CF: 3, RW: 2.5, LW: 2.5,
+    MF: 2,
+    AM: 2.5, CM: 2, DM: 1.5, RM: 2, LM: 2,
+    DF: 1,
+    CB: 0.8, LB: 1, RB: 1, LD: 1, LE: 1,
+    GK: 0.1,
+  }
+
+  // Ordena por peso (atacantes/meias primeiro) — mas mantém TODOS visíveis
+  const sorted = [...candidates].sort((a, b) => {
+    const wa = (POSITION_WEIGHT[a.position] ?? 1) * (1 + (a.overall ?? 70) / 200)
+    const wb = (POSITION_WEIGHT[b.position] ?? 1) * (1 + (b.overall ?? 70) / 200)
+    return wb - wa
+  })
+
+  // Cada cobrador recebe um marcador de bônus aleatório INDEPENDENTE
+  // (positivo OU negativo — re-rolado a cada pênalti, sem vantagem fixa)
+  const eligibleTakers: PenaltyTakerOption[] = sorted.map((c) => ({
+    taker: {
+      playerId: c.id,
+      playerName: c.name,
+      position: c.position,
+    },
+    bonusMarker: generateFreeKickMultiplier(),
+  }))
+
+  return {
+    eligibleTakers,
+    favoredPossession,
+    nonce: generateNonce(),
+    createdAt: Date.now(),
+  }
+}
+
+/**
+ * Serializa a preparação de pênalti para persistir no
+ * `pendingPenaltyEventJson` da Match.
+ */
+export function serializePendingPenaltyKick(prep: PenaltyKickPreparation, penaltyEvent: PenaltyEvent): string {
+  // Reaproveita o formato do PendingFreeKickState para compatibilidade
+  // com o endpoint /api/match/free-kick-resolve, mas sem `assignment`
+  // (o assignment será criado quando o usuário escolher o cobrador).
+  const state = {
+    penaltyEvent,
+    penaltyKickPrep: prep,
+    favoredPossession: prep.favoredPossession,
+    createdAt: prep.createdAt,
+    isPenaltyKick: true,
+  }
+  return JSON.stringify(state)
+}
+
+// =====================================================================
+// MARCADOR DE BÔNUS POR JOGADA (per-play random bonus)
+// ---------------------------------------------------------------------
+// Requisito do usuário: "tudo o que tiver marcador de pontos bônus por
+// jogada deve mudar de forma aleatória sempre. Não mantenha uma vantagem
+// fixa por jogador. Cada um deve ter pontos bônus aleatórios que mudam
+// conforme a partida."
+//
+// Esta função gera um bônus aleatório (positivo OU negativo) que é
+// aplicado NO TOPO do skillBonus base da ação. É re-rolado a cada jogada.
+//
+// Distribuição (mais conservadora que a de pênalti/falta, para não
+// desequilibrar o jogo normal):
+//   - 60% neutro (0)
+//   - 25% bônus (+1 a +3)
+//   - 15% penalidade (-1 a -2)
+// =====================================================================
+
+const PLAY_BONUS_WEIGHTS: Array<{ value: number; weight: number }> = [
+  { value: -2, weight: 5 },   // 5%  — penalidade média
+  { value: -1, weight: 10 },  // 10% — penalidade leve
+  { value:  0, weight: 60 },  // 60% — neutro (a maioria das jogadas)
+  { value:  1, weight: 15 },  // 15% — bônus leve
+  { value:  2, weight: 7 },   // 7%  — bônus médio
+  { value:  3, weight: 3 },   // 3%  — bônus forte (raro)
+]
+
+export interface PlayBonusMarker {
+  /** Valor do bônus (positivo, negativo ou zero) */
+  value: number
+  /** Tipo do bônus para coloração na UI */
+  kind: MultiplierKind
+  /** Rótulo curto para exibição ("Bônus: +2", "Penalidade: -1", "Neutro") */
+  label: string
+}
+
+/**
+ * Gera um marcador de bônus aleatório para uma jogada normal.
+ *
+ * Diferente do `generateFreeKickMultiplier` (que afeta 3 targets diferentes),
+ * este bônus é sempre aplicado ao `DICE_BONUS` (somado ao skillBonus).
+ * É mais conservador (60% neutro) para não desequilibrar o jogo normal.
+ *
+ * Deve ser chamado NO SERVIDOR (em /api/match/action) para evitar
+ * manipulação pelo cliente. O cliente apenas exibe o resultado.
+ *
+ * @param forcedValue Se informado, usa este valor (para testes)
+ */
+export function rollPlayBonusMarker(forcedValue?: number): PlayBonusMarker {
+  const value = forcedValue ?? weightedPick(PLAY_BONUS_WEIGHTS)
+
+  let kind: MultiplierKind
+  if (value > 0) kind = 'BONUS'
+  else if (value < 0) kind = 'PENALTY'
+  else kind = 'NEUTRAL'
+
+  const sign = value > 0 ? '+' : ''
+  const label =
+    kind === 'BONUS'
+      ? `Bônus: ${sign}${value}`
+      : kind === 'PENALTY'
+      ? `Penalidade: ${value}`
+      : 'Neutro'
+
+  return { value, kind, label }
 }
