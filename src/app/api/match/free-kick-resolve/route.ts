@@ -53,9 +53,6 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const matchId = String(body.matchId ?? '')
   const actionId = String(body.actionId ?? '')
-  // Para pênaltis, o usuário escolhe o cobrador. Para faltas normais, o
-  // cobrador já foi sorteado pelo servidor — takerId é ignorado.
-  const takerId = body.takerId ? String(body.takerId) : ''
 
   if (!matchId || !actionId) {
     return NextResponse.json({ ok: false, error: 'matchId e actionId obrigatórios.' }, { status: 400 })
@@ -86,33 +83,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Não é sua vez de cobrar.' }, { status: 400 })
   }
 
-  // ===== Determina se é pênalti (escolha do cobrador) ou falta normal =====
-  const isPenaltyKick = pending.isPenaltyKick === true || pending.penaltyEvent.type === 'PENALTY_KICK'
-
-  // Valida a ação escolhida
   const action = ALL_ACTIONS.find((a) => a.id === actionId)
   if (!action) {
     return NextResponse.json({ ok: false, error: 'Ação inválida.' }, { status: 400 })
   }
-  if (isPenaltyKick) {
-    // Pênalti: só aceita jogadas de pênalti (id começa com 'pk') ou o
-    // chute s12 ("Chute na Marca do Pênalti") por compatibilidade.
-    const isPenaltyAction = action.id.startsWith('pk') || action.id === 's12'
-    if (!isPenaltyAction) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Em pênalti, escolha uma jogada de cobrança de pênalti.',
-      }, { status: 400 })
-    }
-  } else {
-    // Falta normal: só aceita jogadas FREE_KICK
-    const isFreeKickAction = action.category === 'FREE_KICK'
-    if (!isFreeKickAction) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Em cobrança de falta, escolha uma jogada de cobrança.',
-      }, { status: 400 })
-    }
+  const isPenaltyKick = pending.penaltyEvent.type === 'PENALTY_KICK'
+  if (action.category !== 'FREE_KICK' && !(isPenaltyKick && action.category === 'SHOOT')) {
+    return NextResponse.json({
+      ok: false,
+      error: 'Ação deve ser de cobrança de falta (ou chute, em caso de pênalti).',
+    }, { status: 400 })
   }
 
   // ===== Reconstrói estado =====
@@ -171,50 +151,6 @@ export async function POST(req: NextRequest) {
     matchEndReason: '',
   }
 
-  // ===== Determina cobrador e multiplicador =====
-  // Para pênaltis: o usuário ESCOLHEU o cobrador (takerId). Buscamos esse
-  // cobrador na lista de elegíveis e usamos o marcador de bônus associado.
-  // Para faltas normais: o cobrador foi sorteado automaticamente no action
-  // route — usamos `pending.assignment` direto.
-  let chosenTaker: { playerId: string; playerName: string; position: string }
-  let chosenMultiplier: { value: number; kind: 'BONUS' | 'PENALTY' | 'NEUTRAL'; target: 'SUCCESS_CHANCE' | 'DICE_BONUS' | 'GOAL_CHANCE'; label: string; description: string }
-
-  if (isPenaltyKick) {
-    if (!takerId) {
-      return NextResponse.json({
-        ok: false,
-        error: 'takerId é obrigatório para pênalti. Escolha o cobrador.',
-      }, { status: 400 })
-    }
-    // Valida que o takerId está na lista de elegíveis (anti-cheat)
-    const prep = pending.penaltyKickPrep
-    if (!prep) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Estado de pênalti inválido (sem preparação).',
-      }, { status: 400 })
-    }
-    const option = prep.eligibleTakers.find((t) => t.taker.playerId === takerId)
-    if (!option) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Cobrador selecionado não está na lista de elegíveis.',
-      }, { status: 400 })
-    }
-    chosenTaker = option.taker
-    chosenMultiplier = option.bonusMarker
-  } else {
-    // Falta normal — usa assignment pré-existente
-    if (!pending.assignment) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Estado de cobrança de falta inválido (sem assignment).',
-      }, { status: 400 })
-    }
-    chosenTaker = pending.assignment.taker
-    chosenMultiplier = pending.assignment.multiplier
-  }
-
   // ===== Rola d20 no servidor e aplica multiplicador =====
   const baseDice = rollD20()
   const adjusted = applyFreeKickMultiplier(
@@ -222,7 +158,7 @@ export async function POST(req: NextRequest) {
     action.skillBonus,
     action.dc,
     action.goalChance,
-    chosenMultiplier,
+    pending.assignment.multiplier,
   )
 
   let success: boolean
@@ -256,7 +192,7 @@ export async function POST(req: NextRequest) {
     state,
     action as FootballAction,
     roll,
-    chosenTaker.playerName,
+    pending.assignment.taker.playerName,
     undefined,
   )
 
@@ -264,15 +200,12 @@ export async function POST(req: NextRequest) {
   const lastEvent = newState.events[newState.events.length - 1]
   if (lastEvent) {
     lastEvent.narrative =
-      `${chosenMultiplier.label}. ` +
+      `${pending.assignment.multiplier.label}. ` +
       `${lastEvent.narrative ?? ''}`.trim()
     // Anexa info do multiplicador via cast seguro para extensão ad-hoc
     const ext = lastEvent as unknown as Record<string, unknown>
-    ext.freeKickMultiplier = chosenMultiplier
-    ext.freeKickTaker = chosenTaker
-    if (isPenaltyKick) {
-      ext.isPenaltyKick = true
-    }
+    ext.freeKickMultiplier = pending.assignment.multiplier
+    ext.freeKickTaker = pending.assignment.taker
   }
 
   // ===== Persiste com optimistic concurrency =====
@@ -323,9 +256,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     event: lastEvent,
-    multiplier: chosenMultiplier,
-    taker: chosenTaker,
-    isPenaltyKick,
+    multiplier: pending.assignment.multiplier,
+    taker: pending.assignment.taker,
     roll,
     newState: {
       status: newState.status,

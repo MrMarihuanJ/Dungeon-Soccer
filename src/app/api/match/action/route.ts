@@ -42,13 +42,7 @@ import {
   type ExtendedTeamMatchState,
 } from '@/lib/player-match-state'
 import { hydrateTeamStateFromUserId } from '@/lib/team-state-hydration'
-import {
-  assignFreeKick,
-  preparePenaltyKick,
-  serializePendingFreeKick,
-  rollPlayBonusMarker,
-  type PendingFreeKickState,
-} from '@/lib/free-kick-system'
+import { assignFreeKick, serializePendingFreeKick, type PendingFreeKickState } from '@/lib/free-kick-system'
 import { grantMatchXp } from './grant-xp-helper'
 
 export const dynamic = 'force-dynamic'
@@ -318,28 +312,10 @@ export async function POST(req: NextRequest) {
     const playerName = body.playerName ? String(body.playerName) : undefined
     const targetPlayerName = body.targetPlayerName ? String(body.targetPlayerName) : undefined
 
-    // ===== Per-play random bonus marker (server-side, anti-cheat) =====
-    // Requisito do usuário: "tudo o que tiver marcador de pontos bônus por
-    // jogada deve mudar de forma aleatória sempre. Não mantenha uma vantagem
-    // fixa por jogador. Cada um deve ter pontos bônus aleatórios que mudam
-    // conforme a partida."
-    //
-    // Esta chamada rola um bônus aleatório (-2 a +3, 60% neutro) que é
-    // aplicado NO TOPO do skillBonus base da ação. É re-rolado a cada
-    // jogada — não há vantagem fixa por jogador.
-    const playBonus = rollPlayBonusMarker()
-
-    // Processa a jogada — aplica o per-play bonus como extraBonus
-    const roll = resolveAction(action, playBonus.value)
-
-    // Anexa o bônus ao evento para a UI exibir ("Bônus: +2" / "Penalidade: -1")
+    // Processa a jogada
+    const roll = resolveAction(action)
     const newState = applyActionToState(state, action, roll, playerName, targetPlayerName)
     const lastEvent = newState.events[newState.events.length - 1]
-    if (lastEvent) {
-      // Cast seguro para estender o evento sem quebrar o tipo
-      const ext = lastEvent as unknown as Record<string, unknown>
-      ext.playBonusMarker = playBonus
-    }
 
     // ===== Aplicar efeitos de cartão/lesão na máquina de estados granular =====
     // applyActionToState já mexeu nos arrays legados; agora sincronizamos o
@@ -371,17 +347,9 @@ export async function POST(req: NextRequest) {
         else updatedAwayTeamState = updated
       }
 
-      // ===== FREE KICK / PENALTY KICK assignment =====
-      // Se a jogada gerou uma cobrança de falta OU um pênalti, persiste o
-      // estado pendente para o cliente do cobrador abrir o FreeKickDialog.
-      //
-      // DIFERENÇA entre free kick e pênalti:
-      //   - Free kick normal: o cobrador é sorteado automaticamente pelo
-      //     servidor (assignFreeKick) — o cliente apenas vê o resultado.
-      //   - PÊNALTI: o usuário ESCOLHE o cobrador. O servidor retorna a
-      //     lista de elegíveis, cada um com um marcador de bônus aleatório
-      //     (positivo OU negativo, re-rolado a cada pênalti — sem vantagem
-      //     fixa por jogador).
+      // ===== FREE KICK assignment =====
+      // Se a jogada gerou uma cobrança de falta, persiste o estado pendente
+      // para o cliente do cobrador abrir o FreeKickDialog.
       if (pe.requiresFreeKick || pe.type === 'PENALTY_KICK') {
         const favoredSide = pe.favoredPossession
         // Candidatos a cobrador: jogadores ativos do time favorecido.
@@ -405,94 +373,6 @@ export async function POST(req: NextRequest) {
 
         if (candidates.length > 0) {
           try {
-            // ===== Branch: PENALTY_KICK — usuário escolhe o cobrador =====
-            if (pe.type === 'PENALTY_KICK') {
-              const prep = preparePenaltyKick(candidates, favoredSide)
-
-              const pending: PendingFreeKickState = {
-                penaltyEvent: pe,
-                penaltyKickPrep: prep,
-                favoredPossession: favoredSide,
-                createdAt: Date.now(),
-                isPenaltyKick: true,
-                previousTakerId: favoredState.lastFreeKickTakerId,
-              }
-
-              const updateData: Prisma.MatchUpdateInput = {
-                currentPossession: newState.currentPossession,
-                homeScore: newState.homeScore,
-                awayScore: newState.awayScore,
-                turnCount: newState.turnCount,
-                homeProgress: newState.homeProgress,
-                awayProgress: newState.awayProgress,
-                eventsJson: JSON.stringify(newState.events),
-                homeTeamStateJson: JSON.stringify(updatedHomeTeamState),
-                awayTeamStateJson: JSON.stringify(updatedAwayTeamState),
-                turnStartedAt: new Date(),
-                pendingPenaltyEventJson: serializePendingFreeKick(pending),
-                version: { increment: 1 },
-              }
-
-              if (newState.status === 'FINISHED') {
-                updateData.status = 'FINISHED'
-                updateData.winner = newState.winner
-              }
-
-              try {
-                await db.match.update({
-                  where: { id: matchId, version: match.version },
-                  data: updateData,
-                })
-              } catch (err) {
-                console.error('[match/action] concurrency conflict (penalty):', err)
-                return NextResponse.json(
-                  { ok: false, error: 'Conflito de concorrência. Recarregue e tente novamente.' },
-                  { status: 409 },
-                )
-              }
-
-              if (newState.status === 'FINISHED') {
-                await grantMatchXp({
-                  matchId,
-                  homeUserId: match.homeUserId,
-                  awayUserId: match.awayUserId ?? BOT_USER_ID_FALLBACK,
-                  winner: newState.winner,
-                  gameMode,
-                  isOffline: match.isOffline || false,
-                })
-              }
-
-              // Retorna a lista de cobradores elegíveis com marcadores
-              // de bônus para o cliente exibir no FreeKickDialog (modo pênalti)
-              return NextResponse.json({
-                ok: true,
-                event: lastEvent,
-                pendingFreeKick: {
-                  isPenaltyKick: true,
-                  eligibleTakers: prep.eligibleTakers,
-                  nonce: prep.nonce,
-                  favoredPossession: favoredSide,
-                  penaltyType: 'PENALTY_KICK',
-                  description: pe.description,
-                },
-                newState: {
-                  status: newState.status,
-                  currentPossession: newState.currentPossession,
-                  homeScore: newState.homeScore,
-                  awayScore: newState.awayScore,
-                  homeProgress: newState.homeProgress,
-                  awayProgress: newState.awayProgress,
-                  turnCount: newState.turnCount,
-                  winner: newState.winner,
-                  homeTeamState: updatedHomeTeamState,
-                  awayTeamState: updatedAwayTeamState,
-                  gameMode,
-                  matchEndReason: newState.matchEndReason,
-                },
-              })
-            }
-
-            // ===== Branch: Free kick normal — cobrador sorteado automaticamente =====
             const assignment = assignFreeKick(candidates, favoredState.lastFreeKickTakerId)
             // Marca o último cobrador para a próxima cobrança
             favoredState.lastFreeKickTakerId = assignment.taker.playerId
@@ -560,8 +440,6 @@ export async function POST(req: NextRequest) {
                 taker: assignment.taker,
                 nonce: assignment.nonce,
                 favoredPossession: favoredSide,
-                penaltyType: 'FOUL',
-                description: pe.description,
               },
               newState: {
                 status: newState.status,
@@ -637,7 +515,6 @@ export async function POST(req: NextRequest) {
       ok: true,
       event: lastEvent,
       xpGranted,
-      playBonusMarker: playBonus,
       newState: {
         status: newState.status,
         currentPossession: newState.currentPossession,

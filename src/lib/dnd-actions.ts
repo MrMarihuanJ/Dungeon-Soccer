@@ -129,12 +129,7 @@ const SHOOT_ACTIONS: FootballAction[] = [
   { id: 's09', name: 'Chute de Canivete', emoji: '🦶', category: 'SHOOT', description: 'Canivete, efeito inesperado.', dc: 17, skillBonus: 0, progress: 60, ballRetentionOnFail: 0, goalChance: 0.6 },
   { id: 's10', name: 'Contra-Ataque', emoji: '⚡', category: 'SHOOT', description: 'Contra-ataque mortal e veloz.', dc: 15, skillBonus: 1, progress: 65, ballRetentionOnFail: 0, goalChance: 0.7 },
   { id: 's11', name: 'Finalização no Canto', emoji: '🎯', category: 'SHOOT', description: 'Bola no cantinho, placar.', dc: 17, skillBonus: 0, progress: 70, ballRetentionOnFail: 0, goalChance: 0.75 },
-  // ATENÇÃO: 's12' era "Pênalti" e aparecia como chute normal, o que
-  // confundia o usuário. Agora foi renomeado para "Chute na Marca do Pênalti"
-  // e REMOVIDO do pool de jogadas normais (sampleMixedActions filtra por
-  // id === 's12'). Ele só aparece via samplePenaltyKickActions(), chamada
-  // exclusivamente quando um evento PENALTY_KICK (falta na área) acontece.
-  { id: 's12', name: 'Chute na Marca do Pênalti', emoji: '⚪', category: 'SHOOT', description: 'O jogador está dentro da área e faz um chute na distância da marca do pênalti.', dc: 13, skillBonus: 2, progress: 70, ballRetentionOnFail: 0, goalChance: 0.85 },
+  { id: 's12', name: 'Pênalti', emoji: '⚪', category: 'SHOOT', description: 'Pênalti bem cobrado, decisivo.', dc: 13, skillBonus: 2, progress: 70, ballRetentionOnFail: 0, goalChance: 0.85 },
   { id: 's13', name: 'Chute de Longe', emoji: '🚀', category: 'SHOOT', description: 'Chutaço de fora da área.', dc: 18, skillBonus: 0, progress: 55, ballRetentionOnFail: 0, goalChance: 0.4 },
   { id: 's14', name: 'Toque de Bolinha', emoji: '⚽', category: 'SHOOT', description: 'Toque por cima do goleiro que saiu.', dc: 16, skillBonus: 1, progress: 65, ballRetentionOnFail: 0, goalChance: 0.6 },
   { id: 's15', name: 'Chute no Ângulo', emoji: '📐', category: 'SHOOT', description: 'No ângulo, quase indefensável.', dc: 19, skillBonus: -1, progress: 80, ballRetentionOnFail: 0, goalChance: 0.8 },
@@ -229,28 +224,6 @@ const FREE_KICK_ACTIONS: FootballAction[] = [
 // =====================================================================
 // TODAS AS AÇÕES
 // =====================================================================
-// =====================================================================
-// COBRANÇA DE PÊNALTI (PENALTY_KICK) — só aparecem em pênaltis
-// --------------------------------------------------------------------
-// Pênalti só acontece quando há falta DENTRO DA ÁREA. O fluxo é:
-//   1. generatePenaltyEvent() gera FOUL com `inArea: true` (15% das faltas)
-//   2. applyActionToState() converte FOUL-in-area em PENALTY_KICK
-//   3. O time favorecido ESCOLHE o cobrador (FreeKickDialog modo pênalti)
-//   4. Cada cobrador elegível recebe um marcador de bônus aleatório
-//      (positivo OU negativo) que muda a cada cobrança — não há vantagem
-//      fixa por jogador.
-//   5. samplePenaltyKickActions() retorna estas 3 jogadas para a escolha.
-// =====================================================================
-const PENALTY_KICK_ACTIONS: FootballAction[] = [
-  { id: 'pk01', name: 'Chute na Marca do Pênalti', emoji: '⚪', category: 'SHOOT', description: 'O jogador está dentro da área e faz um chute na distância da marca do pênalti.', dc: 13, skillBonus: 2, progress: 70, ballRetentionOnFail: 0, goalChance: 0.85 },
-  { id: 'pk02', name: 'Cavadinha no Pênalti', emoji: '🎪', category: 'SHOOT', description: 'Cavadinha por cima do goleiro que cedeu o canto, na marca do pênalti.', dc: 16, skillBonus: 1, progress: 65, ballRetentionOnFail: 0, goalChance: 0.75 },
-  { id: 'pk03', name: 'Chute Forte no Pênalti', emoji: '💥', category: 'SHOOT', description: 'Pancada seca do ponto do pênalti, goleiro nem reage.', dc: 15, skillBonus: 2, progress: 75, ballRetentionOnFail: 0, goalChance: 0.8 },
-  { id: 'pk04', name: 'Chute Colocado no Pênalti', emoji: '🎯', category: 'SHOOT', description: 'Colocado no cantinho, cobrança cirúrgica da marca do pênalti.', dc: 17, skillBonus: 1, progress: 70, ballRetentionOnFail: 0, goalChance: 0.85 },
-]
-
-// =====================================================================
-// TODAS AS AÇÕES
-// =====================================================================
 export const ALL_ACTIONS: FootballAction[] = [
   ...KICKOFF_ACTIONS,
   ...PASS_ACTIONS,
@@ -259,10 +232,9 @@ export const ALL_ACTIONS: FootballAction[] = [
   ...DEFEND_ACTIONS,
   ...SPECIAL_ACTIONS,
   ...FREE_KICK_ACTIONS,
-  ...PENALTY_KICK_ACTIONS,
 ]
 
-// Total: 16 + 20 + 20 + 16 + 16 + 16 + 35 + 4 = 143 ações
+// Total: 16 + 20 + 20 + 16 + 16 + 16 + 35 = 139 ações
 
 // =====================================================================
 // Helpers
@@ -293,22 +265,9 @@ export function sampleMixedActions(count: number, excludeDefend = false): Footba
   const pool = ALL_ACTIONS.filter((a) => {
     if (a.category === 'KICKOFF') return false
     if (a.category === 'FREE_KICK') return false // cobranças só em set-piece
-    if (a.category === 'SHOOT' && a.id === 's12') return false // "Chute na Marca do Pênalti" só via pênalti
-    if (a.id.startsWith('pk')) return false // jogadas de pênalti só via samplePenaltyKickActions
     if (excludeDefend && a.category === 'DEFEND') return false
     return true
   })
-  const shuffled = [...pool].sort(() => Math.random() - 0.5)
-  return shuffled.slice(0, Math.min(count, pool.length))
-}
-
-// Sorteia N jogadas de pênalti (só aparecem quando há falta na área)
-// --------------------------------------------------------------------
-// Pênalti só pode acontecer se houver falta na área. Quando isso ocorre,
-// o usuário ESCOLHE o cobrador (cada um com marcador de bônus aleatório)
-// e depois escolhe uma destas jogadas de pênalti.
-export function samplePenaltyKickActions(count: number): FootballAction[] {
-  const pool = ALL_ACTIONS.filter((a) => a.id.startsWith('pk'))
   const shuffled = [...pool].sort(() => Math.random() - 0.5)
   return shuffled.slice(0, Math.min(count, pool.length))
 }

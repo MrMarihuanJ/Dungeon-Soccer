@@ -14,8 +14,6 @@ import {
   applyFreeKickMultiplier,
   serializePendingFreeKick,
   deserializePendingFreeKick,
-  preparePenaltyKick,
-  rollPlayBonusMarker,
   type TakerCandidate,
 } from '../free-kick-system'
 
@@ -213,8 +211,8 @@ describe('free-kick-system', () => {
       const json = serializePendingFreeKick(pending)
       const restored = deserializePendingFreeKick(json)
       expect(restored).not.toBeNull()
-      expect(restored!.assignment!.taker.playerId).toBe(assignment.taker.playerId)
-      expect(restored!.assignment!.multiplier.value).toBe(assignment.multiplier.value)
+      expect(restored!.assignment.taker.playerId).toBe(assignment.taker.playerId)
+      expect(restored!.assignment.multiplier.value).toBe(assignment.multiplier.value)
       expect(restored!.penaltyEvent.type).toBe('FOUL')
     })
 
@@ -223,114 +221,6 @@ describe('free-kick-system', () => {
       expect(deserializePendingFreeKick('')).toBeNull()
       expect(deserializePendingFreeKick('not-json')).toBeNull()
       expect(deserializePendingFreeKick('{}')).toBeNull() // sem campos esperados
-    })
-  })
-
-  // ====================================================================
-  // PÊNALTI — preparação com escolha do cobrador pelo usuário
-  // ====================================================================
-  describe('preparePenaltyKick', () => {
-    const candidates: TakerCandidate[] = [
-      { id: 'p1', name: 'Atacante 1', position: 'FW', overall: 85 },
-      { id: 'p2', name: 'Meia 1', position: 'MF', overall: 80 },
-      { id: 'p3', name: 'Zagueiro 1', position: 'DF', overall: 75 },
-      { id: 'p4', name: 'Goleiro', position: 'GK', overall: 78 },
-    ]
-
-    it('retorna TODOS os candidatos como elegíveis (usuário escolhe)', () => {
-      const prep = preparePenaltyKick(candidates, 'HOME')
-      expect(prep.eligibleTakers).toHaveLength(4)
-    })
-
-    it('cada candidato recebe um marcador de bônus (kind BONUS/PENALTY/NEUTRAL)', () => {
-      const prep = preparePenaltyKick(candidates, 'HOME')
-      prep.eligibleTakers.forEach((opt) => {
-        expect(['BONUS', 'PENALTY', 'NEUTRAL']).toContain(opt.bonusMarker.kind)
-        expect(opt.bonusMarker.label).toBeTruthy()
-        expect(opt.bonusMarker.description).toBeTruthy()
-      })
-    })
-
-    it('marcadores são re-rolados a cada chamada (sem vantagem fixa por jogador)', () => {
-      // Roda várias preparações e coleta os marcadores do primeiro candidato
-      // (Atacante 1). Estatisticamente, deve haver variação — não é sempre
-      // o mesmo valor.
-      const values = new Set<number>()
-      for (let i = 0; i < 50; i++) {
-        const prep = preparePenaltyKick(candidates, 'HOME')
-        values.add(prep.eligibleTakers[0].bonusMarker.value)
-      }
-      // Deve ter mais de 1 valor diferente (prova que é re-rolado)
-      expect(values.size).toBeGreaterThan(1)
-    })
-
-    it('atacantes aparecem primeiro na lista (ordenação por peso)', () => {
-      const prep = preparePenaltyKick(candidates, 'HOME')
-      // O primeiro deve ser um atacante (FW) ou meia (MF), não zagueiro/goleiro
-      expect(['FW', 'MF']).toContain(prep.eligibleTakers[0].taker.position)
-    })
-
-    it('lança erro se não houver candidatos', () => {
-      expect(() => preparePenaltyKick([], 'HOME')).toThrow()
-    })
-
-    it('gera nonce único a cada chamada', () => {
-      const prep1 = preparePenaltyKick(candidates, 'HOME')
-      const prep2 = preparePenaltyKick(candidates, 'HOME')
-      expect(prep1.nonce).not.toBe(prep2.nonce)
-    })
-  })
-
-  // ====================================================================
-  // MARCADOR DE BÔNUS POR JOGADA (per-play random bonus)
-  // ====================================================================
-  describe('rollPlayBonusMarker', () => {
-    it('gera marcador com kind correto baseado no valor', () => {
-      for (let i = 0; i < 100; i++) {
-        const m = rollPlayBonusMarker()
-        expect(m.kind).toBe(
-          m.value > 0 ? 'BONUS' : m.value < 0 ? 'PENALTY' : 'NEUTRAL',
-        )
-        expect(m.label).toBeTruthy()
-      }
-    })
-
-    it('gera valores dentro do range esperado [-2, +3]', () => {
-      for (let i = 0; i < 500; i++) {
-        const m = rollPlayBonusMarker()
-        expect(m.value).toBeGreaterThanOrEqual(-2)
-        expect(m.value).toBeLessThanOrEqual(3)
-      }
-    })
-
-    it('tem distribuição majoritariamente neutra (~60%)', () => {
-      let neutral = 0
-      const total = 500
-      for (let i = 0; i < total; i++) {
-        if (rollPlayBonusMarker().kind === 'NEUTRAL') neutral++
-      }
-      // Pelo menos 50% neutro (margem para variância estatística)
-      expect(neutral).toBeGreaterThan(total * 0.5)
-    })
-
-    it('respeita forcedValue (para testes determinísticos)', () => {
-      expect(rollPlayBonusMarker(2).value).toBe(2)
-      expect(rollPlayBonusMarker(2).kind).toBe('BONUS')
-      expect(rollPlayBonusMarker(-1).value).toBe(-1)
-      expect(rollPlayBonusMarker(-1).kind).toBe('PENALTY')
-      expect(rollPlayBonusMarker(0).value).toBe(0)
-      expect(rollPlayBonusMarker(0).kind).toBe('NEUTRAL')
-    })
-
-    it('gera pelo menos um BONUS e um PENALTY em 200 rolls (variedade)', () => {
-      let bonus = 0, penalty = 0
-      for (let i = 0; i < 200; i++) {
-        const m = rollPlayBonusMarker()
-        if (m.kind === 'BONUS') bonus++
-        else if (m.kind === 'PENALTY') penalty++
-      }
-      expect(bonus).toBeGreaterThan(0)
-      expect(penalty).toBeGreaterThan(0)
     })
   })
 })
