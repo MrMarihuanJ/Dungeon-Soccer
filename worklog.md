@@ -145,3 +145,53 @@ Stage Summary:
 - Rótulo "Chute na marca do pênalti" aparece em pênaltis (não "Chute ao Gol").
 - 39 novos testes validam todas as regras. Total: 193 testes passando.
 - Build de produção bem-sucedido. Aplicação roda sem erros no dev server.
+
+---
+Task ID: v3.4-db-players-fix
+Agent: Super Z (main)
+Task: Corrigir "busca e exibição de jogadores do banco não retorna dados" — diagnóstico completo em produção (https://dungeonnsoccer.vercel.app) e correção dos arquivos necessários.
+
+Work Log:
+- Diagnosticou produção ao vivo: /api/db/health revelou Match_read falhando ("inviteCode of expected non-nullable type String, found null") e /api/players/search retornando {thesportsdb: 0, local: 0}.
+- CAUSA RAIZ 1: TheSportsDB desativou permanentemente a chave pública "3" (usada como fallback em 3 rotas). A API responde com texto de erro em vez de JSON, o código trata como zero resultados silenciosamente.
+- CAUSA RAIZ 2: banco Neon tinha apenas 9 jogadores obscuros. O auto-seed antigo só rodava com a tabela 100% vazia, então o catálogo curado (114 jogadores) nunca era inserido.
+- CAUSA RAIZ 3: auto-seed usava createMany({skipDuplicates: true}) — argumento NÃO suportado no provider SQLite do Prisma ("Unknown argument skipDuplicates"). Erro engolido pelo catch deixava o banco local vazio.
+- CAUSA RAIZ 4: busca local usava mode:'insensitive' — argumento NÃO suportado no SQLite ("Unknown argument mode"). Em dev local, toda busca do banco falhava silenciosamente (retornava []).
+- CAUSA RAIZ 5: schema declarava inviteCode String (não-nulo) mas o DDL do db-sync cria a coluna como TEXT nullable; registros legados com NULL quebravam TODAS as leituras da tabela Match em produção (list, state, action, join, health).
+
+Fixes applied:
+- NOVO src/lib/sportsdb.ts: getSportsDbKey() mapeia a chave morta "3"/vazia para a nova chave de testes "123" (fallback automático — o deploy volta a funcionar mesmo antes de atualizar a env var).
+- /api/players/search, /api/players/stats, /api/players/ogol: usam sportsDbSearchUrl() do helper (chave resolvida centralizadamente).
+- src/lib/db-sync.ts: auto-seed reescrito como sincronização por nome — 1 query busca nomes existentes, createMany insere APENAS os faltantes, sem skipDuplicates (compatível SQLite e Postgres, não-destrutivo, preenche bancos parciais como o de produção).
+- prisma/schema.prisma: inviteCode String? @unique (nullable) — destrava leituras de registros legados sem alterar dados.
+- NOVO src/lib/db-filters.ts: containsInsensitive() compatível com Postgres (mode:'insensitive') e SQLite (LIKE já é case-insensitive ASCII).
+- /api/players/search: filtros contains via containsInsensitive() — busca local volta a funcionar em SQLite.
+- /api/admin/players e /api/user/search: mesma correção (busca admin também era case-sensitive no Postgres de produção).
+- /api/seed (POST): reescrito com a mesma lógica de sincronização por nome (insere faltantes, preserva existentes, responde com total inserted).
+- players-data.ts: 'Everaldo' (Bahia) renomeado para 'Everaldo Soares' — havia nome duplicado com a lenda do Grêmio 1970, o que quebraria a sincronização por nome.
+- .gitignore: adicionado .env e *.db (evita subir credenciais/banco no GitHub).
+- .env.example: chave TheSportsDB documentada como "123" com aviso de que a "3" foi desativada; DATABASE_URL dev com caminho relativo file:./dev.db (testado).
+- README.md: instruções de deploy e tabela de variáveis atualizadas para a nova chave.
+
+Tests:
+- NOVOS: sportsdb-key.test.ts (7), db-filters.test.ts (7), player-seed-sync.test.ts (6) — 20 testes novos cobrindo todas as causas raiz.
+- Total: 213 testes passando (193 existentes + 20 novos).
+- Lint: 0 erros (2 warnings pré-existentes não introduzidos).
+- Build de produção: OK (next build com Turbopack).
+
+Verification (produção local + servidor `next start`):
+- /api/db/health: todas as tabelas OK (antes: Match_read falhando).
+- /api/players/search?q=neymar: 2 resultados (local OVR 85 + TheSportsDB) — antes: 0.
+- Busca por time (flamengo), por posição (pos=GK), com acento (pelé), maiúsculas (NEYMAR): todas OK.
+- WORLD_CUP mode: exclui aposentados corretamente.
+- POST /api/seed: idempotente (114 jogadores, inserted 0 na segunda chamada).
+- Admin: login OK, /api/admin/players lista 114 com OVR, busca case-insensitive OK.
+- Usuário: registro, login, /api/user/me, salvamento de time, criação de partida (inviteCode gerado) e listagem OK.
+- Cenário legado: Match com inviteCode NULL inserido diretamente no banco é lido sem erro (testado via script dedicado).
+
+Stage Summary:
+- Busca de jogadores restaurada em AMBAS as fontes (externa + banco local).
+- Catálogo de 114 jogadores (incl. 21 lendas) agora sincroniza automaticamente em qualquer banco, mesmo parcialmente povoado.
+- Leituras da tabela Match destravadas para registros legados (inviteCode nullable).
+- Compatibilidade SQLite (dev) e PostgreSQL/Neon (produção) garantida por helpers centralizados.
+- 213 testes passando, 0 erros de lint, build OK.

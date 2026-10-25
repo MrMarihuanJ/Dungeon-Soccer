@@ -218,7 +218,7 @@ de `prisma generate` rodar.
    - `ADMIN_USERNAME` = seu username admin
    - `ADMIN_PASSWORD` = senha forte (≥8 chars, NÃO use `admin123`)
    - `CRON_SECRET` = gere com `openssl rand -hex 32`
-   - `THESPORTSDB_API_KEY` = `"3"` (free tier) ou sua key
+   - `THESPORTSDB_API_KEY` = `"123"` (nova chave pública de testes — a antiga `"3"` foi desativada) ou sua key premium
    - `API_FOOTBALL_KEY` = opcional (apenas se quiser fotos via API-Football)
 4. Deploy
 
@@ -251,7 +251,8 @@ DATABASE_URL="postgresql://..." bun run db:seed
 ```
 
 Em Cold Start, o `db-sync.ts` também cria as tabelas automaticamente, e
-faz auto-seed da tabela `Player` se ela estiver vazia.
+sincroniza a tabela `Player` com o catálogo curado (insere apenas
+jogadores que ainda não existem, preservando os já cadastrados).
 
 ### Passo 5: Verificar cron job
 
@@ -276,7 +277,7 @@ Veja `.env.example` para a lista completa. As críticas são:
 | `ADMIN_USERNAME` | Username do painel admin | Sim |
 | `ADMIN_PASSWORD` | Senha admin (≥8 chars, não default) | Sim |
 | `CRON_SECRET` | Token para autorizar o cron de cleanup | Sim |
-| `THESPORTSDB_API_KEY` | Key da TheSportsDB (`"3"` para free tier) | Não |
+| `THESPORTSDB_API_KEY` | Key da TheSportsDB (`"123"` para free tier — a antiga `"3"` foi desativada) | Não |
 | `API_FOOTBALL_KEY` | Key da API-Football (opcional, para fotos) | Não |
 | `NEXT_PUBLIC_APP_NAME` | Nome da aplicação | Não |
 | `NEXT_PUBLIC_APP_URL` | URL pública | Não |

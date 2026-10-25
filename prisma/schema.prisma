@@ -166,7 +166,14 @@ model Match {
   // Modo de jogo: QUICK_MATCH | TIMED_10 | FULL_90
   gameMode     String   @default("QUICK_MATCH")
   // Código de convite para o oponente entrar (shareable link)
-  inviteCode   String   @unique
+  // NULLABLE: registros legados criados antes desta coluna existir têm
+  // NULL no banco (o DDL do db-sync cria a coluna como TEXT sem NOT
+  // NULL). Declará-la como String não-nula no schema fazia o Prisma
+  // lançar "Error converting field inviteCode of expected non-nullable
+  // type String, found incompatible value of null" em TODAS as leituras
+  // da tabela Match (list, state, action, join). Partidas novas sempre
+  // recebem um código gerado em /api/match/create.
+  inviteCode   String?  @unique
   // Partida offline (vs bot) — o bot joga automaticamente no turno do oponente
   isOffline    Boolean  @default(false)
   // "heads" (cara) ou "coroa" (tails)
