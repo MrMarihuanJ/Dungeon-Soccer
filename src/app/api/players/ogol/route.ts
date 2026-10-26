@@ -10,6 +10,7 @@
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
+import { sportsDbSearchUrl } from '@/lib/sportsdb'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -30,8 +31,7 @@ export async function GET(req: NextRequest) {
 
   // Redirect to TheSportsDB-based stats API
   try {
-    const SPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '3'
-    const searchUrl = `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/searchplayers.php?p=${encodeURIComponent(name)}`
+    const searchUrl = sportsDbSearchUrl(name)
     const searchRes = await fetch(searchUrl, {
       next: { revalidate: 120 },
       signal: AbortSignal.timeout(8000),

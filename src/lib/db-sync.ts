@@ -333,27 +333,51 @@ function isPostgres(): boolean {
 }
 
 /**
- * Auto-seed: se a tabela Player estiver vazia, popula com PLAYERS_SEED.
- * Roda tanto para Postgres quanto para SQLite. Garante que o admin
- * sempre veja jogadores após um deploy fresco ou DB reset.
+ * Auto-seed: sincroniza a tabela Player com PLAYERS_SEED.
+ * Roda tanto para Postgres quanto para SQLite. Garante que o banco
+ * sempre tenha o catálogo curado após um deploy fresco OU um banco
+ * parcialmente povoado (ex.: apenas alguns jogadores criados via admin).
  *
- * IDEMPOTENTE: se já existir ao menos 1 jogador, não faz nada.
+ * COMO FUNCIONA (v3):
+ *   1. Busca os `name` dos jogadores já existentes (1 query leve).
+ *   2. Insere APENAS os que faltam, via createMany.
+ *
+ * POR QUE NÃO MAIS `skipDuplicates`:
+ *   O `skipDuplicates` NÃO é suportado pelo provider SQLite do Prisma
+ *   (erro: "Unknown argument skipDuplicates"). Na versão anterior isso
+ *   fazia o auto-seed falhar silenciosamente em dev/testes, deixando a
+ *   tabela Player vazia. Como agora filtramos por nome antes de inserir,
+ *   não há risco de duplicatas e o argumento se tornou desnecessário.
+ *
+ * IDEMPOTENTE e NÃO DESTRUTIVO: nunca atualiza nem remove jogadores
+ * existentes (preserva edições feitas via painel admin) — apenas insere
+ * os que ainda não existem por nome.
  */
 async function autoSeedPlayersIfEmpty(): Promise<void> {
   try {
-    const count = await db.player.count()
-    if (count > 0) {
-      return
-    }
     // Import dinâmico para evitar carregar o módulo em cold starts onde
     // o sync falha cedo (ex.: DB indisponível).
     const { PLAYERS_SEED } = await import('./football/players-data')
-    console.log(`[db-sync] Player table empty — auto-seeding ${PLAYERS_SEED.length} players...`)
 
-    // Usa createMany (mais rápido que loop de create) — Prisma suporta
-    // para SQLite e Postgres. Pula conflitos via skipDuplicates.
+    // 1. Nomes já presentes no banco (1 query, só a coluna name).
+    const existing = await db.player.findMany({ select: { name: true } })
+    const existingNames = new Set(existing.map((p) => p.name))
+
+    // 2. Jogadores do catálogo curado que ainda não existem.
+    const missing = PLAYERS_SEED.filter((p) => !existingNames.has(p.name))
+
+    if (missing.length === 0) {
+      return
+    }
+
+    console.log(
+      `[db-sync] Player sync: ${existing.length} já existente(s), inserindo ${missing.length} do catálogo...`,
+    )
+
+    // 3. Insere apenas os faltantes. SEM skipDuplicates — o argumento não
+    //    é suportado no SQLite e a filtragem acima já eliminou duplicatas.
     await db.player.createMany({
-      data: PLAYERS_SEED.map((p) => ({
+      data: missing.map((p) => ({
         name: p.name,
         fullName: p.fullName,
         position: p.position,
@@ -373,9 +397,8 @@ async function autoSeedPlayersIfEmpty(): Promise<void> {
         isRetired: p.isRetired ?? false,
         isInactive: p.isInactive ?? false,
       })),
-      skipDuplicates: true,
     })
-    console.log('[db-sync] Auto-seed concluído.')
+    console.log('[db-sync] Player sync concluído.')
   } catch (err: any) {
     const msg = err?.message || String(err)
     console.error(`[db-sync] Auto-seed falhou (não fatal): ${msg.slice(0, 300)}`)
@@ -478,7 +501,7 @@ export async function ensureDbSync(): Promise<void> {
         console.log('[db-sync] SQLite detectado — DDL no-op (use `prisma db push`). Auto-seed ainda roda.')
       }
 
-      // 5. Auto-seed Player table if empty (both Postgres and SQLite)
+      // 5. Sincroniza a tabela Player com o catálogo (Postgres e SQLite)
       await autoSeedPlayersIfEmpty()
 
       syncDone = true

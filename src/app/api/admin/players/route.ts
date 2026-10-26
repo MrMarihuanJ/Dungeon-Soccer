@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getAdminFromRequest } from '@/lib/auth'
 import { ensureDbSync } from '@/lib/db-sync'
+import { containsInsensitive } from '@/lib/db-filters'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -44,7 +45,11 @@ export async function GET(req: NextRequest) {
     const offset = Math.max(Number(searchParams.get('offset') ?? 0), 0)
 
     const where = q
-      ? { OR: [{ name: { contains: q } }, { fullName: { contains: q } }, { team: { contains: q } }] }
+      ? { OR: [
+          { name: containsInsensitive(q) },
+          { fullName: containsInsensitive(q) },
+          { team: containsInsensitive(q) },
+        ] }
       : {}
 
     const [players, total] = await Promise.all([

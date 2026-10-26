@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest } from '@/lib/user-auth'
 import { db } from '@/lib/db'
+import { containsInsensitive } from '@/lib/db-filters'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,9 +20,9 @@ export async function GET(req: NextRequest) {
         { id: { not: session.userId } },
         {
           OR: [
-            { username: { contains: q } },
-            { email: { contains: q.toLowerCase() } },
-            { displayName: { contains: q } },
+            { username: containsInsensitive(q) },
+            { email: containsInsensitive(q.toLowerCase()) },
+            { displayName: containsInsensitive(q) },
           ],
         },
       ],

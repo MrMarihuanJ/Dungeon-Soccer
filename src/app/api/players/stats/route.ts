@@ -10,11 +10,10 @@
 // =====================================================================
 
 import { NextRequest, NextResponse } from 'next/server'
+import { sportsDbSearchUrl } from '@/lib/sportsdb'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-const SPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '3'
 
 interface PlayerStatsResult {
   name: string
@@ -36,7 +35,7 @@ function fallbackPhoto(name: string): string {
 async function searchPlayerStats(playerName: string, team?: string | null): Promise<PlayerStatsResult> {
   try {
     // Search TheSportsDB for the player
-    const searchUrl = `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/searchplayers.php?p=${encodeURIComponent(playerName)}`
+    const searchUrl = sportsDbSearchUrl(playerName)
     const res = await fetch(searchUrl, {
       next: { revalidate: 180 },
       signal: AbortSignal.timeout(6000),

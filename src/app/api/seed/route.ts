@@ -1,7 +1,9 @@
 // =====================================================================
 // API: /api/seed
-// Popula o banco de dados na primeira execução (deploy na Vercel).
-// Idempotente: se já existem jogadores, não duplica.
+// Sincroniza o banco de dados com o catálogo curado de jogadores.
+// NÃO DESTRUTIVO: apenas insere jogadores que ainda não existem (por
+// nome). Registros existentes (inclusive criados/editados via admin)
+// são preservados.
 // =====================================================================
 
 import { NextResponse } from 'next/server'
@@ -20,47 +22,52 @@ export async function POST() {
       console.error('[api/seed] DB sync falhou (não fatal):', syncErr)
     }
 
-    const existing = await db.player.count()
-    if (existing > 0) {
+    // Nomes já existentes — usamos `name` como chave de sincronização.
+    const existing = await db.player.findMany({ select: { name: true } })
+    const existingNames = new Set(existing.map((p) => p.name))
+
+    const missing = PLAYERS_SEED.filter((p) => !existingNames.has(p.name))
+
+    if (missing.length === 0) {
       return NextResponse.json({
         ok: true,
-        message: `Banco já possui ${existing} jogadores. Seed ignorado.`,
-        total: existing,
+        message: `Banco já está sincronizado com o catálogo. ${existing.length} jogador(es) no banco.`,
+        total: existing.length,
+        inserted: 0,
       })
     }
 
-    const batch = PLAYERS_SEED.map((p) =>
-      db.player.create({
-        data: {
-          name: p.name,
-          fullName: p.fullName,
-          position: p.position,
-          team: p.team,
-          photoUrl: p.photoUrl,
-          nationality: p.nationality,
-          shirtNumber: p.shirtNumber ?? null,
-          overall: p.overall,
-          age: p.age,
-          pace: p.pace ?? 70,
-          shooting: p.shooting ?? 70,
-          passing: p.passing ?? 70,
-          dribbling: p.dribbling ?? 70,
-          defending: p.defending ?? 70,
-          physical: p.physical ?? 70,
-          leagueTier: p.leagueTier ?? 'OTHER',
-          isRetired: p.isRetired ?? false,
-          isInactive: p.isInactive ?? false,
-        },
-      }),
-    )
-
-    await db.$transaction(batch)
+    // Insere apenas os faltantes (sem skipDuplicates — o argumento não é
+    // suportado no SQLite e a filtragem acima já evita duplicatas).
+    await db.player.createMany({
+      data: missing.map((p) => ({
+        name: p.name,
+        fullName: p.fullName,
+        position: p.position,
+        team: p.team,
+        photoUrl: p.photoUrl,
+        nationality: p.nationality,
+        shirtNumber: p.shirtNumber ?? null,
+        overall: p.overall,
+        age: p.age,
+        pace: p.pace ?? 70,
+        shooting: p.shooting ?? 70,
+        passing: p.passing ?? 70,
+        dribbling: p.dribbling ?? 70,
+        defending: p.defending ?? 70,
+        physical: p.physical ?? 70,
+        leagueTier: p.leagueTier ?? 'OTHER',
+        isRetired: p.isRetired ?? false,
+        isInactive: p.isInactive ?? false,
+      })),
+    })
 
     const total = await db.player.count()
     return NextResponse.json({
       ok: true,
-      message: `Seed concluído com ${total} jogadores.`,
+      message: `Seed concluído: ${missing.length} novo(s) jogador(es). Total agora: ${total}.`,
       total,
+      inserted: missing.length,
     })
   } catch (err) {
     console.error('[API/seed] erro:', err)

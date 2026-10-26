@@ -18,6 +18,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ensureDbSync } from '@/lib/db-sync'
+import { containsInsensitive } from '@/lib/db-filters'
+import { sportsDbSearchUrl } from '@/lib/sportsdb'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -50,7 +52,8 @@ interface UnifiedPlayer {
 }
 
 // -------- TheSportsDB --------
-const SPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '3'
+// A chave é resolvida por lib/sportsdb.ts (a antiga chave "3" foi
+// desativada permanentemente pela TheSportsDB e retornava 0 resultados).
 
 function normalizePosition(raw: string | null | undefined): PositionCode {
   if (!raw) return 'FW'
@@ -93,7 +96,7 @@ function fallbackPhoto(name: string): string {
 
 async function searchTheSportsDB(query: string, limit: number): Promise<UnifiedPlayer[]> {
   try {
-    const url = `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY}/searchplayers.php?p=${encodeURIComponent(query)}`
+    const url = sportsDbSearchUrl(query)
     const res = await fetch(url, {
       next: { revalidate: 120 },
       signal: AbortSignal.timeout(6000),
@@ -144,9 +147,9 @@ async function searchLocal(query: string, limit: number, pos?: string | null, mo
     const where = {
       AND: [
         { OR: [
-          { name: { contains: query, mode: 'insensitive' as const } },
-          { fullName: { contains: query, mode: 'insensitive' as const } },
-          { team: { contains: query, mode: 'insensitive' as const } },
+          { name: containsInsensitive(query) },
+          { fullName: containsInsensitive(query) },
+          { team: containsInsensitive(query) },
         ] },
         ...(Object.keys(posFilter).length > 0 ? [posFilter] : []),
         ...(mode === 'WORLD_CUP' ? [{ isRetired: false }, { isInactive: false }] : []),

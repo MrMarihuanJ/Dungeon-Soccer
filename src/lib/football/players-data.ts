@@ -158,7 +158,7 @@ export const PLAYERS_SEED: PlayerSeed[] = [
   mk('Guilherme', 'Guilherme da Silva Madalena', 'FW', 'Santos', avatar('Guilherme', colorFor('Santos')), 'Brasil', 9, 73, 24, 'BR1'),
   mk('Payet', 'Dimitri Payet', 'FW', 'Vasco', avatar('Payet', colorFor('Vasco')), 'França', 27, 76, 39, 'BR1'),
   mk('Vegetti', 'Pablo Federico Vegetti Sayago', 'FW', 'Vasco', avatar('Vegetti', colorFor('Vasco')), 'Argentina', 9, 75, 36, 'BR1'),
-  mk('Everaldo', 'Everaldo Soares Ferreira', 'FW', 'Bahia', avatar('Everaldo', colorFor('Bahia')), 'Brasil', 9, 73, 31, 'BR1'),
+  mk('Everaldo Soares', 'Everaldo Soares Ferreira', 'FW', 'Bahia', avatar('Everaldo', colorFor('Bahia')), 'Brasil', 9, 73, 31, 'BR1'),
   mk('Caio Paulista', 'Caio João Paulo da Silva', 'FW', 'Bahia', avatar('Caio Paulista', colorFor('Bahia')), 'Brasil', 11, 74, 29, 'BR1'),
   mk('Everaldo', 'Everaldo Marques da Silva', 'FW', 'Grêmio (1970)', avatar('Everaldo', colorFor('Grêmio')), 'Brasil', 6, 78, 28, 'BR1', {}, true),
   mk('Cauly', 'Cauly Oliveira Souza', 'FW', 'Fortaleza', avatar('Cauly', colorFor('Fortaleza')), 'Brasil', 10, 76, 31, 'BR1'),
